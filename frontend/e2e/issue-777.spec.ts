@@ -19,6 +19,29 @@ function startOfWeek(value: Date) {
   return addDays(value, -(day === 0 ? 6 : day - 1));
 }
 
+async function createCompetency(page: import("@playwright/test").Page, name: string, sortOrder: number) {
+  const response = await page.request.post("/api/v1/competencies", {
+    headers: { "X-E2E-Role": "ADMIN" },
+    data: { name, sort_order: sortOrder, active: true },
+  });
+  expect(response.status(), await response.text()).toBe(201);
+  return String((await response.json() as { competency_id: string }).competency_id);
+}
+
+async function requestedAssetType(page: import("@playwright/test").Page) {
+  const response = await page.request.get("/api/v1/assets/catalog", {
+    headers: { "X-E2E-Role": "ADMIN" },
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const payload = await response.json() as {
+    types: Array<{ id: string; code: string; label: string; category: string; active: boolean }>;
+  };
+  const type = payload.types.find((row) => row.code === "VEH-744" && row.active)
+    ?? payload.types.find((row) => row.category === "VEHICLE" && row.active);
+  expect(type, "Type d'actif E2E introuvable").toBeTruthy();
+  return type!;
+}
+
 test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai backend", async ({ browser }) => {
   test.setTimeout(180_000);
   const context = await browser.newContext({
@@ -36,15 +59,22 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
   const targetName = `Ressource E2E 777 cible ${fixtureKey}`;
   const resourceIds: string[] = [];
   const availabilityIds: string[] = [];
+  const suffix = fixtureKey.slice(0, 8);
+  const priorityCompetencyName = `Priorité 10 #832 ${suffix}`;
+  const hiddenCompetencyName = `Priorité 24 #832 ${suffix}`;
 
   try {
+    const priorityCompetencyId = await createCompetency(page, priorityCompetencyName, 10);
+    const hiddenCompetencyId = await createCompetency(page, hiddenCompetencyName, 24);
+    const assetType = await requestedAssetType(page);
     for (const [index, name] of [sourceName, targetName].entries()) {
       const resourceCreate = await page.request.post("/api/v1/resources", {
         headers: { "X-E2E-Role": "ADMIN" },
         data: {
           name,
           resource_class: "PROGRAMMEUR",
-          competencies: "SCADA",
+          competencies: `${priorityCompetencyName}; ${hiddenCompetencyName}`,
+          competency_ids: [priorityCompetencyId, hiddenCompetencyId],
           sort_order: 7770 + index,
         },
       });
@@ -73,12 +103,40 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     const created = await page.request.post("/api/v1/demands", {
       data: {
         project_number: "P-251",
-        desired_start: d1,
-        desired_end: d5,
-        estimated_hours: 40,
-        task_code: "210",
-        proposed_technician: sourceName,
-        description: "Placement daté #777",
+        priority: "Normale",
+        description: "Description longue #832 à masquer",
+        lines: [
+          {
+            position: 0,
+            kind: "WORKFORCE",
+            required_resource_class: "PROGRAMMEUR",
+            required_competency_ids: [priorityCompetencyId, hiddenCompetencyId],
+            desired_start: d1,
+            desired_end: d5,
+            estimated_hours: 40,
+            task_code: "210",
+            proposed_resource_id: resourceIds[0],
+            asset_type_id: null,
+            proposed_asset_id: null,
+            confirmation: "Tentative",
+            description: "Besoin main-d'œuvre #777/#832",
+          },
+          {
+            position: 1,
+            kind: "ASSET",
+            required_resource_class: null,
+            required_competency_ids: [],
+            desired_start: d1,
+            desired_end: d5,
+            estimated_hours: null,
+            task_code: "210",
+            proposed_resource_id: null,
+            asset_type_id: assetType.id,
+            proposed_asset_id: null,
+            confirmation: "Tentative",
+            description: "Actif demandé #832",
+          },
+        ],
         submit: true,
       },
     });
@@ -115,6 +173,75 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     const initialAssignment = (await afterApprovalActions.json() as Array<any>)
       .find((row) => row.demand_number === demandNumber && row.kind === "ASSIGNMENT");
     expect(initialAssignment).toBeTruthy();
+    const segmentId = String(initialAssignment.segment_id);
+    expect(segmentId).not.toBe("");
+    expect(initialAssignment.confirmation).toBe("Tentative");
+    expect(initialAssignment.proposed_resource).toBe(sourceName);
+    expect(initialAssignment.priority_competencies).toEqual([
+      {
+        competency_id: priorityCompetencyId,
+        name: priorityCompetencyName,
+        priority: 10,
+      },
+    ]);
+    expect(initialAssignment.requested_assets).toEqual([
+      { asset_type_id: assetType.id, label: assetType.label },
+    ]);
+
+    await page.goto("/");
+    await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
+    await page.getByRole("button", { name: "Suivante →" }).click();
+
+    let approvedCard = page.locator(
+      `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
+    );
+    await expect(approvedCard).toHaveCount(1);
+    await expect(approvedCard).toBeVisible();
+    await expect(approvedCard).toHaveAttribute("draggable", "true");
+    await expect(approvedCard).toHaveClass(/confirmation-tentative/);
+    await expect(approvedCard).toContainText("P-251");
+    await expect(approvedCard).toContainText("40 h");
+    await expect(approvedCard.locator(".work-queue-proposed-resource")).toContainText(sourceName);
+    await expect(approvedCard.locator(".work-queue-requested-asset")).toContainText(assetType.label);
+    await expect(approvedCard.locator(".work-queue-priority-competency")).toHaveText(
+      priorityCompetencyName,
+    );
+    await expect(approvedCard).not.toContainText(hiddenCompetencyName);
+    await expect(approvedCard).not.toContainText(demandNumber);
+    await expect(approvedCard).not.toContainText(segmentId);
+    await expect(approvedCard).not.toContainText("PROGRAMMEUR");
+    await expect(approvedCard).not.toContainText("Description longue #832 à masquer");
+    await expect(approvedCard).not.toContainText("Glisser pour définir");
+
+    const confirmationUpdate = await page.request.put(
+      `/api/v1/demands/${encodeURIComponent(demandNumber)}/operational-confirmation`,
+      {
+        data: {
+          confirmation: "Confirmée",
+          expected_operational_version: Number(initialAssignment.operational_version),
+        },
+      },
+    );
+    expect(confirmationUpdate.status(), await confirmationUpdate.text()).toBe(200);
+
+    const confirmedActions = await page.request.get(
+      `/api/v1/planning/actions?start=${d1}&end=${d5}&scope=global`,
+    );
+    expect(confirmedActions.ok(), await confirmedActions.text()).toBeTruthy();
+    const confirmedAssignment = (await confirmedActions.json() as Array<any>)
+      .find((row) => row.segment_id === segmentId && row.kind === "ASSIGNMENT");
+    expect(confirmedAssignment?.confirmation).toBe("Confirmée");
+
+    await page.reload();
+    approvedCard = page.locator(
+      `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
+    );
+    await expect(approvedCard).toHaveClass(/confirmation-confirmed/);
+    await expect(approvedCard.locator(".work-queue-proposed-resource")).toContainText(sourceName);
+    await expect(approvedCard.locator(".work-queue-requested-asset")).toContainText(assetType.label);
+    await expect(approvedCard.locator(".work-queue-priority-competency")).toHaveText(
+      priorityCompetencyName,
+    );
 
     const explicitBaseline = await page.request.post(
       `/api/v1/segments/${encodeURIComponent(String(initialAssignment.segment_id))}/assign`,
@@ -166,13 +293,10 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
       }))
       .sort((left, right) => left.allocation_id.localeCompare(right.allocation_id));
 
-    await page.goto("/");
-    await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
-    await page.getByRole("button", { name: "Suivante →" }).click();
-
-    const approvedCard = page
-      .locator(".planning-work-queue .planning-action-card.action-assignment")
-      .filter({ hasText: demandNumber });
+    await page.reload();
+    approvedCard = page.locator(
+      `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
+    );
     await expect(approvedCard).toHaveCount(1);
     await expect(approvedCard).toBeVisible();
     await expect(approvedCard).toHaveAttribute("draggable", "true");
@@ -206,16 +330,15 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     const workCountBeforeDrop = await classWorkCount();
     expect(workCountBeforeDrop).toBeGreaterThan(0);
 
-    const segmentId = await approvedCard.getAttribute("data-segment-id");
-    expect(segmentId).toBeTruthy();
+    await expect(approvedCard).toHaveAttribute("data-segment-id", segmentId);
 
     const targetCell = page.locator(
       `.planning-drop-day[data-resource-id="${resourceIds[1]}"][data-day="${d4}"]`,
     );
     await expect(targetCell).toBeVisible();
 
-    const previewPath = `/api/v1/segments/${encodeURIComponent(segmentId!)}/place-from-drop/preview`;
-    const mutationPath = `/api/v1/segments/${encodeURIComponent(segmentId!)}/place-from-drop`;
+    const previewPath = `/api/v1/segments/${encodeURIComponent(segmentId)}/place-from-drop/preview`;
+    const mutationPath = `/api/v1/segments/${encodeURIComponent(segmentId)}/place-from-drop`;
     const previewRequestPromise = page.waitForRequest(
       (request) => request.method() === "POST" && new URL(request.url()).pathname === previewPath,
     );
