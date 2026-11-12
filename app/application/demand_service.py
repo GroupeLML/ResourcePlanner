@@ -753,7 +753,7 @@ class DemandService:
     ) -> tuple[bool, int | None]:
         policy = self._approval_envelope_policy
         if policy is None:
-            return legacy_unknown_requires_reapproval
+            return legacy_unknown_requires_reapproval, expected_operational_version
 
         needs_approval = decision.decision == DECISION_REAPPROVAL_REQUIRED
         if decision.decision == DECISION_APPROVAL_REFERENCE_UNKNOWN:
@@ -864,8 +864,8 @@ class DemandService:
                                 code_prefix="approval_envelope_direct_audit",
                                 context={"demand_number": number},
                             )
-                    return outcome.status != "En planification"
-        return True
+                    return outcome.status != "En planification", None
+        return True, None
 
     def create_command(self, command: DemandCreateCommand) -> str:
         values = command.to_repository_values()
