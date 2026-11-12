@@ -123,11 +123,15 @@ function ActionCard({
   canDragAssignment: boolean;
 }) {
   const assignment = action.kind === "ASSIGNMENT";
-  const task = [action.task_code, action.task_label].filter(Boolean).join(" — ");
   const draggable = assignment && Boolean(action.segment_id) && canDragAssignment;
+  const confirmationClass = action.confirmation === "Confirmée"
+    ? "confirmation-confirmed"
+    : action.confirmation === "Tentative"
+      ? "confirmation-tentative"
+      : "";
   return (
     <article
-      className={`planning-action-card action-${action.kind.toLowerCase()} ${draggable ? "is-draggable" : ""}`}
+      className={`planning-action-card action-${action.kind.toLowerCase()} ${confirmationClass} ${draggable ? "is-draggable" : ""}`}
       draggable={draggable}
       data-segment-id={action.segment_id || undefined}
       onDragStart={(event) => {
@@ -147,25 +151,39 @@ function ActionCard({
           <span className="planning-action-kicker">
             {assignment ? "Approuvé · reliquat à couvrir" : "À approuver"}
           </span>
-          <strong>
-            {action.project_number || "Projet"}
-            {action.project_name ? ` — ${action.project_name}` : ""}
-          </strong>
+          <strong>{action.project_number || "Projet"}</strong>
         </div>
         <strong>{hours(action.planned_hours)} h</strong>
       </div>
 
       <div className="planning-action-meta">
-        {action.demand_number && <span>Demande {action.demand_number}</span>}
-        {action.segment_id && <span>{action.segment_id}</span>}
-        {task && <span>{task}</span>}
         <span>{dateRange(action)}</span>
-        {action.required_resource_class && <span>Classe : {action.required_resource_class}</span>}
-        {action.required_competency && <span>Compétence : {action.required_competency}</span>}
-        {action.priority && <span>Priorité : {action.priority}</span>}
-        {action.confirmation && <span>{action.confirmation}</span>}
+        {action.confirmation && (
+          <span className="work-queue-confirmation">{action.confirmation}</span>
+        )}
+        {action.proposed_resource && (
+          <strong className="work-queue-proposed-resource">
+            Ressource proposée : {resourceDisplayName(action.proposed_resource)}
+          </strong>
+        )}
+        {(action.requested_assets ?? []).map((asset, index) => (
+          <span
+            className="work-queue-requested-asset"
+            key={`${asset.asset_type_id}-${index}`}
+          >
+            Actif demandé : {asset.label}
+          </span>
+        ))}
+        {(action.priority_competencies ?? []).map((competency) => (
+          <strong
+            className="work-queue-priority-competency"
+            data-competency-priority={competency.priority}
+            key={competency.competency_id}
+          >
+            {competency.name}
+          </strong>
+        ))}
         {action.emergency_override_active && <span>⚠ Dérogation urgente</span>}
-        {draggable && <span className="drag-hint">↕ Glisser pour définir la cible automatique</span>}
       </div>
 
       <div className="planning-action-buttons">
