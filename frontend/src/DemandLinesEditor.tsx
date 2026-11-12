@@ -30,7 +30,7 @@ export type DemandLineDraft = {
   proposed_resource_id: string;
   asset_type_id: string;
   proposed_asset_id: string;
-  confirmation: "Tentative" | "Confirmée";
+  confirmation: "" | "Tentative" | "Confirmée";
   description: string;
   estimated_hours_source?: string | null;
 };
@@ -96,7 +96,7 @@ export function demandLineWrite(line: DemandLineDraft, position: number): Demand
     estimated_hours: hours == null || Number.isNaN(hours) ? null : hours,
     work_package_ref: line.work_package_ref || null,
     task_code: line.task_code || null,
-    confirmation: line.confirmation,
+    ...(line.confirmation ? { confirmation: line.confirmation } : {}),
     description: line.description.trim() || null,
   } satisfies Partial<DemandLineWrite>;
 
@@ -448,9 +448,16 @@ export default function DemandLinesEditor({
                 <span>Confirmation</span>
                 <select
                   value={line.confirmation}
-                  onChange={(event) => updateLine(index, { confirmation: event.target.value === "Tentative" ? "Tentative" : "Confirmée" })}
+                  onChange={(event) => updateLine(index, {
+                    confirmation: event.target.value === "Tentative"
+                      ? "Tentative"
+                      : event.target.value === "Confirmée"
+                        ? "Confirmée"
+                        : "",
+                  })}
                   disabled={disabled}
                 >
+                  <option value="">Sélectionner une confirmation…</option>
                   <option value="Confirmée">Confirmée</option>
                   <option value="Tentative">Tentative</option>
                 </select>
