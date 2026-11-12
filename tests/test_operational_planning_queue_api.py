@@ -38,7 +38,12 @@ from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 create_api_app = partial(create_api_app, auth_resolver=TEST_ADMIN_AUTH_RESOLVER)
 
 class OperationalPlanningQueueApiTests(unittest.TestCase):
-    def _database(self, directory: str) -> str:
+    def _database(
+        self,
+        directory: str,
+        *,
+        include_832_priority_competencies: bool = False,
+    ) -> str:
         path = Path(directory) / "planning-queue.db"
         url = f"sqlite+pysqlite:///{path.as_posix()}"
         engine = create_sql_engine(url)
@@ -58,32 +63,11 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             session.add_all(
                 [
                     Competency(
-                        id="C-ZERO",
-                        name="Priorité zéro",
-                        description="Borne basse #832",
-                        active=True,
-                        sort_order=0,
-                    ),
-                    Competency(
                         id="C-PLC",
                         name="PLC",
                         description="Programmation automate",
                         active=True,
                         sort_order=10,
-                    ),
-                    Competency(
-                        id="C-TWENTY",
-                        name="Priorité vingt",
-                        description="Borne haute #832",
-                        active=True,
-                        sort_order=20,
-                    ),
-                    Competency(
-                        id="C-HIGH",
-                        name="Spécialité 24",
-                        description="Compétence hors priorité carte",
-                        active=True,
-                        sort_order=24,
                     ),
                     AssetType(
                         id="AT-LIFT",
@@ -93,6 +77,32 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                     ),
                 ]
             )
+            if include_832_priority_competencies:
+                session.add_all(
+                    [
+                        Competency(
+                            id="C-ZERO",
+                            name="Priorité zéro",
+                            description="Borne basse #832",
+                            active=True,
+                            sort_order=0,
+                        ),
+                        Competency(
+                            id="C-TWENTY",
+                            name="Priorité vingt",
+                            description="Borne haute #832",
+                            active=True,
+                            sort_order=20,
+                        ),
+                        Competency(
+                            id="C-HIGH",
+                            name="Spécialité 24",
+                            description="Compétence hors priorité carte",
+                            active=True,
+                            sort_order=24,
+                        ),
+                    ]
+                )
             session.add_all(
                 [
                     Resource(
@@ -125,13 +135,8 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                     preferred_resource_id="R-ALICE",
                 )
             )
-            session.add_all(
-                [
-                    ResourceCompetency(resource_id="R-ALICE", competency_id="C-ZERO"),
-                    ResourceCompetency(resource_id="R-ALICE", competency_id="C-PLC"),
-                    ResourceCompetency(resource_id="R-ALICE", competency_id="C-TWENTY"),
-                    ResourceCompetency(resource_id="R-ALICE", competency_id="C-HIGH"),
-                ]
+            session.add(
+                ResourceCompetency(resource_id="R-ALICE", competency_id="C-PLC")
             )
             for resource_id in ("R-ALICE", "R-BOB"):
                 session.add(
@@ -281,19 +286,7 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 [
                     ResourceRequirementCompetency(
                         resource_requirement_id=target.id,
-                        competency_id="C-ZERO",
-                    ),
-                    ResourceRequirementCompetency(
-                        resource_requirement_id=target.id,
                         competency_id="C-PLC",
-                    ),
-                    ResourceRequirementCompetency(
-                        resource_requirement_id=target.id,
-                        competency_id="C-TWENTY",
-                    ),
-                    ResourceRequirementCompetency(
-                        resource_requirement_id=target.id,
-                        competency_id="C-HIGH",
                     ),
                     AssetRequirement(
                         id="AREQ-832",
@@ -310,6 +303,23 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                     ),
                 ]
             )
+            if include_832_priority_competencies:
+                session.add_all(
+                    [
+                        ResourceRequirementCompetency(
+                            resource_requirement_id=target.id,
+                            competency_id="C-ZERO",
+                        ),
+                        ResourceRequirementCompetency(
+                            resource_requirement_id=target.id,
+                            competency_id="C-TWENTY",
+                        ),
+                        ResourceRequirementCompetency(
+                            resource_requirement_id=target.id,
+                            competency_id="C-HIGH",
+                        ),
+                    ]
+                )
             session.add_all(
                 [
                     Shift(
@@ -352,7 +362,10 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
 
     def test_queue_restores_approval_and_unassigned_work(self) -> None:
         with TemporaryDirectory() as directory:
-            url = self._database(directory)
+            url = self._database(
+                directory,
+                include_832_priority_competencies=True,
+            )
             engine = create_sql_engine(url)
             factory = create_session_factory(engine)
             with factory.begin() as session:
