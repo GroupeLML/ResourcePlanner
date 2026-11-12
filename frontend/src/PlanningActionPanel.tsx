@@ -163,7 +163,7 @@ function ActionCard({
         )}
         {action.proposed_resource && (
           <strong className="work-queue-proposed-resource">
-            Ressource proposée : {resourceDisplayName(action.proposed_resource)}
+            Ressource proposée : {action.proposed_resource}
           </strong>
         )}
         {(action.requested_assets ?? []).map((asset, index) => (
