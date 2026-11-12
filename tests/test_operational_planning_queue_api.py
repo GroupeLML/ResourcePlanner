@@ -11,9 +11,13 @@ import unittest
 from fastapi.testclient import TestClient
 
 from app.infrastructure.sql import (
+    AssetAllocation,
+    AssetRequirement,
+    AssetType,
     Base,
     Competency,
     Project,
+    RequestLine,
     Resource,
     ResourceAvailabilityRule,
     ResourceCompetency,
@@ -51,14 +55,29 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                     status="active",
                 )
             )
-            session.add(
-                Competency(
-                    id="C-PLC",
-                    name="PLC",
-                    description="Programmation automate",
-                    active=True,
-                    sort_order=10,
-                )
+            session.add_all(
+                [
+                    Competency(
+                        id="C-PLC",
+                        name="PLC",
+                        description="Programmation automate",
+                        active=True,
+                        sort_order=10,
+                    ),
+                    Competency(
+                        id="C-HIGH",
+                        name="Spécialité 24",
+                        description="Compétence hors priorité carte",
+                        active=True,
+                        sort_order=24,
+                    ),
+                    AssetType(
+                        id="AT-LIFT",
+                        code="LIFT",
+                        label="Nacelle",
+                        category="EQUIPMENT",
+                    ),
+                ]
             )
             session.add_all(
                 [
@@ -139,12 +158,26 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 desired_end=date(2026, 9, 25),
                 resource_count=1,
                 required_competencies="PLC",
+                proposed_resource_id="R-ALICE",
                 estimated_hours=Decimal("24"),
                 status="En planification",
                 approved_by_name="Coordonnateur test",
             )
             session.add_all([submitted, approved])
             session.flush()
+            session.add(
+                RequestLine(
+                    id="LINE-APPROVED",
+                    workforce_request_id=approved.id,
+                    position=0,
+                    kind="WORKFORCE",
+                    desired_start=date(2026, 9, 21),
+                    desired_end=date(2026, 9, 25),
+                    estimated_hours=Decimal("24"),
+                    confirmation="Confirmée",
+                    proposed_resource_id="R-ALICE",
+                )
+            )
             session.add_all(
                 [
                     WorkforceRequestCompetency(
@@ -163,8 +196,10 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                 legacy_segment_id="SEG-2026-0273",
                 project_id="P-273",
                 workforce_request_id=approved.id,
+                source_request_line_id="LINE-APPROVED",
                 approved_task_catalog_item_id="T-APPROVED",
                 approval_reference_status="CAPTURED",
+                approved_entry_key="LINE-APPROVED",
                 assigned_resource_id=None,
                 start_date=date(2026, 9, 21),
                 end_date=date(2026, 9, 25),
@@ -211,11 +246,30 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             )
             session.add_all([target, covered, load])
             session.flush()
-            session.add(
-                ResourceRequirementCompetency(
-                    resource_requirement_id=target.id,
-                    competency_id="C-PLC",
-                )
+            session.add_all(
+                [
+                    ResourceRequirementCompetency(
+                        resource_requirement_id=target.id,
+                        competency_id="C-PLC",
+                    ),
+                    ResourceRequirementCompetency(
+                        resource_requirement_id=target.id,
+                        competency_id="C-HIGH",
+                    ),
+                    AssetRequirement(
+                        id="AREQ-832",
+                        project_id="P-273",
+                        origin="REQUEST",
+                        workforce_request_id=approved.id,
+                        source_request_line_id="LINE-APPROVED",
+                        approved_entry_key="LINE-APPROVED",
+                        slot_index=0,
+                        asset_type_id="AT-LIFT",
+                        start_date=date(2026, 9, 21),
+                        end_date=date(2026, 9, 25),
+                        status="À affecter",
+                    ),
+                ]
             )
             session.add_all(
                 [
@@ -309,6 +363,24 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             self.assertEqual(assignment["required_resource_class"], "Programmation")
             self.assertEqual(assignment["required_competency_id"], "C-PLC")
             self.assertEqual(assignment["planned_hours"], 12.0)
+            self.assertEqual(assignment["proposed_resource"], "Alice")
+            self.assertEqual(
+                assignment["requested_assets"],
+                [{"asset_type_id": "AT-LIFT", "label": "Nacelle"}],
+            )
+            self.assertEqual(
+                assignment["priority_competencies"],
+                [{"competency_id": "C-PLC", "name": "PLC", "priority": 10}],
+            )
+            self.assertEqual(assignment["confirmation"], "Confirmée")
+
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    self.assertEqual(session.query(AssetAllocation).count(), 0)
+            finally:
+                engine.dispose()
 
     def test_recommendations_prioritize_competency_then_capacity(self) -> None:
         with TemporaryDirectory() as directory:
