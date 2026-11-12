@@ -794,7 +794,7 @@ export default function DemandsPage({
         task_code: form.task_code || null,
         request_type: selectedDemand?.request_type || "Projet",
         priority: form.priority,
-        confirmation: form.confirmation,
+        ...(form.confirmation ? { confirmation: form.confirmation } : {}),
         desired_start: form.desired_start,
         desired_end: form.desired_end || null,
         description: form.description.trim(),
