@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, time
+from decimal import Decimal
 import json
 from tempfile import TemporaryDirectory
 import unittest
@@ -175,6 +176,52 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
         return shifts[0]
 
     @staticmethod
+    def _demand_shifts(
+        client: TestClient,
+        number: str,
+        *,
+        segment_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        rows = [
+            row
+            for row in client.get("/api/v1/shifts").json()
+            if row["demand_number"] == number
+        ]
+        if segment_id is not None:
+            rows = [
+                row
+                for row in rows
+                if row["segment_id"] == segment_id
+            ]
+        return rows
+
+    @staticmethod
+    def _shift_identity_set(
+        shifts: list[dict[str, object]],
+    ) -> tuple[tuple[str, str, str, str, str], ...]:
+        return tuple(
+            sorted(
+                (
+                    str(row["allocation_id"]),
+                    str(row["segment_id"]),
+                    str(row["resource_id"]),
+                    str(row["work_date"]),
+                    str(Decimal(str(row["hours"])).quantize(Decimal("0.01"))),
+                )
+                for row in shifts
+            )
+        )
+
+    @staticmethod
+    def _shift_hours_total(
+        shifts: list[dict[str, object]],
+    ) -> Decimal:
+        return sum(
+            (Decimal(str(row["hours"])) for row in shifts),
+            Decimal("0"),
+        ).quantize(Decimal("0.01"))
+
+    @staticmethod
     def _operational_state(
         session,
         number: str,
@@ -330,12 +377,23 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     initial_operational_version + 1,
                 )
             with TestClient(admin_app, raise_server_exceptions=False) as observer:
-                effort_shift = next(
-                    row
-                    for row in observer.get("/api/v1/shifts").json()
-                    if row["demand_number"] == number
+                effort_shifts = self._demand_shifts(observer, number)
+                self.assertTrue(effort_shifts)
+                effort_segment_ids = {
+                    str(row["segment_id"]) for row in effort_shifts
+                }
+                self.assertEqual(len(effort_segment_ids), 1)
+                effort_segment_id = next(iter(effort_segment_ids))
+                effort_shifts = self._demand_shifts(
+                    observer,
+                    number,
+                    segment_id=effort_segment_id,
                 )
-                self.assertEqual(effort_shift["hours"], 4.8)
+                self.assertEqual(
+                    self._shift_hours_total(effort_shifts),
+                    Decimal("4.80"),
+                )
+                effort_identity = self._shift_identity_set(effort_shifts)
 
             with TestClient(pm_app, raise_server_exceptions=False) as client:
 
@@ -358,25 +416,25 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     after_effort["approval_state"]["operational_version"] + 1,
                 )
             with TestClient(admin_app, raise_server_exceptions=False) as observer:
-                confirmed_shift = next(
-                    row
-                    for row in observer.get("/api/v1/shifts").json()
-                    if row["demand_number"] == number
+                confirmed_shifts = self._demand_shifts(
+                    observer,
+                    number,
+                    segment_id=effort_segment_id,
                 )
-                self.assertEqual(confirmed_shift["confirmation"], "Confirmée")
+                self.assertTrue(confirmed_shifts)
+                self.assertTrue(
+                    all(
+                        row["confirmation"] == "Confirmée"
+                        for row in confirmed_shifts
+                    )
+                )
                 self.assertEqual(
-                    (
-                        confirmed_shift["allocation_id"],
-                        confirmed_shift["segment_id"],
-                        confirmed_shift["resource_id"],
-                        confirmed_shift["hours"],
-                    ),
-                    (
-                        effort_shift["allocation_id"],
-                        effort_shift["segment_id"],
-                        effort_shift["resource_id"],
-                        effort_shift["hours"],
-                    ),
+                    self._shift_hours_total(confirmed_shifts),
+                    Decimal("4.80"),
+                )
+                self.assertEqual(
+                    self._shift_identity_set(confirmed_shifts),
+                    effort_identity,
                 )
 
             with TestClient(pm_app, raise_server_exceptions=False) as client:
@@ -399,25 +457,25 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     confirmed_detail["approval_state"]["operational_version"] + 1,
                 )
             with TestClient(admin_app, raise_server_exceptions=False) as observer:
-                tentative_shift = next(
-                    row
-                    for row in observer.get("/api/v1/shifts").json()
-                    if row["demand_number"] == number
+                tentative_shifts = self._demand_shifts(
+                    observer,
+                    number,
+                    segment_id=effort_segment_id,
                 )
-                self.assertEqual(tentative_shift["confirmation"], "Tentative")
+                self.assertTrue(tentative_shifts)
+                self.assertTrue(
+                    all(
+                        row["confirmation"] == "Tentative"
+                        for row in tentative_shifts
+                    )
+                )
                 self.assertEqual(
-                    (
-                        tentative_shift["allocation_id"],
-                        tentative_shift["segment_id"],
-                        tentative_shift["resource_id"],
-                        tentative_shift["hours"],
-                    ),
-                    (
-                        effort_shift["allocation_id"],
-                        effort_shift["segment_id"],
-                        effort_shift["resource_id"],
-                        effort_shift["hours"],
-                    ),
+                    self._shift_hours_total(tentative_shifts),
+                    Decimal("4.80"),
+                )
+                self.assertEqual(
+                    self._shift_identity_set(tentative_shifts),
+                    effort_identity,
                 )
 
             engine = create_sql_engine(database_url)
@@ -507,14 +565,28 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     original_operational_version + 2,
                 )
             with TestClient(admin_app, raise_server_exceptions=False) as observer:
-                shift = next(
-                    row
-                    for row in observer.get("/api/v1/shifts").json()
-                    if row["demand_number"] == number
+                combined_shifts = self._demand_shifts(
+                    observer,
+                    number,
+                    segment_id=str(baseline_shift["segment_id"]),
                 )
-                self.assertEqual(shift["hours"], 4.8)
-                self.assertEqual(shift["confirmation"], "Confirmée")
-                self.assertEqual(shift["resource_id"], baseline_shift["resource_id"])
+                self.assertTrue(combined_shifts)
+                self.assertEqual(
+                    self._shift_hours_total(combined_shifts),
+                    Decimal("4.80"),
+                )
+                self.assertTrue(
+                    all(
+                        row["confirmation"] == "Confirmée"
+                        for row in combined_shifts
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        row["resource_id"] == baseline_shift["resource_id"]
+                        for row in combined_shifts
+                    )
+                )
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
@@ -576,14 +648,22 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(intervening.status_code, 200, intervening.text)
-                current_shift = next(
-                    row
-                    for row in client.get("/api/v1/shifts").json()
-                    if row["demand_number"] == number
+                current_shifts = self._demand_shifts(
+                    client,
+                    number,
+                    segment_id=str(baseline_shift["segment_id"]),
                 )
+                self.assertTrue(current_shifts)
                 self.assertEqual(
-                    current_shift["allocation_id"],
-                    baseline_shift["allocation_id"],
+                    self._shift_hours_total(current_shifts),
+                    Decimal("4.00"),
+                )
+                current_identity = self._shift_identity_set(current_shifts)
+                self.assertTrue(
+                    all(
+                        row["confirmation"] == "Confirmée"
+                        for row in current_shifts
+                    )
                 )
 
             engine = create_sql_engine(database_url)
@@ -626,16 +706,32 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                 self.assertEqual(demand["estimated_hours"], 4)
                 self.assertEqual(demand["confirmation"], "Tentative")
             with TestClient(admin_app, raise_server_exceptions=False) as observer:
-                shift = next(
-                    row
-                    for row in observer.get("/api/v1/shifts").json()
-                    if row["demand_number"] == number
+                rollback_shifts = self._demand_shifts(
+                    observer,
+                    number,
+                    segment_id=str(baseline_shift["segment_id"]),
                 )
-                self.assertEqual(shift["allocation_id"], baseline_shift["allocation_id"])
-                self.assertEqual(shift["segment_id"], baseline_shift["segment_id"])
-                self.assertEqual(shift["hours"], 4)
-                self.assertEqual(shift["resource_id"], baseline_shift["resource_id"])
-                self.assertEqual(shift["confirmation"], "Confirmée")
+                self.assertTrue(rollback_shifts)
+                self.assertEqual(
+                    self._shift_hours_total(rollback_shifts),
+                    Decimal("4.00"),
+                )
+                self.assertEqual(
+                    self._shift_identity_set(rollback_shifts),
+                    current_identity,
+                )
+                self.assertTrue(
+                    all(
+                        row["resource_id"] == baseline_shift["resource_id"]
+                        for row in rollback_shifts
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        row["confirmation"] == "Confirmée"
+                        for row in rollback_shifts
+                    )
+                )
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
