@@ -1501,7 +1501,7 @@ export type DemandLineWrite = {
   proposed_resource_id: string | null;
   asset_type_id?: string | null;
   proposed_asset_id?: string | null;
-  confirmation: "Tentative" | "Confirmée";
+  confirmation?: "Tentative" | "Confirmée";
   description: string | null;
 };
 

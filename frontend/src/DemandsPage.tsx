@@ -68,7 +68,7 @@ type FormState = {
   work_package_ref: string;
   task_code: string;
   priority: string;
-  confirmation: "Tentative" | "Confirmée";
+  confirmation: "" | "Tentative" | "Confirmée";
   desired_start: string;
   desired_end: string;
   description: string;
@@ -126,7 +126,7 @@ function emptyForm(projectNumber = "", requesterUserId = ""): FormState {
     work_package_ref: "",
     task_code: "",
     priority: "Normale",
-    confirmation: "Confirmée",
+    confirmation: "",
     desired_start: todayIso(),
     desired_end: "",
     description: "",
@@ -627,7 +627,7 @@ export default function DemandsPage({
 
   function beginCreate(context: DemandCreateContext | null = null) {
     if (!confirmDiscardChanges()) return;
-    const firstProject = context?.project_number ?? creationProjects[0]?.number ?? "";
+    const firstProject = context?.project_number ?? "";
     setDetailLoading(false);
     setCreating(true);
     setSelectedNumber(null);
@@ -794,7 +794,7 @@ export default function DemandsPage({
         task_code: form.task_code || null,
         request_type: selectedDemand?.request_type || "Projet",
         priority: form.priority,
-        confirmation: form.confirmation,
+        ...(form.confirmation ? { confirmation: form.confirmation } : {}),
         desired_start: form.desired_start,
         desired_end: form.desired_end || null,
         description: form.description.trim(),
@@ -1086,7 +1086,7 @@ export default function DemandsPage({
               <div className="project-master-card">
                 <div>
                   <span>Responsable projet</span>
-                  <strong>{selectedProject?.project_manager || selectedDemand?.project_manager || "Non défini"}</strong>
+                  <strong>{selectedProject?.project_manager || selectedDemand?.project_manager || (creating && !form.project_number ? "" : "Non défini")}</strong>
                 </div>
                 <div>
                   <span>Client</span>
@@ -1347,6 +1347,7 @@ export default function DemandsPage({
                   <label>
                     <span>Confirmation</span>
                     <select value={form.confirmation} onChange={(event) => setField("confirmation", event.target.value as FormState["confirmation"])} disabled={saving}>
+                      <option value="">Sélectionner une confirmation…</option>
                       <option value="Confirmée">Confirmée</option>
                       <option value="Tentative">Tentative</option>
                     </select>
