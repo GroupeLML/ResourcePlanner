@@ -125,9 +125,9 @@ test("693 projette le même besoin par classe et dans la file jusqu'à couvertur
     await expect(workQueue).toContainText("À planifier");
     await expect(page.locator(".planning-action-panel")).toHaveCount(1);
 
-    const candidate = workQueue
-      .locator(".planning-action-card.action-approval")
-      .filter({ hasText: "DMO-693" });
+    const candidate = workQueue.locator(
+      '.planning-action-card.action-approval[data-action-reference="DMO-693"]',
+    );
     await expect(candidate).toHaveCount(1);
     await expect(candidate).toBeVisible();
     await expect(candidate).toContainText("À approuver");
@@ -143,11 +143,13 @@ test("693 projette le même besoin par classe et dans la file jusqu'à couvertur
     await page.reload();
 
     await expect(
-      workQueue.locator(".planning-action-card.action-approval").filter({ hasText: "DMO-693" }),
+      workQueue.locator(
+        '.planning-action-card.action-approval[data-action-reference="DMO-693"]',
+      ),
     ).toHaveCount(0);
-    const approved = workQueue
-      .locator(".planning-action-card.action-assignment")
-      .filter({ hasText: "DMO-693" });
+    const approved = workQueue.locator(
+      '.planning-action-card.action-assignment[data-segment-id="SEG-693"]',
+    );
     await expect(approved).toHaveCount(1);
     await expect(approved).toBeVisible();
     await expect(approved).toContainText("6 h");
@@ -167,9 +169,15 @@ test("693 projette le même besoin par classe et dans la file jusqu'à couvertur
     phase = "covered";
     await page.reload();
 
-    await expect(workQueue.locator(".planning-action-card.action-assignment").filter({ hasText: "DMO-693" })).toHaveCount(0);
     await expect(
-      workQueue.locator(".planning-action-card.action-approval").filter({ hasText: "DMO-693" }),
+      workQueue.locator(
+        '.planning-action-card.action-assignment[data-segment-id="SEG-693"]',
+      ),
+    ).toHaveCount(0);
+    await expect(
+      workQueue.locator(
+        '.planning-action-card.action-approval[data-action-reference="DMO-693"]',
+      ),
     ).toHaveCount(0);
     await expect(workQueue).toContainText("Aucune action de planification");
   } finally {
