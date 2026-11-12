@@ -154,6 +154,10 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
         asset_type_id: string | null;
       }>;
     };
+    const workforceLine = createdDemand.lines.find(
+      (row) => row.kind === "WORKFORCE",
+    );
+    expect(workforceLine).toBeTruthy();
     const assetLine = createdDemand.lines.find(
       (row) => row.kind === "ASSET" && row.asset_type_id === assetType.id,
     );
@@ -255,7 +259,7 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     await expect(approvedCard).not.toContainText("Glisser pour définir");
 
     const confirmationUpdate = await page.request.put(
-      `/api/v1/demands/${encodeURIComponent(demandNumber)}/operational-confirmation`,
+      `/api/v1/demands/${encodeURIComponent(demandNumber)}/lines/${encodeURIComponent(workforceLine!.line_id)}/operational-confirmation`,
       {
         data: {
           confirmation: "Confirmée",
