@@ -639,6 +639,18 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
             with TestClient(admin_app, raise_server_exceptions=False) as client:
                 stale_detail = client.get(f"/api/v1/demands/{number}/detail").json()
                 baseline_shift = self._assign_auto_shift(client, number)
+                baseline_shifts = self._demand_shifts(
+                    client,
+                    number,
+                    segment_id=str(baseline_shift["segment_id"]),
+                )
+                self.assertTrue(baseline_shifts)
+                self.assertEqual(
+                    self._shift_hours_total(baseline_shifts),
+                    Decimal("4.00"),
+                )
+                baseline_identity = self._shift_identity_set(baseline_shifts)
+
                 intervening = client.put(
                     f"/api/v1/demands/{number}/operational-confirmation",
                     json={
@@ -659,6 +671,7 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     Decimal("4.00"),
                 )
                 current_identity = self._shift_identity_set(current_shifts)
+                self.assertEqual(current_identity, baseline_identity)
                 self.assertTrue(
                     all(
                         row["confirmation"] == "Confirmée"
