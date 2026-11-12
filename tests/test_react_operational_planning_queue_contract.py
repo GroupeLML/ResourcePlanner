@@ -84,9 +84,9 @@ class ReactOperationalPlanningQueueContractTests(unittest.TestCase):
 
         self.assertIn("PlanningActionAssetRequirementReadModel", api)
         self.assertIn("PlanningActionCompetencyReadModel", api)
-        self.assertIn("proposed_resource?: string | null", api)
-        self.assertIn("requested_assets?: PlanningActionAssetRequirementReadModel[]", api)
-        self.assertIn("priority_competencies?: PlanningActionCompetencyReadModel[]", api)
+        self.assertIn("proposed_resource: string | null", api)
+        self.assertIn("requested_assets: PlanningActionAssetRequirementReadModel[]", api)
+        self.assertIn("priority_competencies: PlanningActionCompetencyReadModel[]", api)
 
         self.assertIn(".confirmation-confirmed", styles)
         self.assertIn(".confirmation-tentative", styles)
