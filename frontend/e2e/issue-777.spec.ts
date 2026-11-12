@@ -143,6 +143,22 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     expect(created.status(), await created.text()).toBe(201);
     const demandNumber = String((await created.json()).demand_number);
 
+    const demandResponse = await page.request.get(
+      `/api/v1/demands/${encodeURIComponent(demandNumber)}`,
+    );
+    expect(demandResponse.ok(), await demandResponse.text()).toBeTruthy();
+    const createdDemand = await demandResponse.json() as {
+      lines: Array<{
+        line_id: string;
+        kind: "WORKFORCE" | "ASSET";
+        asset_type_id: string | null;
+      }>;
+    };
+    const assetLine = createdDemand.lines.find(
+      (row) => row.kind === "ASSET" && row.asset_type_id === assetType.id,
+    );
+    expect(assetLine).toBeTruthy();
+
     const approvalSnapshot = await page.request.get(
       `/api/v1/planning/snapshot?start=${d1}&end=${d5}&scope=global`,
     );
@@ -170,16 +186,25 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     expect(assetStateResponse.ok(), await assetStateResponse.text()).toBeTruthy();
     const assetState = await assetStateResponse.json() as {
       requirements: Array<{
-        demand_number: string | null;
+        id: string;
+        request_line_id: string | null;
         asset_type_id: string;
-        allocation_id: string | null;
+      }>;
+      allocations: Array<{
+        requirement_id: string;
       }>;
     };
     const requestAsset = assetState.requirements.find(
-      (row) => row.demand_number === demandNumber && row.asset_type_id === assetType.id,
+      (row) =>
+        row.request_line_id === assetLine!.line_id
+        && row.asset_type_id === assetType.id,
     );
     expect(requestAsset).toBeTruthy();
-    expect(requestAsset?.allocation_id).toBeNull();
+    expect(
+      assetState.allocations.some(
+        (row) => row.requirement_id === requestAsset!.id,
+      ),
+    ).toBe(false);
 
     const afterApprovalActions = await page.request.get(
       `/api/v1/planning/actions?start=${d1}&end=${d5}&scope=global`,
