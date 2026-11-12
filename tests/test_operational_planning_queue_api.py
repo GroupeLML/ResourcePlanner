@@ -165,18 +165,30 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
             )
             session.add_all([submitted, approved])
             session.flush()
-            session.add(
-                RequestLine(
-                    id="LINE-APPROVED",
-                    workforce_request_id=approved.id,
-                    position=0,
-                    kind="WORKFORCE",
-                    desired_start=date(2026, 9, 21),
-                    desired_end=date(2026, 9, 25),
-                    estimated_hours=Decimal("24"),
-                    confirmation="Confirmée",
-                    proposed_resource_id="R-ALICE",
-                )
+            session.add_all(
+                [
+                    RequestLine(
+                        id="LINE-APPROVED",
+                        workforce_request_id=approved.id,
+                        position=0,
+                        kind="WORKFORCE",
+                        desired_start=date(2026, 9, 21),
+                        desired_end=date(2026, 9, 25),
+                        estimated_hours=Decimal("24"),
+                        confirmation="Confirmée",
+                        proposed_resource_id="R-ALICE",
+                    ),
+                    RequestLine(
+                        id="LINE-ASSET-832",
+                        workforce_request_id=approved.id,
+                        position=1,
+                        kind="ASSET",
+                        desired_start=date(2026, 9, 21),
+                        desired_end=date(2026, 9, 25),
+                        confirmation="Confirmée",
+                        asset_type_id="AT-LIFT",
+                    ),
+                ]
             )
             session.add_all(
                 [
@@ -261,8 +273,8 @@ class OperationalPlanningQueueApiTests(unittest.TestCase):
                         project_id="P-273",
                         origin="REQUEST",
                         workforce_request_id=approved.id,
-                        source_request_line_id="LINE-APPROVED",
-                        approved_entry_key="LINE-APPROVED",
+                        source_request_line_id="LINE-ASSET-832",
+                        approved_entry_key="LINE-ASSET-832",
                         slot_index=0,
                         asset_type_id="AT-LIFT",
                         start_date=date(2026, 9, 21),
