@@ -166,6 +166,21 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
       .filter((row) => row.demand_number === demandNumber && row.allocation_type !== "Hors horaire requis");
     expect(afterApprovalShifts).toHaveLength(0);
 
+    const assetStateResponse = await page.request.get("/api/v1/assets/requirements");
+    expect(assetStateResponse.ok(), await assetStateResponse.text()).toBeTruthy();
+    const assetState = await assetStateResponse.json() as {
+      requirements: Array<{
+        demand_number: string | null;
+        asset_type_id: string;
+        allocation_id: string | null;
+      }>;
+    };
+    const requestAsset = assetState.requirements.find(
+      (row) => row.demand_number === demandNumber && row.asset_type_id === assetType.id,
+    );
+    expect(requestAsset).toBeTruthy();
+    expect(requestAsset?.allocation_id).toBeNull();
+
     const afterApprovalActions = await page.request.get(
       `/api/v1/planning/actions?start=${d1}&end=${d5}&scope=global`,
     );
@@ -176,6 +191,7 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     const segmentId = String(initialAssignment.segment_id);
     expect(segmentId).not.toBe("");
     expect(initialAssignment.confirmation).toBe("Tentative");
+    expect(Number(initialAssignment.operational_version)).toBeGreaterThan(0);
     expect(initialAssignment.proposed_resource).toBe(sourceName);
     expect(initialAssignment.priority_competencies).toEqual([
       {
@@ -233,6 +249,8 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
     expect(confirmedAssignment?.confirmation).toBe("Confirmée");
 
     await page.reload();
+    await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
+    await page.getByRole("button", { name: "Suivante →" }).click();
     approvedCard = page.locator(
       `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
     );
@@ -294,6 +312,8 @@ test("777 glisse un reliquat approuvé sur une ressource/journée via le vrai ba
       .sort((left, right) => left.allocation_id.localeCompare(right.allocation_id));
 
     await page.reload();
+    await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
+    await page.getByRole("button", { name: "Suivante →" }).click();
     approvedCard = page.locator(
       `.planning-work-queue .planning-action-card.action-assignment[data-segment-id="${segmentId}"]`,
     );
