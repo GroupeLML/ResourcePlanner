@@ -57,6 +57,41 @@ class ReactOperationalPlanningQueueContractTests(unittest.TestCase):
         self.assertIn("confirmation explicite", panel)
         self.assertIn("data-recommendation-rank", panel)
 
+    def test_832_work_queue_card_uses_backend_projection_and_stays_draggable(self) -> None:
+        panel = (ROOT / "frontend" / "src" / "PlanningActionPanel.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        styles = (ROOT / "frontend" / "src" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("writeSegmentDrag", panel)
+        self.assertIn("draggable={draggable}", panel)
+        self.assertIn("data-segment-id={action.segment_id || undefined}", panel)
+        self.assertNotIn("Glisser pour définir la cible automatique</span>", panel)
+
+        self.assertIn('<strong>{action.project_number || "Projet"}</strong>', panel)
+        self.assertNotIn("Demande {action.demand_number}", panel)
+        self.assertNotIn("{action.segment_id && <span>{action.segment_id}</span>}", panel)
+        self.assertNotIn("Classe : {action.required_resource_class}", panel)
+        self.assertNotIn("action.project_name ? ` — ${action.project_name}`", panel)
+
+        self.assertIn("Ressource proposée :", panel)
+        self.assertIn("action.requested_assets", panel)
+        self.assertIn("action.priority_competencies", panel)
+        self.assertIn("data-competency-priority={competency.priority}", panel)
+        self.assertIn('action.confirmation === "Confirmée"', panel)
+        self.assertIn('action.confirmation === "Tentative"', panel)
+
+        self.assertIn("PlanningActionAssetRequirementReadModel", api)
+        self.assertIn("PlanningActionCompetencyReadModel", api)
+        self.assertIn("proposed_resource?: string | null", api)
+        self.assertIn("requested_assets?: PlanningActionAssetRequirementReadModel[]", api)
+        self.assertIn("priority_competencies?: PlanningActionCompetencyReadModel[]", api)
+
+        self.assertIn(".confirmation-confirmed", styles)
+        self.assertIn(".confirmation-tentative", styles)
+        self.assertIn(".work-queue-proposed-resource", styles)
+
     def test_planning_can_navigate_to_demands_workspace(self) -> None:
         app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
         panel = (ROOT / "frontend" / "src" / "PlanningActionPanel.tsx").read_text(
