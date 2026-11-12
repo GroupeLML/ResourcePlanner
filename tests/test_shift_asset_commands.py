@@ -728,9 +728,20 @@ class ShiftAssetCommandTests(unittest.TestCase):
             "REQUEST",
         )
         self.assertEqual(
+            request_shift["related_asset_reservations"][0]["association_kind"],
+            "INHERITED_REQUEST",
+        )
+        self.assertEqual(
             request_shift["related_asset_reservations"][0]["asset_id"],
             "ASSET-B",
         )
+        with factory() as session:
+            self.assertEqual(
+                session.query(AssetAllocation)
+                .filter(AssetAllocation.asset_requirement_id == asset_requirement_id)
+                .count(),
+                1,
+            )
 
         released = self._set_asset(
             shift_id="SHIFT-REQUEST-560B",
