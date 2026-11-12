@@ -592,6 +592,7 @@ class DemandService:
         *,
         previous_candidate_confirmations: Mapping[str, str] | None,
         expected_operational_version: int | None,
+        client_expected_operational_version: int | None,
     ) -> None:
         if previous_candidate_confirmations is None:
             return
@@ -635,6 +636,13 @@ class DemandService:
         }
         if not updates:
             return
+        if client_expected_operational_version is None:
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue est requise pour modifier "
+                "la confirmation d'une demande approuvée.",
+                code="operational_choice_expected_version_required",
+                context={"demand_number": number},
+            )
         if expected_operational_version is None:
             raise ApplicationValidationError(
                 "La version opérationnelle attendue est requise pour modifier "
@@ -1043,6 +1051,9 @@ class DemandService:
                             command_operational_version
                             if command_operational_version is not None
                             else command.expected_operational_version
+                        ),
+                        client_expected_operational_version=(
+                            command.expected_operational_version
                         ),
                     )
                 return reapproval_required
