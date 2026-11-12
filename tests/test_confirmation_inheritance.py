@@ -3,11 +3,13 @@ from __future__ import annotations
 from functools import partial
 
 from datetime import date, time
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
 
 from app.domain.confirmation import (
     CONFIRMATION_CONFIRMED,
@@ -18,12 +20,17 @@ from app.domain.confirmation import (
 from app.infrastructure.sql import (
     Base,
     Project,
+    RequestApprovalRevision,
+    RequestLine,
     Resource,
     ResourceAvailabilityRule,
+    ResourceRequirement,
+    WorkforceRequest,
     create_session_factory,
     create_sql_engine,
     transactional_session,
 )
+from app.infrastructure.sql.operational_choice_models import RequestOperationalState
 from app.server import create_api_app
 
 
@@ -90,7 +97,11 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
         return self._database_template.copy_to(directory)
 
     @staticmethod
-    def _create_and_approve_tentative(client: TestClient) -> str:
+    def _create_and_approve(
+        client: TestClient,
+        *,
+        confirmation: str,
+    ) -> str:
         created = client.post(
             "/api/v1/demands",
             json=routed_demand_payload({
@@ -99,7 +110,7 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 "desired_end": DAY.isoformat(),
                 "estimated_hours": 4,
                 "proposed_technician": "Alice",
-                "confirmation": "Tentative",
+                "confirmation": confirmation,
             }),
         )
         assert created.status_code == 201, created.text
@@ -127,6 +138,13 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
         assert assigned.status_code == 200, assigned.text
         return number
 
+    @staticmethod
+    def _create_and_approve_tentative(client: TestClient) -> str:
+        return ConfirmationInheritanceApiTests._create_and_approve(
+            client,
+            confirmation="Tentative",
+        )
+
     def test_request_confirmation_flows_to_requirement_and_auto_shift(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(self._database(directory), actor_name="Jean")
@@ -142,6 +160,383 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 shift = next(row for row in shifts if row["segment_id"] == segment["segment_id"])
                 self.assertEqual(shift["confirmation"], "Tentative")
                 self.assertIsNone(shift["confirmation_override"])
+
+    def test_839_post_approval_demand_edit_converges_confirmation_without_reapproval_or_replacement(self) -> None:
+        for initial, target in (
+            ("Tentative", "Confirmée"),
+            ("Confirmée", "Tentative"),
+        ):
+            with self.subTest(initial=initial, target=target):
+                with TemporaryDirectory() as directory:
+                    database_url = self._database(directory)
+                    app = create_api_app(database_url, actor_name="Jean")
+                    with TestClient(app, raise_server_exceptions=False) as client:
+                        number = self._create_and_approve(
+                            client,
+                            confirmation=initial,
+                        )
+                        detail = client.get(f"/api/v1/demands/{number}/detail").json()
+                        before_segment = next(
+                            row for row in client.get("/api/v1/segments").json()
+                            if row["demand_number"] == number
+                        )
+                        before_shift = next(
+                            row for row in client.get("/api/v1/shifts").json()
+                            if row["segment_id"] == before_segment["segment_id"]
+                        )
+                        before_identity = (
+                            before_segment["segment_id"],
+                            before_shift["allocation_id"],
+                            before_shift["resource_id"],
+                            before_shift["hours"],
+                        )
+                        before_window = (
+                            before_segment["start_date"],
+                            before_segment["end_date"],
+                            before_segment["planned_hours"],
+                        )
+
+                        engine = create_sql_engine(database_url)
+                        factory = create_session_factory(engine)
+                        try:
+                            with factory() as session:
+                                request = session.scalar(
+                                    select(WorkforceRequest).where(
+                                        WorkforceRequest.legacy_demand_number == number
+                                    )
+                                )
+                                assert request is not None
+                                revision_count_before = session.scalar(
+                                    select(func.count(RequestApprovalRevision.id)).where(
+                                        RequestApprovalRevision.workforce_request_id == request.id
+                                    )
+                                )
+                        finally:
+                            engine.dispose()
+
+                        edited = client.patch(
+                            f"/api/v1/demands/{number}",
+                            json={
+                                "confirmation": target,
+                                "expected_version": detail["version"],
+                                "expected_operational_version": detail["policy"][
+                                    "expected_operational_version"
+                                ],
+                                "comment": "Régression #839",
+                            },
+                        )
+                        self.assertEqual(edited.status_code, 200, edited.text)
+                        self.assertFalse(edited.json()["reapproval_required"])
+
+                        after_detail = client.get(f"/api/v1/demands/{number}/detail").json()
+                        self.assertEqual(after_detail["demand"]["confirmation"], target)
+                        self.assertEqual(
+                            after_detail["demand"]["status"],
+                            "En planification",
+                        )
+                        self.assertEqual(
+                            after_detail["approval_state"]["active_revision_id"],
+                            detail["approval_state"]["active_revision_id"],
+                        )
+                        self.assertEqual(
+                            after_detail["approval_state"]["operational_version"],
+                            detail["approval_state"]["operational_version"] + 1,
+                        )
+
+                        after_segment = next(
+                            row for row in client.get("/api/v1/segments").json()
+                            if row["demand_number"] == number
+                        )
+                        after_shift = next(
+                            row for row in client.get("/api/v1/shifts").json()
+                            if row["segment_id"] == after_segment["segment_id"]
+                        )
+                        self.assertEqual(after_segment["confirmation"], target)
+                        self.assertEqual(after_shift["confirmation"], target)
+                        self.assertEqual(
+                            (
+                                after_segment["segment_id"],
+                                after_shift["allocation_id"],
+                                after_shift["resource_id"],
+                                after_shift["hours"],
+                            ),
+                            before_identity,
+                        )
+                        self.assertEqual(
+                            (
+                                after_segment["start_date"],
+                                after_segment["end_date"],
+                                after_segment["planned_hours"],
+                            ),
+                            before_window,
+                        )
+
+                        reversed_edit = client.patch(
+                            f"/api/v1/demands/{number}",
+                            json={
+                                "confirmation": initial,
+                                "expected_version": after_detail["version"],
+                                "expected_operational_version": after_detail["policy"][
+                                    "expected_operational_version"
+                                ],
+                                "comment": "Régression séquentielle #839",
+                            },
+                        )
+                        self.assertEqual(
+                            reversed_edit.status_code,
+                            200,
+                            reversed_edit.text,
+                        )
+                        self.assertFalse(
+                            reversed_edit.json()["reapproval_required"]
+                        )
+
+                        reversed_detail = client.get(
+                            f"/api/v1/demands/{number}/detail"
+                        ).json()
+                        self.assertEqual(
+                            reversed_detail["demand"]["confirmation"],
+                            initial,
+                        )
+                        self.assertEqual(
+                            reversed_detail["approval_state"]["active_revision_id"],
+                            detail["approval_state"]["active_revision_id"],
+                        )
+                        self.assertEqual(
+                            reversed_detail["approval_state"]["operational_version"],
+                            detail["approval_state"]["operational_version"] + 2,
+                        )
+                        reversed_segment = next(
+                            row for row in client.get("/api/v1/segments").json()
+                            if row["demand_number"] == number
+                        )
+                        reversed_shift = next(
+                            row for row in client.get("/api/v1/shifts").json()
+                            if row["segment_id"] == reversed_segment["segment_id"]
+                        )
+                        self.assertEqual(reversed_segment["confirmation"], initial)
+                        self.assertEqual(reversed_shift["confirmation"], initial)
+                        self.assertEqual(
+                            (
+                                reversed_segment["segment_id"],
+                                reversed_shift["allocation_id"],
+                                reversed_shift["resource_id"],
+                                reversed_shift["hours"],
+                            ),
+                            before_identity,
+                        )
+                        self.assertEqual(
+                            (
+                                reversed_segment["start_date"],
+                                reversed_segment["end_date"],
+                                reversed_segment["planned_hours"],
+                            ),
+                            before_window,
+                        )
+
+                    engine = create_sql_engine(database_url)
+                    factory = create_session_factory(engine)
+                    try:
+                        with factory() as session:
+                            request = session.scalar(
+                                select(WorkforceRequest).where(
+                                    WorkforceRequest.legacy_demand_number == number
+                                )
+                            )
+                            assert request is not None
+                            line = session.scalar(
+                                select(RequestLine).where(
+                                    RequestLine.workforce_request_id == request.id,
+                                    RequestLine.active.is_(True),
+                                )
+                            )
+                            requirement = session.scalar(
+                                select(ResourceRequirement).where(
+                                    ResourceRequirement.workforce_request_id == request.id,
+                                    ResourceRequirement.status != "Annulé",
+                                )
+                            )
+                            operational = session.get(RequestOperationalState, request.id)
+                            assert line is not None and requirement is not None and operational is not None
+                            self.assertEqual(request.confirmation, initial)
+                            self.assertEqual(line.confirmation, initial)
+                            self.assertEqual(requirement.confirmation, initial)
+                            self.assertFalse(requirement.confirmation_overridden)
+                            self.assertEqual(
+                                next(iter(json.loads(operational.confirmations_text).values())),
+                                initial,
+                            )
+                            self.assertEqual(
+                                operational.version,
+                                detail["approval_state"]["operational_version"] + 2,
+                            )
+                            revision_count_after = session.scalar(
+                                select(func.count(RequestApprovalRevision.id)).where(
+                                    RequestApprovalRevision.workforce_request_id == request.id
+                                )
+                            )
+                            self.assertEqual(revision_count_after, revision_count_before)
+                    finally:
+                        engine.dispose()
+
+    def test_839_stale_operational_version_rolls_back_candidate_confirmation(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory), actor_name="Jean")
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._create_and_approve(client, confirmation="Tentative")
+                detail = client.get(f"/api/v1/demands/{number}/detail").json()
+                stale = client.patch(
+                    f"/api/v1/demands/{number}",
+                    json={
+                        "confirmation": "Confirmée",
+                        "expected_version": detail["version"],
+                        "expected_operational_version":
+                            detail["policy"]["expected_operational_version"] + 99,
+                        "comment": "Conflit CAS #839",
+                    },
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                reread = client.get(f"/api/v1/demands/{number}").json()
+                self.assertEqual(reread["confirmation"], "Tentative")
+                segment = next(
+                    row for row in client.get("/api/v1/segments").json()
+                    if row["demand_number"] == number
+                )
+                self.assertEqual(segment["confirmation"], "Tentative")
+
+    def test_839_multiline_edit_updates_only_changed_confirmation_entry(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory), actor_name="Jean")
+            with TestClient(app, raise_server_exceptions=False) as client:
+                created = client.post(
+                    "/api/v1/demands",
+                    json=routed_demand_payload({
+                        "project_number": "P-1",
+                        "priority": "Normale",
+                        "description": "Multi-ligne #839",
+                        "lines": [
+                            {
+                                "kind": "WORKFORCE",
+                                "desired_start": DAY.isoformat(),
+                                "desired_end": DAY.isoformat(),
+                                "estimated_hours": 4,
+                                "confirmation": "Tentative",
+                            },
+                            {
+                                "kind": "WORKFORCE",
+                                "desired_start": DAY.isoformat(),
+                                "desired_end": DAY.isoformat(),
+                                "estimated_hours": 4,
+                                "confirmation": "Tentative",
+                            },
+                        ],
+                    }),
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                number = created.json()["demand_number"]
+                self.assertEqual(client.post(f"/api/v1/demands/{number}/submit").status_code, 200)
+                approved = client.post(
+                    f"/api/v1/demands/{number}/approve",
+                    json={"comment": "ok"},
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                detail = client.get(f"/api/v1/demands/{number}/detail").json()
+                lines = [row for row in detail["demand"]["lines"] if row["active"]]
+                self.assertEqual([row["confirmation"] for row in lines], ["Tentative", "Tentative"])
+
+                successor = [
+                    {
+                        "id": row["line_id"],
+                        "position": row["position"],
+                        "kind": row["kind"],
+                        "required_resource_class": row["required_resource_class"],
+                        "required_competency_ids": row["required_competency_ids"],
+                        "desired_start": row["desired_start"],
+                        "desired_end": row["desired_end"],
+                        "desired_active_days": row["desired_active_days"],
+                        "estimated_hours": row["estimated_hours"],
+                        "work_package_ref": row["work_package_ref"],
+                        "task_code": row["task_code"],
+                        "proposed_resource_id": row["proposed_resource_id"],
+                        "asset_type_id": row["asset_type_id"],
+                        "proposed_asset_id": row["proposed_asset_id"],
+                        "confirmation": row["confirmation"],
+                        "description": row["description"],
+                    }
+                    for row in lines
+                ]
+                successor[0]["confirmation"] = "Confirmée"
+                patched = client.patch(
+                    f"/api/v1/demands/{number}",
+                    json={
+                        "expected_version": detail["version"],
+                        "expected_operational_version":
+                            detail["policy"]["expected_operational_version"],
+                        "lines": successor,
+                        "comment": "Une seule ligne change #839",
+                    },
+                )
+                self.assertEqual(patched.status_code, 200, patched.text)
+
+                after = client.get(f"/api/v1/demands/{number}/detail").json()
+                after_lines = [row for row in after["demand"]["lines"] if row["active"]]
+                self.assertEqual(
+                    [row["confirmation"] for row in after_lines],
+                    ["Confirmée", "Tentative"],
+                )
+                confirmations = [
+                    row["confirmation"]
+                    for row in client.get("/api/v1/segments").json()
+                    if row["demand_number"] == number
+                ]
+                self.assertEqual(confirmations.count("Confirmée"), 1)
+                self.assertEqual(confirmations.count("Tentative"), 1)
+
+                first_after = client.get(
+                    f"/api/v1/demands/{number}/detail"
+                ).json()
+                successor[0]["confirmation"] = "Tentative"
+                reversed_patch = client.patch(
+                    f"/api/v1/demands/{number}",
+                    json={
+                        "expected_version": first_after["version"],
+                        "expected_operational_version":
+                            first_after["policy"]["expected_operational_version"],
+                        "lines": successor,
+                        "comment": "Retour ligne seulement #839",
+                    },
+                )
+                self.assertEqual(
+                    reversed_patch.status_code,
+                    200,
+                    reversed_patch.text,
+                )
+                reversed_detail = client.get(
+                    f"/api/v1/demands/{number}/detail"
+                ).json()
+                reversed_lines = [
+                    row for row in reversed_detail["demand"]["lines"]
+                    if row["active"]
+                ]
+                self.assertEqual(
+                    [row["confirmation"] for row in reversed_lines],
+                    ["Tentative", "Tentative"],
+                )
+                reversed_confirmations = [
+                    row["confirmation"]
+                    for row in client.get("/api/v1/segments").json()
+                    if row["demand_number"] == number
+                ]
+                self.assertEqual(reversed_confirmations.count("Confirmée"), 0)
+                self.assertEqual(reversed_confirmations.count("Tentative"), 2)
+                self.assertEqual(
+                    reversed_detail["approval_state"]["active_revision_id"],
+                    detail["approval_state"]["active_revision_id"],
+                )
+                self.assertEqual(
+                    reversed_detail["approval_state"]["operational_version"],
+                    detail["approval_state"]["operational_version"] + 2,
+                )
 
     def test_segment_override_can_be_set_and_cleared_without_changing_request(self) -> None:
         with TemporaryDirectory() as directory:
@@ -209,6 +604,71 @@ class ConfirmationInheritanceApiTests(unittest.TestCase):
                 )
                 self.assertEqual(shift["confirmation"], "Confirmée")
                 self.assertEqual(shift["confirmation_override"], "Confirmée")
+
+    def test_839_requirement_and_shift_overrides_survive_demand_confirmation_convergence(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(self._database(directory), actor_name="Jean")
+            with TestClient(app, raise_server_exceptions=False) as client:
+                number = self._create_and_approve_tentative(client)
+                segment = next(
+                    row
+                    for row in client.get("/api/v1/segments").json()
+                    if row["demand_number"] == number
+                )
+                segment_id = segment["segment_id"]
+
+                overridden = client.patch(
+                    f"/api/v1/segments/{segment_id}",
+                    json={"confirmation": "Confirmée"},
+                )
+                self.assertEqual(overridden.status_code, 200, overridden.text)
+                self.assertTrue(
+                    client.get(f"/api/v1/segments/{segment_id}").json()[
+                        "confirmation_overridden"
+                    ]
+                )
+
+                manual = client.post(
+                    f"/api/v1/segments/{segment_id}/allocations",
+                    json={
+                        "technician": "Alice",
+                        "day": DAY.isoformat(),
+                        "hours": 1,
+                        "confirmation": "Tentative",
+                    },
+                )
+                self.assertEqual(manual.status_code, 201, manual.text)
+                manual_id = manual.json()["allocation_id"]
+
+                detail = client.get(f"/api/v1/demands/{number}/detail").json()
+                changed = client.patch(
+                    f"/api/v1/demands/{number}",
+                    json={
+                        "confirmation": "Confirmée",
+                        "expected_version": detail["version"],
+                        "expected_operational_version":
+                            detail["policy"]["expected_operational_version"],
+                        "comment": "Préservation overrides #839",
+                    },
+                )
+                self.assertEqual(changed.status_code, 200, changed.text)
+
+                after_segment = client.get(
+                    f"/api/v1/segments/{segment_id}"
+                ).json()
+                self.assertEqual(after_segment["confirmation"], "Confirmée")
+                self.assertTrue(after_segment["confirmation_overridden"])
+
+                manual_shift = next(
+                    row
+                    for row in client.get("/api/v1/shifts").json()
+                    if row["allocation_id"] == manual_id
+                )
+                self.assertEqual(manual_shift["confirmation"], "Tentative")
+                self.assertEqual(
+                    manual_shift["confirmation_override"],
+                    "Tentative",
+                )
 
     def test_quick_shift_confirmation_is_owned_by_adhoc_requirement_and_inherited_by_shift(self) -> None:
         with TemporaryDirectory() as directory:

@@ -264,6 +264,7 @@ class DemandUpdateRequest(StrictRequest):
     proposed_technician: str | None = None
     lines: list[DemandLineRequest] | None = Field(default=None, min_length=1)
     expected_version: int | None = Field(default=None, ge=1)
+    expected_operational_version: int | None = Field(default=None, ge=1)
     comment: str = "Demande modifiée via API"
 
     @model_validator(mode="after")

@@ -216,6 +216,22 @@ class ReactDemandWorkflowContractTests(unittest.TestCase):
         self.assertIn('detail.demand.cancellation_state === "PENDING"', detail)
         self.assertIn('demand.cancellation_state === "PENDING"', demands)
 
+    def test_839_confirmation_quick_action_uses_canonical_demand_patch_with_cas(self) -> None:
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+        demands = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("updateDemandConfirmation", api)
+        self.assertIn("expected_operational_version", api)
+        self.assertIn('data-testid="demand-confirmation-toggle"', demands)
+        self.assertIn("updateDemandConfirmation(", demands)
+        self.assertIn('selectedDemand.confirmation === "Tentative"', demands)
+        self.assertIn('? "Confirmé"', demands)
+        self.assertIn(': "Tentatif"', demands)
+        self.assertIn("selectedDetail.policy.expected_operational_version", demands)
+        self.assertIn("await reloadDemand(selectedDemand.number)", demands)
+
     def test_cancellation_reason_resolution_and_dirty_guard_are_required(self) -> None:
         page = (ROOT / "frontend" / "src" / "DemandWorkflowPage.tsx").read_text(
             encoding="utf-8"

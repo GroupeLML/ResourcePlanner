@@ -420,6 +420,25 @@ class VersionedOperationalChoicesApiTests(unittest.TestCase):
                 )
                 self.assertEqual(confirmed.status_code, 200, confirmed.text)
                 self.assertEqual(confirmed.json()["operational_version"], 2)
+                self.assertIsNone(confirmed.json()["planning"])
+
+                tentative_again = client.put(
+                    f"/api/v1/demands/{number}/lines/{line_id}/operational-confirmation",
+                    json={
+                        "confirmation": "Tentative",
+                        "expected_operational_version": 2,
+                    },
+                )
+                self.assertEqual(
+                    tentative_again.status_code,
+                    200,
+                    tentative_again.text,
+                )
+                self.assertEqual(
+                    tentative_again.json()["operational_version"],
+                    3,
+                )
+                self.assertIsNone(tentative_again.json()["planning"])
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
@@ -434,7 +453,7 @@ class VersionedOperationalChoicesApiTests(unittest.TestCase):
                     self.assertEqual(request.status, "En planification")
                     active = self._active_requirements(session, request.id)
                     self.assertEqual(len(active), 1)
-                    self.assertEqual(active[0].confirmation, "Confirmée")
+                    self.assertEqual(active[0].confirmation, "Tentative")
                     self.assertFalse(active[0].confirmation_overridden)
                     revision_count = session.scalar(
                         select(func.count(RequestApprovalRevision.id)).where(
@@ -444,11 +463,11 @@ class VersionedOperationalChoicesApiTests(unittest.TestCase):
                     self.assertEqual(revision_count, 1)
                     state = session.get(RequestOperationalState, request.id)
                     assert state is not None
-                    self.assertEqual(state.version, 2)
+                    self.assertEqual(state.version, 3)
                     confirmations = json.loads(state.confirmations_text)
                     self.assertEqual(
                         next(iter(confirmations.values())),
-                        "Confirmée",
+                        "Tentative",
                     )
             finally:
                 engine.dispose()

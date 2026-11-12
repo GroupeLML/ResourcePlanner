@@ -28,6 +28,7 @@ from .commands import (
 from ..domain.approval_envelope import (
     DECISION_APPROVAL_REFERENCE_UNKNOWN,
     DECISION_EXPLICIT_EXCEPTION_REQUIRED,
+    DECISION_WITHIN_ENVELOPE,
     DECISION_INVALID,
     DECISION_REAPPROVAL_REQUIRED,
     REASON_DELEGATED_TOLERANCE,
@@ -495,14 +496,42 @@ class DemandService:
         self,
         number: str,
         decision: EnvelopeDecision,
-    ) -> None:
+        *,
+        expected_operational_version: int | None = None,
+    ) -> int | None:
         if decision.reason != REASON_DELEGATED_TOLERANCE:
-            return
+            return expected_operational_version
         if self._operational_choices is None:
             raise ApplicationOperationError(
                 "Les budgets opérationnels versionnés ne sont pas disponibles.",
                 code="operational_budget_unavailable",
                 context={"demand_number": number},
+            )
+
+        operational = call_application_port(
+            lambda: self._operational_choices.state_for_demand(number),
+            code_prefix="operational_budget_state",
+            context={"demand_number": number},
+        )
+        if operational is None:
+            raise ApplicationOperationError(
+                "L'état opérationnel actif est introuvable pour le budget.",
+                code="operational_choice_state_missing",
+                context={"demand_number": number},
+            )
+        current_version = int(operational.version)
+        if (
+            expected_operational_version is not None
+            and int(expected_operational_version) != current_version
+        ):
+            raise ApplicationConflictError(
+                "Les choix opérationnels ont été modifiés depuis leur lecture.",
+                code="operational_choice_version_conflict",
+                context={
+                    "demand_number": number,
+                    "expected_version": int(expected_operational_version),
+                    "current_version": current_version,
+                },
             )
 
         changed = False
@@ -513,11 +542,14 @@ class DemandService:
                 or change.candidate_hours is None
             ):
                 continue
-            call_application_port(
-                lambda change=change: self._operational_choices.set_budget_override(
-                    number,
-                    change.entry_key or "",
-                    float(change.candidate_hours),
+            updated = call_application_port(
+                lambda change=change, version=current_version: (
+                    self._operational_choices.set_budget_override(
+                        number,
+                        change.entry_key or "",
+                        float(change.candidate_hours),
+                        expected_version=version,
+                    )
                 ),
                 code_prefix="operational_budget_override",
                 context={
@@ -525,10 +557,12 @@ class DemandService:
                     "approved_entry_key": change.entry_key,
                 },
             )
-            changed = True
+            if int(updated.version) != current_version:
+                changed = True
+            current_version = int(updated.version)
 
         if not changed:
-            return
+            return current_version
         sync_operational = getattr(
             self._approved_sync,
             "sync_operational_choices",
@@ -550,6 +584,110 @@ class DemandService:
             code_prefix="operational_budget_rebuild",
             context={"demand_number": number},
         )
+        return current_version
+
+    def _converge_candidate_confirmation_changes(
+        self,
+        number: str,
+        *,
+        previous_candidate_confirmations: Mapping[str, str] | None,
+        expected_operational_version: int | None,
+        client_expected_operational_version: int | None,
+    ) -> None:
+        if previous_candidate_confirmations is None:
+            return
+        policy = self._approval_envelope_policy
+        if policy is None:
+            raise ApplicationOperationError(
+                "La politique d'enveloppe approuvée n'est pas disponible.",
+                code="approval_envelope_policy_unavailable",
+                context={"demand_number": number},
+            )
+        candidate_confirmations = call_application_port(
+            lambda: policy.candidate_confirmations(number),
+            code_prefix="approval_envelope_candidate_confirmations",
+            context={"demand_number": number},
+        )
+        changed_entry_keys = tuple(
+            entry_key
+            for entry_key, candidate_confirmation in candidate_confirmations.items()
+            if previous_candidate_confirmations.get(entry_key)
+            != candidate_confirmation
+        )
+        if not changed_entry_keys:
+            return
+
+        operational = call_application_port(
+            lambda: self._operational_choice_repository().state_for_demand(number),
+            code_prefix="operational_confirmation_state",
+            context={"demand_number": number},
+        )
+        if operational is None:
+            raise ApplicationOperationError(
+                "L'état opérationnel actif est introuvable pour la confirmation.",
+                code="operational_choice_state_missing",
+                context={"demand_number": number},
+            )
+        updates = {
+            entry_key: candidate_confirmations[entry_key]
+            for entry_key in changed_entry_keys
+            if operational.confirmations.get(entry_key)
+            != candidate_confirmations[entry_key]
+        }
+        if not updates:
+            return
+        if client_expected_operational_version is None:
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue est requise pour modifier "
+                "la confirmation d'une demande approuvée.",
+                code="operational_choice_expected_version_required",
+                context={"demand_number": number},
+            )
+        if expected_operational_version is None:
+            raise ApplicationValidationError(
+                "La version opérationnelle attendue est requise pour modifier "
+                "la confirmation d'une demande approuvée.",
+                code="operational_choice_expected_version_required",
+                context={"demand_number": number},
+            )
+        if int(expected_operational_version) != int(operational.version):
+            raise ApplicationConflictError(
+                "Les choix opérationnels ont été modifiés depuis leur lecture.",
+                code="operational_choice_version_conflict",
+                context={
+                    "demand_number": number,
+                    "expected_version": int(expected_operational_version),
+                    "current_version": int(operational.version),
+                },
+            )
+        call_application_port(
+            lambda: self._operational_choice_repository().set_confirmations(
+                number,
+                updates,
+                expected_version=expected_operational_version,
+            ),
+            code_prefix="operational_confirmation",
+            context={"demand_number": number},
+        )
+        sync_operational = getattr(
+            self._approved_sync,
+            "sync_operational_choices",
+            None,
+        )
+        if not callable(sync_operational):
+            raise ApplicationOperationError(
+                "La synchronisation des choix opérationnels n'est pas disponible.",
+                code="operational_choice_sync_unavailable",
+            )
+        call_application_port(
+            lambda: sync_operational(number),
+            code_prefix="operational_confirmation_sync",
+            context={"demand_number": number},
+        )
+        # Confirmation-only changes do not alter work placement. Automatic Shifts
+        # intentionally store confirmation=None and inherit the synchronized
+        # ResourceRequirement confirmation at read time, so a generic rebuild
+        # would only replace otherwise-valid disposable AUTO Shift identities.
 
     def _candidate_decision_mutates_active_plan(
         self,
@@ -619,10 +757,11 @@ class DemandService:
         decision: EnvelopeDecision,
         *,
         legacy_unknown_requires_reapproval: bool,
-    ) -> bool:
+        expected_operational_version: int | None = None,
+    ) -> tuple[bool, int | None]:
         policy = self._approval_envelope_policy
         if policy is None:
-            return legacy_unknown_requires_reapproval
+            return legacy_unknown_requires_reapproval, expected_operational_version
 
         needs_approval = decision.decision == DECISION_REAPPROVAL_REQUIRED
         if decision.decision == DECISION_APPROVAL_REFERENCE_UNKNOWN:
@@ -650,8 +789,12 @@ class DemandService:
                 code_prefix="approval_envelope_decision_audit",
                 context={"demand_number": number},
             )
-            self._apply_delegated_budget_changes(number, decision)
-            return False
+            operational_version = self._apply_delegated_budget_changes(
+                number,
+                decision,
+                expected_operational_version=expected_operational_version,
+            )
+            return False, operational_version
 
         if self._approval_cycles is None or self._approval_votes is None:
             if PERMISSION_APPROVE_DEMANDS in self._permissions:
@@ -674,7 +817,7 @@ class DemandService:
                     code_prefix="approval_envelope_direct_rebuild",
                     context={"demand_number": number},
                 )
-                return False
+                return False, None
         call_application_port(
             lambda: policy.mark_reapproval_required(number, decision),
             code_prefix="approval_envelope_reapproval",
@@ -729,8 +872,8 @@ class DemandService:
                                 code_prefix="approval_envelope_direct_audit",
                                 context={"demand_number": number},
                             )
-                    return outcome.status != "En planification"
-        return True
+                    return outcome.status != "En planification", None
+        return True, None
 
     def create_command(self, command: DemandCreateCommand) -> str:
         values = command.to_repository_values()
@@ -850,6 +993,23 @@ class DemandService:
             audit_comment = f"{audit_comment} · {suffix}" if audit_comment else suffix
 
         with self._context("modify demand"):
+            previous_candidate_confirmations: Mapping[str, str] | None = None
+            confirmation_candidate_may_change = (
+                "Confirmation" in data or "RequestLines" in data
+            )
+            if (
+                was_approved
+                and confirmation_candidate_may_change
+                and self._approval_envelope_policy is not None
+            ):
+                previous_candidate_confirmations = call_application_port(
+                    lambda: self._approval_envelope_policy.candidate_confirmations(
+                        number
+                    ),
+                    code_prefix="approval_envelope_candidate_confirmations_before",
+                    context={"demand_number": number},
+                )
+
             call_application_port(
                 lambda: self._demands.update(
                     number,
@@ -871,11 +1031,32 @@ class DemandService:
                     context={"demand_number": number},
                     legacy_unknown_requires_reapproval=legacy_unknown_requires_reapproval,
                 )
-                return self._handle_candidate_envelope_decision(
+                (
+                    reapproval_required,
+                    command_operational_version,
+                ) = self._handle_candidate_envelope_decision(
                     number,
                     decision,
                     legacy_unknown_requires_reapproval=legacy_unknown_requires_reapproval,
+                    expected_operational_version=command.expected_operational_version,
                 )
+                if (
+                    not reapproval_required
+                    and decision.decision == DECISION_WITHIN_ENVELOPE
+                ):
+                    self._converge_candidate_confirmation_changes(
+                        number,
+                        previous_candidate_confirmations=previous_candidate_confirmations,
+                        expected_operational_version=(
+                            command_operational_version
+                            if command_operational_version is not None
+                            else command.expected_operational_version
+                        ),
+                        client_expected_operational_version=(
+                            command.expected_operational_version
+                        ),
+                    )
+                return reapproval_required
             if existing.status == "Soumise" and envelope_relevant_change:
                 self._refresh_submitted_approval_cycle_if_subject_changed(
                     number,
@@ -1018,10 +1199,12 @@ class DemandService:
                     },
                     legacy_unknown_requires_reapproval=True,
                 )
-                reapproval_required = self._handle_candidate_envelope_decision(
-                    number,
-                    decision,
-                    legacy_unknown_requires_reapproval=True,
+                reapproval_required, _operational_version = (
+                    self._handle_candidate_envelope_decision(
+                        number,
+                        decision,
+                        legacy_unknown_requires_reapproval=True,
+                    )
                 )
             elif existing.status == "Soumise":
                 self._refresh_submitted_approval_cycle_if_subject_changed(
@@ -1135,7 +1318,7 @@ class DemandService:
                     code_prefix="demand_window_reapproval_fallback",
                     context={"demand_number": identifier},
                 )
-                return True
+                return True, None
 
             decision = self._evaluate_candidate_for_handling(
                 identifier,
@@ -1147,11 +1330,14 @@ class DemandService:
                 },
                 legacy_unknown_requires_reapproval=True,
             )
-            return self._handle_candidate_envelope_decision(
-                identifier,
-                decision,
-                legacy_unknown_requires_reapproval=True,
+            reapproval_required, _operational_version = (
+                self._handle_candidate_envelope_decision(
+                    identifier,
+                    decision,
+                    legacy_unknown_requires_reapproval=True,
+                )
             )
+            return reapproval_required
 
     def select_alternative_command(
         self,
@@ -1271,7 +1457,7 @@ class DemandService:
     def set_operational_confirmation_command(
         self,
         command: DemandOperationalConfirmationCommand,
-    ) -> Mapping[str, Any]:
+    ) -> Mapping[str, Any] | None:
         number = self._required_identifier(command.number, entity="demand")
         existing = self._demand_or_not_found(number)
         self._assert_workflow_action(existing, ACTION_MODIFY)
@@ -1310,12 +1496,9 @@ class DemandService:
                 code_prefix="operational_confirmation_sync",
                 context={"demand_number": number},
             )
-            summary = call_application_port(
-                self._planning.rebuild,
-                code_prefix="operational_confirmation_rebuild",
-                context={"demand_number": number},
-            )
-        return dict(summary)
+            # ResourceRequirement.confirmation is the inherited authority for
+            # existing automatic Shifts. No placement regeneration is needed.
+        return None
 
     def submit_command(self, command: DemandSubmitCommand) -> None:
         number = self._required_identifier(command.number, entity="demand")

@@ -187,6 +187,14 @@ class DemandOperationalChoiceRepositoryPort(Protocol):
         expected_version: int | None = None,
     ) -> DemandOperationalChoiceReadModel: ...
 
+    def set_confirmations(
+        self,
+        demand_number: str,
+        confirmations_by_entry: Mapping[str, str],
+        *,
+        expected_version: int,
+    ) -> DemandOperationalChoiceReadModel: ...
+
     def set_budget_override(
         self,
         demand_number: str,
@@ -206,6 +214,11 @@ class DemandApprovalEnvelopePolicyPort(Protocol):
         *,
         actor_role: str | None = None,
     ) -> EnvelopeDecision: ...
+
+    def candidate_confirmations(
+        self,
+        demand_number: str,
+    ) -> Mapping[str, str]: ...
 
     def mark_reapproval_required(
         self,
