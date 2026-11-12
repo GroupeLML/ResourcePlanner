@@ -79,7 +79,7 @@ Do not reintroduce legacy V1 dependencies into the canonical Web/SQL runtime.
 The repository supports two equivalent orchestration modes.
 
 1. **Manual Product Owner orchestration — default**
-   - The Product Owner monitors PR state, CI results, architecture reviews, merges and roadmap progression manually.
+   - The Product Owner monitors PR state, CI results, architecture reviews, merge completion and roadmap progression manually.
    - The Product Owner may return to the same DEV session with exact PR/head/CI/review evidence and corrective instructions.
    - The DEV agent must stop at each GitHub handoff point and must not remain active polling or waiting for CI, review or merge completion.
    - After a proven merge, the Product Owner may explicitly instruct the DEV agent or another authorized agent to reconcile roadmap #55.
@@ -717,6 +717,10 @@ The PR description should summarize:
 Do not mix unrelated cleanup into the same PR.
 
 ### Merge policy
+
+Under the default manual Product Owner workflow, the Product Owner evaluates the evidence and authorizes or declines merge, but the **human repository operator performs the actual GitHub merge manually**. After the operator reports that merge, the Product Owner verifies the merged state against GitHub evidence and completes the required issue/roadmap reconciliation from section 19. The DEV agent, DevCockpit and the supported browser extension have no implicit authority to initiate a merge in this default manual workflow.
+
+Using DevCockpit or the supported browser extension does **not** by itself enable automated merging. Any automated merge capability requires a separate explicit authorization or an approved automation policy; it must not be inferred from green CI, completed review, PR readiness, or browser-assisted handoffs.
 
 Under the default manual Product Owner workflow, the DEV agent must **not** enable auto-merge unless the Product Owner explicitly authorizes it for that WorkItem or class of work.
 
