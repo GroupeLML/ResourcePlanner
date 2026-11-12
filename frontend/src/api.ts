@@ -1006,9 +1006,6 @@ export type SegmentReadModel = {
   approval_revision_id?: string | null;
   operational_version?: number | null;
   placement_not_before_date?: string | null;
-  proposed_resource?: string | null;
-  requested_assets?: PlanningActionAssetRequirementReadModel[];
-  priority_competencies?: PlanningActionCompetencyReadModel[];
 };
 
 export type ShiftAssetReservationReadModel = {
@@ -1211,6 +1208,9 @@ export type PlanningActionReadModel = {
   approval_revision_id?: string | null;
   operational_version?: number | null;
   placement_not_before_date?: string | null;
+  proposed_resource: string | null;
+  requested_assets: PlanningActionAssetRequirementReadModel[];
+  priority_competencies: PlanningActionCompetencyReadModel[];
 };
 
 export type CoordinatorDashboardKpiReadModel = {
