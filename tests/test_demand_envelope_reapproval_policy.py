@@ -285,7 +285,7 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
             )
             with TestClient(admin_app, raise_server_exceptions=False) as client:
                 before_effort = client.get(f"/api/v1/demands/{number}/detail").json()
-                initial_shift = self._assign_auto_shift(client, number)
+                self._assign_auto_shift(client, number)
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
@@ -321,6 +321,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                 self.assertFalse(effort_patch.json()["reapproval_required"])
 
                 after_effort = client.get(f"/api/v1/demands/{number}/detail").json()
+                self.assertEqual(
+                    after_effort["approval_state"]["operational_version"],
+                    initial_operational_version + 1,
+                )
                 effort_shift = next(
                     row
                     for row in client.get("/api/v1/shifts").json()
@@ -342,6 +346,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                 confirmed_detail = client.get(
                     f"/api/v1/demands/{number}/detail"
                 ).json()
+                self.assertEqual(
+                    confirmed_detail["approval_state"]["operational_version"],
+                    after_effort["approval_state"]["operational_version"] + 1,
+                )
                 confirmed_shift = next(
                     row
                     for row in client.get("/api/v1/shifts").json()
@@ -374,6 +382,13 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(tentative.status_code, 200, tentative.text)
+                tentative_detail = client.get(
+                    f"/api/v1/demands/{number}/detail"
+                ).json()
+                self.assertEqual(
+                    tentative_detail["approval_state"]["operational_version"],
+                    confirmed_detail["approval_state"]["operational_version"] + 1,
+                )
                 tentative_shift = next(
                     row
                     for row in client.get("/api/v1/shifts").json()
@@ -407,6 +422,8 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     assert reference is not None
                     self.assertEqual(reference.active_revision_id, original_revision)
                     self.assertEqual(requirement.planned_hours, 4.8)
+                    self.assertEqual(requirement.start_date, D1)
+                    self.assertEqual(requirement.end_date, D2)
                     self.assertEqual(requirement.confirmation, "Tentative")
                     budget = json.loads(state.budget_overrides_text)
                     self.assertEqual(next(iter(budget.values())), "4.80")
@@ -475,6 +492,10 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                 after = client.get(f"/api/v1/demands/{number}/detail").json()
                 self.assertEqual(after["demand"]["estimated_hours"], 4.8)
                 self.assertEqual(after["demand"]["confirmation"], "Confirmée")
+                self.assertEqual(
+                    after["approval_state"]["operational_version"],
+                    original_operational_version + 2,
+                )
                 shift = next(
                     row
                     for row in client.get("/api/v1/shifts").json()
@@ -496,7 +517,19 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     assert reference is not None
                     self.assertEqual(reference.active_revision_id, original_revision)
                     self.assertEqual(requirement.planned_hours, 4.8)
+                    self.assertEqual(requirement.start_date, D1)
+                    self.assertEqual(requirement.end_date, D2)
                     self.assertEqual(requirement.confirmation, "Confirmée")
+                    self.assertEqual(
+                        state.version,
+                        original_operational_version + 2,
+                    )
+                    revision_count = session.scalar(
+                        select(func.count(RequestApprovalRevision.id)).where(
+                            RequestApprovalRevision.workforce_request_id == request.id
+                        )
+                    )
+                    self.assertEqual(revision_count, 1)
                     budget = json.loads(state.budget_overrides_text)
                     confirmations = json.loads(state.confirmations_text)
                     self.assertEqual(next(iter(budget.values())), "4.80")
@@ -603,7 +636,15 @@ class DemandEnvelopeReapprovalPolicyTests(unittest.TestCase):
                     assert reference is not None
                     self.assertEqual(reference.active_revision_id, original_revision)
                     self.assertEqual(requirement.planned_hours, 4)
+                    self.assertEqual(requirement.start_date, D1)
+                    self.assertEqual(requirement.end_date, D2)
                     self.assertEqual(requirement.confirmation, "Confirmée")
+                    revision_count = session.scalar(
+                        select(func.count(RequestApprovalRevision.id)).where(
+                            RequestApprovalRevision.workforce_request_id == request.id
+                        )
+                    )
+                    self.assertEqual(revision_count, 1)
                     self.assertEqual(json.loads(state.budget_overrides_text), {})
                     self.assertEqual(
                         next(iter(json.loads(state.confirmations_text).values())),
