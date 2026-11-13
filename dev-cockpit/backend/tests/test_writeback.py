@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.config import Settings
+from app.config import PIPELINE_SOURCE_DEDICATED_STRICT, Settings
 from app.github import GitHubError
 from app.roadmap import parse_cockpit_pipeline
 from app.writeback import (
@@ -266,6 +266,7 @@ class RoadmapWritebackTests(unittest.IsolatedAsyncioTestCase):
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
             canonical_pipeline_issue=851,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_DEDICATED_STRICT,
             migration_candidate_pipeline_issue=851,
         )
         strict_dashboard = dashboard()
