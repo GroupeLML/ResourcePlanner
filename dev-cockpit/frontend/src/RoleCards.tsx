@@ -84,7 +84,9 @@ function companionBubble(status: ChatConversationStatus | null): string | null {
 
 function developerBubble(dashboard: Dashboard | null): string {
   if (!dashboard) return 'En attente des données GitHub.'
-  if (!dashboard.pipeline.valid) return 'Pipeline #55 invalide · aucune tranche DEV déduite.'
+  if (!dashboard.pipeline.valid) {
+    return `Pipeline #${dashboard.pipeline_source.number} invalide · aucune tranche DEV déduite.`
+  }
   if (!dashboard.active_work) return 'Aucune tranche DEV active déclarée.'
   const active = dashboard.active_work
   const states = new Set(active.states)
