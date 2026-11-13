@@ -521,6 +521,8 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 if requirement.workforce_request_id
                 else None
             )
+            if requirement.workforce_request_id and request is None:
+                raise ValueError("Demande source introuvable pour le Shift de communication")
             description, description_diagnostics = self._task_description(
                 requirement=requirement,
                 request=request,
@@ -603,6 +605,19 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     operational_responsible=resolution.operational_responsible,
                     project_co_managers=co_managers,
                     requester=requester,
+                    workforce_request_id=requirement.workforce_request_id,
+                    request_number=(
+                        _text(request.legacy_demand_number) or request.id
+                        if request is not None else None
+                    ),
+                    site_contact_name=(
+                        _text(request.site_contact_name) or None
+                        if request is not None else None
+                    ),
+                    site_contact_phone=(
+                        _text(request.site_contact_phone) or None
+                        if request is not None else None
+                    ),
                     assets=tuple(assets_by_shift.get(shift.id, ())),
                     diagnostics=diagnostics,
                 )

@@ -51,6 +51,10 @@ class ProjectCommunicationAssignment:
     operational_responsible: ContactResolution
     project_co_managers: tuple[ProjectCommunicationParticipant, ...] = ()
     requester: ProjectCommunicationParticipant | None = None
+    workforce_request_id: str | None = None
+    request_number: str | None = None
+    site_contact_name: str | None = None
+    site_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     diagnostics: tuple[str, ...] = ()
 
@@ -78,6 +82,19 @@ class ProjectCommunicationResponsibilityAssignment:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectCommunicationRequestAssignment:
+    shift_id: str
+    requirement_id: str
+    workforce_request_id: str | None
+    request_number: str | None
+    resource_id: str
+    resource_name: str
+    hours: float
+    site_contact_name: str | None
+    site_contact_phone: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectCommunicationTask:
     task_description: str
     task_ids: tuple[str, ...]
@@ -87,6 +104,7 @@ class ProjectCommunicationTask:
     responsibility_assignments: tuple[
         ProjectCommunicationResponsibilityAssignment, ...
     ] = ()
+    request_assignments: tuple[ProjectCommunicationRequestAssignment, ...] = ()
     diagnostics: tuple[str, ...] = ()
 
 
@@ -113,6 +131,8 @@ class ProjectCommunicationProjection:
     week_start: date
     week_end: date
     projects: tuple[ProjectCommunicationProject, ...]
+    request_provenance_version: int | None = None
+    request_provenance_complete: bool = False
     diagnostics: tuple[str, ...] = ()
 
 
@@ -142,6 +162,7 @@ def build_project_communication_projection(
 
     projects: dict[str, dict[str, object]] = {}
     global_diagnostics: list[str] = []
+    seen_shifts: set[str] = set()
 
     for row in sorted(
         assignments,
@@ -154,6 +175,11 @@ def build_project_communication_projection(
             item.shift_id,
         ),
     ):
+        if not row.shift_id or row.shift_id in seen_shifts:
+            raise ValueError("Identité Shift manquante ou dupliquée dans la communication projet")
+        seen_shifts.add(row.shift_id)
+        if row.workforce_request_id is None and (row.request_number or row.site_contact_name or row.site_contact_phone):
+            raise ValueError("Contact chantier sans demande source")
         project = projects.setdefault(
             row.project_id,
             {
@@ -196,6 +222,7 @@ def build_project_communication_projection(
                 "responsibles": {},
                 "resources": {},
                 "responsibility_assignments": [],
+                "request_assignments": [],
                 "diagnostics": [],
             },
         )
@@ -204,6 +231,19 @@ def build_project_communication_projection(
         if row.task_code:
             task["task_codes"].add(row.task_code)
         task["responsibles"][_resolution_key(row.operational_responsible)] = row.operational_responsible
+        task["request_assignments"].append(
+            ProjectCommunicationRequestAssignment(
+                shift_id=row.shift_id,
+                requirement_id=row.requirement_id,
+                workforce_request_id=row.workforce_request_id,
+                request_number=row.request_number,
+                resource_id=row.resource_id,
+                resource_name=row.resource_name,
+                hours=row.hours,
+                site_contact_name=row.site_contact_name,
+                site_contact_phone=row.site_contact_phone,
+            )
+        )
         task["responsibility_assignments"].append(
             ProjectCommunicationResponsibilityAssignment(
                 shift_id=row.shift_id,
@@ -302,6 +342,15 @@ def build_project_communication_projection(
                                 ),
                             )
                         ),
+                        request_assignments=tuple(sorted(
+                            task["request_assignments"],
+                            key=lambda value: (
+                                value.workforce_request_id or "",
+                                value.resource_name.casefold(),
+                                value.resource_id,
+                                value.shift_id,
+                            ),
+                        )),
                         diagnostics=_unique(task["diagnostics"]),
                     )
                 )
@@ -329,5 +378,7 @@ def build_project_communication_projection(
         week_start=week_start,
         week_end=week_end,
         projects=tuple(projected_projects),
+        request_provenance_version=1,
+        request_provenance_complete=True,
         diagnostics=_unique(global_diagnostics),
     )
