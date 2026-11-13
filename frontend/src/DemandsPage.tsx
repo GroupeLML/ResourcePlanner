@@ -72,6 +72,8 @@ type FormState = {
   desired_start: string;
   desired_end: string;
   description: string;
+  site_contact_name: string;
+  site_contact_phone: string;
   resource_count: string;
   required_competency_ids: string[];
   required_resource_class: string;
@@ -130,6 +132,8 @@ function emptyForm(projectNumber = "", requesterUserId = ""): FormState {
     desired_start: todayIso(),
     desired_end: "",
     description: "",
+    site_contact_name: "",
+    site_contact_phone: "",
     resource_count: "1",
     required_competency_ids: [],
     required_resource_class: "",
@@ -170,6 +174,8 @@ function formFromDemand(demand: DemandReadModel): FormState {
     desired_start: demand.desired_start ?? "",
     desired_end: demand.desired_end ?? "",
     description: demand.description ?? "",
+    site_contact_name: demand.site_contact_name ?? "",
+    site_contact_phone: demand.site_contact_phone ?? "",
     resource_count: String(demand.resource_count || 1),
     required_competency_ids: demand.required_competency_ids ?? [],
     required_resource_class: demand.line_mode
@@ -738,6 +744,8 @@ export default function DemandsPage({
         request_type: selectedDemand?.request_type || "Projet",
         priority: form.priority,
         description: form.description.trim(),
+        site_contact_name: form.site_contact_name.trim() || null,
+        site_contact_phone: form.site_contact_phone.trim() || null,
         lines: lines.map(demandLineWrite),
         ...(selectedDemand ? { expected_version: selectedDemand.version } : {}),
       };
@@ -798,6 +806,8 @@ export default function DemandsPage({
         desired_start: form.desired_start,
         desired_end: form.desired_end || null,
         description: form.description.trim(),
+        site_contact_name: form.site_contact_name.trim() || null,
+        site_contact_phone: form.site_contact_phone.trim() || null,
         resource_count: resourceCount,
         required_competencies: null,
         required_competency_ids: form.required_competency_ids,
@@ -1186,6 +1196,14 @@ export default function DemandsPage({
                 <label className="span-2">
                   <span>Description / contexte de la demande</span>
                   <textarea rows={4} value={form.description} onChange={(event) => setField("description", event.target.value)} disabled={saving} placeholder="Contexte commun, travaux demandés et contraintes…" />
+                </label>
+                <label>
+                  <span>Contact chantier — Nom</span>
+                  <input type="text" maxLength={255} value={form.site_contact_name} onChange={(event) => setField("site_contact_name", event.target.value)} disabled={saving} />
+                </label>
+                <label>
+                  <span>Contact chantier — Téléphone</span>
+                  <input type="tel" maxLength={64} value={form.site_contact_phone} onChange={(event) => setField("site_contact_phone", event.target.value)} disabled={saving} />
                 </label>
               </div>
 
