@@ -112,6 +112,7 @@ def _reconciliation_items(
     *,
     reconciliation: dict[str, Any],
     handoff: dict[str, Any],
+    canonical_pipeline_issue: int,
 ) -> list[dict[str, Any]]:
     if reconciliation.get("status") != "attention":
         return []
@@ -125,17 +126,26 @@ def _reconciliation_items(
             level = "WATCH"
             role = "product-owner"
             title = "Travail détecté hors ordre canonique"
-            action = "Vérifier que cette PR future est volontaire sans modifier l'ordre de #55."
+            action = (
+                f"Vérifier que cette PR future est volontaire sans modifier l'ordre "
+                f"du pipeline #{canonical_pipeline_issue}."
+            )
         elif code == "blocked_merged_pr":
             level = "ACTION"
             role = "product-owner"
             title = "Travail futur déjà fusionné"
-            action = "Vérifier la livraison et décider explicitement si #55 doit être réconcilié."
+            action = (
+                f"Vérifier la livraison et décider explicitement si le pipeline "
+                f"#{canonical_pipeline_issue} doit être réconcilié."
+            )
         elif code == "ready_merged_unverified":
             level = "WATCH"
             role = "reviewer"
             title = "Livraison à valider"
-            action = "Vérifier les checks de la PR fusionnée avant toute promotion du roadmap."
+            action = (
+                f"Vérifier les checks de la PR fusionnée avant toute promotion du pipeline "
+                f"#{canonical_pipeline_issue}."
+            )
         else:
             level = "WATCH"
             role = "product-owner"
@@ -229,6 +239,7 @@ def build_attention_center(
     handoff: dict[str, Any],
     active_work: dict[str, Any] | None,
     pipeline_now: dict[str, Any] | None,
+    canonical_pipeline_issue: int = 55,
 ) -> dict[str, Any]:
     key = _subject_key(active_work=active_work, pipeline_now=pipeline_now)
     candidates: list[dict[str, Any]] = []
@@ -248,6 +259,7 @@ def build_attention_center(
         _reconciliation_items(
             reconciliation=reconciliation,
             handoff=handoff,
+            canonical_pipeline_issue=canonical_pipeline_issue,
         )
     )
     candidates.extend(
