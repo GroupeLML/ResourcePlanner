@@ -34,6 +34,11 @@ function kindLabel(kind: string) {
   return kind === "project_confirmation" ? "Confirmation par projet" : "Modification de planning";
 }
 
+function projectBatchMessageLabel(message: CommunicationBatch["messages"][number]) {
+  const projectNumber = message.project_number?.trim();
+  return projectNumber ? `Projet ${projectNumber}` : "Projet non identifié";
+}
+
 function triggerBrowserDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -484,7 +489,7 @@ export default function CommunicationsPage() {
                       {batch.messages.map((message) => (
                         <div key={message.id} className={message.included ? "" : "is-excluded"}>
                           <strong>
-                            {message.message_key ?? message.project_id ?? message.id}
+                            {projectBatchMessageLabel(message)}
                             {!message.included && " · Exclu du lot"}
                           </strong>
                           <span>Sujet : {message.subject}</span>

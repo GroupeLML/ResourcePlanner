@@ -33,6 +33,7 @@ from app.infrastructure.sql import (
     AssetType,
     Base,
     BusinessContact,
+    CommunicationBatchRow,
     ORIGIN_QUICK_SHIFT,
     Project,
     ProjectCoManager,
@@ -142,6 +143,55 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
         finally:
             engine.dispose()
+
+    @staticmethod
+    def _add_r29_project(database_url: str) -> str:
+        project_id = "85400000-0000-0000-0000-000000005110"
+        engine = create_sql_engine(database_url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                session.add(
+                    Project(
+                        id=project_id,
+                        number="5110",
+                        name="Projet R29",
+                        project_manager_external_id="PM-1",
+                        project_manager_name="Ancien nom",
+                        project_manager_contact_id="C-RESP",
+                        status="Actif",
+                    )
+                )
+                session.add(
+                    ResourceRequirement(
+                        id="REQ-R29-854",
+                        project_id=project_id,
+                        workforce_request_id=None,
+                        approved_contact_context_status="NOT_APPLICABLE",
+                        assigned_resource_id="R1",
+                        start_date=WEEK,
+                        end_date=WEEK,
+                        planned_hours=Decimal("2"),
+                        description="Travaux R29",
+                        status="Planifié",
+                        origin="AD_HOC",
+                    )
+                )
+                session.flush()
+                session.add(
+                    Shift(
+                        id="S-R29-854",
+                        resource_requirement_id="REQ-R29-854",
+                        resource_id="R1",
+                        work_date=WEEK,
+                        hours=Decimal("2"),
+                        allocation_type="Flexible",
+                        outside_standard_hours=False,
+                    )
+                )
+        finally:
+            engine.dispose()
+        return project_id
 
     @staticmethod
     def _add_quick_shift(
@@ -1152,6 +1202,128 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     delta_payload["snapshot_fingerprint"],
                     delta_payload["baseline_fingerprint"],
                 )
+
+    def test_854_persisted_batch_exposes_business_number_without_changing_identity(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            project_id = self._add_r29_project(database_url)
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                preview_payload = preview.json()
+                r29_draft = next(
+                    row
+                    for row in preview_payload["drafts"]
+                    if row["project_id"] == project_id
+                )
+                self.assertEqual(r29_draft["project_number"], "5110")
+                self.assertEqual(r29_draft["message_key"], f"project:{project_id}")
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview_payload["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = next(
+                    row
+                    for row in prepared.json()["messages"]
+                    if row["project_id"] == project_id
+                )
+                self.assertEqual(message["project_id"], project_id)
+                self.assertEqual(message["message_key"], f"project:{project_id}")
+                self.assertEqual(message["project_number"], "5110")
+
+                reloaded = client.get(
+                    "/api/v1/communications/project-batches"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(reloaded.status_code, 200, reloaded.text)
+                reloaded_message = next(
+                    row
+                    for row in reloaded.json()[0]["messages"]
+                    if row["project_id"] == project_id
+                )
+                self.assertEqual(reloaded_message["project_id"], project_id)
+                self.assertEqual(
+                    reloaded_message["message_key"],
+                    f"project:{project_id}",
+                )
+                self.assertEqual(reloaded_message["project_number"], "5110")
+
+    def test_854_missing_or_invalid_snapshot_metadata_keeps_batch_readable(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                batch_id = prepared.json()["id"]
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        batch = session.get(CommunicationBatchRow, batch_id)
+                        assert batch is not None
+                        batch.project_snapshot_json = None
+                finally:
+                    engine.dispose()
+
+                missing = client.get(
+                    "/api/v1/communications/project-batches"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(missing.status_code, 200, missing.text)
+                missing_message = missing.json()[0]["messages"][0]
+                self.assertEqual(missing_message["message_key"], "project:P1")
+                self.assertEqual(missing_message["project_id"], "P1")
+                self.assertIsNone(missing_message["project_number"])
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        batch = session.get(CommunicationBatchRow, batch_id)
+                        assert batch is not None
+                        batch.project_snapshot_json = "{invalid-json"
+                finally:
+                    engine.dispose()
+
+                invalid = client.get(
+                    "/api/v1/communications/project-batches"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(invalid.status_code, 200, invalid.text)
+                invalid_message = invalid.json()[0]["messages"][0]
+                self.assertEqual(invalid_message["message_key"], "project:P1")
+                self.assertEqual(invalid_message["project_id"], "P1")
+                self.assertIsNone(invalid_message["project_number"])
 
     def test_708b_assets_follow_canonical_shift_applicability_change_release_and_dedup(self) -> None:
         with TemporaryDirectory() as directory:

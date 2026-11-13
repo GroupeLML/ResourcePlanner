@@ -251,7 +251,31 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
             for row in rows
         )
 
-    def _messages(self, batch_id: str) -> tuple[CommunicationMessageRecord, ...]:
+    @staticmethod
+    def _project_numbers_from_snapshot(
+        row: CommunicationBatchRow,
+    ) -> dict[str, str]:
+        if (
+            _text(row.model_version) != MODEL_VERSION_PROJECT_V2
+            or not _optional_text(row.project_snapshot_json)
+        ):
+            return {}
+        try:
+            snapshot = deserialize_project_projection(row.project_snapshot_json or "")
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return {}
+        return {
+            project.project_id: project.project_number.strip()
+            for project in snapshot.projects
+            if project.project_id and project.project_number.strip()
+        }
+
+    def _messages(
+        self,
+        batch_id: str,
+        *,
+        project_numbers_by_id: dict[str, str] | None = None,
+    ) -> tuple[CommunicationMessageRecord, ...]:
         rows = self._session.scalars(
             select(CommunicationMessageRow)
             .where(CommunicationMessageRow.batch_id == batch_id)
@@ -291,6 +315,9 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
                     included=bool(row.included),
                     message_key=_optional_text(row.message_key),
                     project_id=_optional_text(row.project_id),
+                    project_number=(project_numbers_by_id or {}).get(
+                        _optional_text(row.project_id) or ""
+                    ),
                     cc_emails=cc_emails,
                     to_emails=to_emails,
                     content_fingerprint=_optional_text(row.content_fingerprint),
@@ -320,7 +347,10 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
             drafts_created_count=int(row.drafts_created_count or 0),
             drafts_created_by=_optional_text(row.drafts_created_by),
             drafts_created_at=row.drafts_created_at,
-            messages=self._messages(row.id),
+            messages=self._messages(
+                row.id,
+                project_numbers_by_id=self._project_numbers_from_snapshot(row),
+            ),
             model_version=_text(row.model_version) or "legacy",
         )
 

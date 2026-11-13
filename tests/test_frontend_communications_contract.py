@@ -91,6 +91,19 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertIn("message.to_emails", page)
         self.assertIn("co-chargés RP", page)
 
+    def test_854_sql_audit_uses_business_project_number_with_nontechnical_fallback(self) -> None:
+        api = API.read_text(encoding="utf-8")
+        page = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("project_number: string | null", api)
+        self.assertIn("message.project_number?.trim()", page)
+        self.assertIn("`Projet ${projectNumber}`", page)
+        self.assertIn('"Projet non identifié"', page)
+        self.assertNotIn(
+            "message.message_key ?? message.project_id ?? message.id",
+            page,
+        )
+
     def test_stylesheet_is_loaded(self) -> None:
         main = MAIN.read_text(encoding="utf-8")
         self.assertIn('import "./communications.css"', main)

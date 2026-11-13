@@ -71,6 +71,7 @@ export type CommunicationMessage = {
   included: boolean;
   message_key: string | null;
   project_id: string | null;
+  project_number: string | null;
   cc_emails: string[];
   to_emails: string[];
   content_fingerprint: string | null;
