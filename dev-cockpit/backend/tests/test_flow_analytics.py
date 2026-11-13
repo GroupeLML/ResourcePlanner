@@ -152,7 +152,18 @@ class FakeGitHub:
         return repo
 
     async def get_issue(self, repo, number):
-        return self.issue
+        if number == self.issue["number"]:
+            return self.issue
+        if number == 101:
+            return {
+                "number": 101,
+                "title": "Issue 101",
+                "body": "",
+                "state": "open",
+                "html_url": "https://github.test/issues/101",
+                "updated_at": "2026-09-25T12:00:00Z",
+            }
+        raise AssertionError(f"Unexpected issue lookup: #{number}")
 
     async def list_pulls(self, repo, state="open", per_page=20):
         return self.closed if state == "closed" else []
