@@ -58,6 +58,7 @@ from app.infrastructure.sql.project_communication_repository import (
     SqlProjectCommunicationRepository,
 )
 from app.server import create_api_app
+from tests.approval_test_support import TEST_ADMIN_USER_ID
 from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 
@@ -1966,6 +1967,20 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
             try:
                 with factory.begin() as session:
+                    # The canonical API actor must exist for the audit FK.
+                    # Keep this identity local to the PATCH regression.
+                    session.add(
+                        AppUser(
+                            id=TEST_ADMIN_USER_ID,
+                            issuer="urn:resourceplanner:test",
+                            subject="explicit-test-admin",
+                            display_name="Administrateur de test explicite",
+                            email=None,
+                            roles_json='["ADMIN"]',
+                            active=True,
+                        )
+                    )
+                    session.flush()
                     request = session.get(WorkforceRequest, "D1")
                     assert request is not None
                     request.status = "En planification"
