@@ -848,7 +848,9 @@ During #842 Phase 2A:
 - the active/default machine pipeline authority also remains the embedded `COCKPIT_PIPELINE_V1` in **#55**;
 - GitHub issue **#851** is a **NON-CANONICAL MIGRATION CANDIDATE** only;
 - `canonical_pipeline_issue` is repository-owned configuration and defaults to #55; environment-variable drift must not silently redirect machine product authority;
-- a dedicated machine source uses strict `COCKPIT_PIPELINE_V1` parsing with no legacy Markdown fallback;
+- `canonical_pipeline_source_mode` is also repository-owned and explicitly selects `LEGACY_EMBEDDED` or `DEDICATED_STRICT`; parser strictness must never be inferred from whether issue numbers happen to match;
+- `LEGACY_EMBEDDED` is valid only for the historical embedded #55 machine source; incompatible source-mode/issue combinations fail closed;
+- a `DEDICATED_STRICT` machine source uses strict `COCKPIT_PIPELINE_V1` parsing with no legacy Markdown fallback and rejects unsupported or mixed pipeline-version markers;
 - a dedicated machine source must validate its referenced parent WorkItem issues before it is treated as usable;
 - #800 remains outside V1 unless the Product Owner explicitly classifies it later.
 
