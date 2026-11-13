@@ -198,6 +198,10 @@ test("843 projette automatiquement un actif REQUEST avec opérateur sur le quart
     );
     expect(assigned.status(), await assigned.text()).toBe(200);
 
+    const refreshedAssetState = await page.request.get("/api/v1/assets/requirements");
+    expect(refreshedAssetState.ok(), await refreshedAssetState.text()).toBeTruthy();
+    const refreshedState = await refreshedAssetState.json() as { planning_version: number };
+
     const reserve = await page.request.put(
       `/api/v1/assets/requirements/${encodeURIComponent(requirementId)}/reservation`,
       {
@@ -206,7 +210,7 @@ test("843 projette automatiquement un actif REQUEST avec opérateur sur le quart
           asset_id: assetId,
           start_date: coveredDay,
           end_date: coveredDay,
-          expected_planning_version: state.planning_version,
+          expected_planning_version: refreshedState.planning_version,
         },
       },
     );
