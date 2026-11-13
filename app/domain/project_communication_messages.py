@@ -967,8 +967,16 @@ def serialize_project_projection(
 
     if projection.request_provenance_version is not None:
         _validate_provenance(projection)
+    serialized = convert(asdict(projection))
+    if projection.request_provenance_version is None:
+        serialized.pop("request_provenance_version", None)
+        serialized.pop("request_provenance_complete", None)
+        for project in serialized["projects"]:
+            for day in project["days"]:
+                for task in day["tasks"]:
+                    task.pop("request_assignments", None)
     return json.dumps(
-        convert(asdict(projection)),
+        serialized,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
