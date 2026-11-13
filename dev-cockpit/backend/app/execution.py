@@ -232,7 +232,7 @@ def _control_copy(
         )
         return (
             "Roadmap à réconcilier",
-            "Une livraison GitHub vérifiée n'est pas encore reflétée dans #55.",
+            f"Une livraison GitHub vérifiée n'est pas encore reflétée dans le pipeline #{roadmap_issue}.",
             f"Mettre à jour #{roadmap_issue}" + (f" : {change_text}" if change_text else "."),
             (
                 f"Ne démarre pas la tranche suivante tant que le pipeline #{roadmap_issue} n'est pas réconcilié. "
@@ -414,8 +414,8 @@ def _missions(
     elif phase == "ROADMAP_UPDATE_REQUIRED":
         po = _mission(
             "action",
-            "Réconcilier #55",
-            reconciliation.get("summary") or "Le roadmap est en retard sur GitHub.",
+            f"Réconcilier le pipeline #{roadmap_issue}",
+            reconciliation.get("summary") or "Le pipeline est en retard sur GitHub.",
             control["prompt"],
             link=_link(f"Pipeline #{roadmap_issue}", roadmap_url),
         )
