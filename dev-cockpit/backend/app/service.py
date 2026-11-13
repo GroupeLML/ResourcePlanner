@@ -33,7 +33,6 @@ from .roadmap import (
     PipelineStep,
     pipeline_window,
     render_cockpit_pipeline,
-    resolve_product_pipeline,
     referenced_adrs,
     referenced_issue_numbers,
     subitems_from_text,
@@ -740,20 +739,13 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
     top_items = top_level_items(roadmap_body)
     legacy_declared_key = extract_declared_active(roadmap_body)
     strict_pipeline_source = canonical_pipeline_is_strict(settings)
-    if (
-        not strict_pipeline_source
-        and settings.canonical_pipeline_issue == settings.roadmap_issue
-    ):
-        pipeline_raw = roadmap_raw
-        pipeline_contract = resolve_product_pipeline(roadmap_body)
-    else:
-        pipeline_raw, pipeline_contract = await load_pipeline_source(
-            client,
-            repo,
-            settings.canonical_pipeline_issue,
-            strict=strict_pipeline_source,
-            validate_references=strict_pipeline_source,
-        )
+    pipeline_raw, pipeline_contract = await load_pipeline_source(
+        client,
+        repo,
+        settings.canonical_pipeline_issue,
+        strict=strict_pipeline_source,
+        validate_references=strict_pipeline_source,
+    )
     pipeline_steps = pipeline_contract.steps
     pipeline_projection = (
         pipeline_window(pipeline_steps)
