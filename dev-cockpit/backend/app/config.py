@@ -5,7 +5,8 @@ from dataclasses import dataclass
 
 
 HUMAN_ROADMAP_ISSUE = 55
-ACTIVE_CANONICAL_PIPELINE_ISSUE = 55
+LEGACY_EMBEDDED_PIPELINE_ISSUE = 55
+ACTIVE_CANONICAL_PIPELINE_ISSUE = LEGACY_EMBEDDED_PIPELINE_ISSUE
 MIGRATION_CANDIDATE_PIPELINE_ISSUE = 851
 
 PIPELINE_SOURCE_LEGACY_EMBEDDED = "LEGACY_EMBEDDED"
@@ -57,7 +58,7 @@ def canonical_pipeline_is_strict(settings: Settings) -> bool:
     """Return repository-controlled parser mode and reject incompatible authority config."""
     mode = settings.canonical_pipeline_source_mode
     if mode == PIPELINE_SOURCE_LEGACY_EMBEDDED:
-        if settings.canonical_pipeline_issue != ACTIVE_CANONICAL_PIPELINE_ISSUE:
+        if settings.canonical_pipeline_issue != LEGACY_EMBEDDED_PIPELINE_ISSUE:
             raise ValueError(
                 "Configuration pipeline invalide: LEGACY_EMBEDDED est réservé à l'autorité historique #55."
             )
