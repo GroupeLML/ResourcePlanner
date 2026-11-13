@@ -238,7 +238,7 @@ class ExecutionControllerTests(unittest.TestCase):
         self.assertEqual(labels[0], "CI #900 démarrée")
         self.assertIn("Commit abc123", labels)
         self.assertIn("PR #430 ouverte", labels)
-        self.assertIn("Roadmap #55 mis à jour", labels)
+        self.assertIn("Pipeline #55 mis à jour", labels)
 
 
 if __name__ == "__main__":
