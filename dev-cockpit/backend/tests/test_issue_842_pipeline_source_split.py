@@ -187,6 +187,45 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicate_v1.valid)
         self.assertIn("exactement un marqueur", " ".join(duplicate_v1.errors))
 
+    async def test_post_cutover_defaults_use_851_strict_and_keep_55_human_context(self):
+        client = FakeGitHub()
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+        )
+
+        dashboard = await build_dashboard(
+            client,
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+
+        self.assertEqual(dashboard["roadmap"]["number"], 55)
+        self.assertEqual(dashboard["pipeline_source"]["number"], 851)
+        self.assertTrue(dashboard["pipeline_source"]["strict"])
+        self.assertEqual(
+            dashboard["pipeline_source"]["mode"],
+            PIPELINE_SOURCE_DEDICATED_STRICT,
+        )
+        self.assertTrue(dashboard["pipeline"]["valid"])
+        self.assertEqual(dashboard["pipeline"]["now"]["key"], "842")
+        self.assertEqual(dashboard["pipeline"]["next"][0]["key"], "ASTRA-644")
+        self.assertEqual(dashboard["pipeline"]["next"][0]["status"], "BLOCKED")
+        self.assertNotEqual(dashboard["pipeline"]["now"]["key"], "999")
+
+        po_pack = dashboard["handoff"]["packs"]["product-owner"]
+        self.assertIn("Roadmap humain : #55", po_pack["prompt"])
+        self.assertIn("Pipeline canonique : #851", po_pack["prompt"])
+        source_urls = {source["label"]: source["url"] for source in po_pack["sources"]}
+        self.assertEqual(
+            source_urls["Roadmap humain #55"],
+            "https://github.test/issues/55",
+        )
+        self.assertEqual(
+            source_urls["Pipeline canonique #851"],
+            "https://github.test/issues/851",
+        )
+
     async def test_legacy_pre_cutover_mode_keeps_legacy_fallback(self):
         client = FakeGitHub(human_body=LEGACY_ROADMAP)
         settings = Settings(
