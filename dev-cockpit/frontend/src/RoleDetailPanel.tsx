@@ -47,7 +47,7 @@ function PipelineUnavailable({ dashboard }: { dashboard: Dashboard }) {
   return (
     <section className="role-detail-section">
       <div className="role-detail-section-title">
-        {invalid ? `Pipeline #${dashboard.pipeline_source.number} invalide` : 'Aucune étape active'}
+        {invalid ? `Pipeline #{dashboard.pipeline_source.number} invalide` : 'Aucune étape active'}
       </div>
       <p className="role-detail-muted">{dashboard.next_action}</p>
       {invalid && dashboard.pipeline.errors.length > 0 && (
@@ -480,8 +480,8 @@ function ProductOwnerDetails({ dashboard }: { dashboard: Dashboard | null }) {
             Trajectoire produit · {dashboard.pipeline.completed_count}/{dashboard.pipeline.steps.length} franchie(s)
           </div>
           <p className="role-detail-muted">
-            Pipeline déterministe lu depuis la source machine #${dashboard.pipeline_source.number}. Ouvre une tranche pour
-            afficher son contexte humain #${dashboard.roadmap.number} puis son détail GitHub.
+            Pipeline déterministe lu depuis la source machine #{dashboard.pipeline_source.number}. Ouvre une tranche pour
+            afficher son contexte humain #{dashboard.roadmap.number} puis son détail GitHub.
           </p>
           <div className="pipeline-horizon-stack">
             <PipelineHorizonGroup
@@ -947,7 +947,7 @@ function ArchitectDetails({ dashboard }: { dashboard: Dashboard | null }) {
       <section className="role-detail-hero">
         <span>Architecture du bloc actif</span>
         <strong>
-          {dashboard.active_work.subitem_key || `#${dashboard.active_work.issue_number}`}
+          {dashboard.active_work.subitem_key || `#{dashboard.active_work.issue_number}`}
         </strong>
         <p>{dashboard.active_work.title || dashboard.active_work.issue.title}</p>
       </section>
