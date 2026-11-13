@@ -2715,6 +2715,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 )
                 actions = ShiftAssetActionsReadModel(
                     assign=denied,
+                    designate_project=denied,
                     change=denied,
                     release=denied,
                 )
@@ -2725,12 +2726,17 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 )
                 actions = ShiftAssetActionsReadModel(
                     assign=denied,
+                    designate_project=denied,
                     change=denied,
                     release=denied,
                 )
             elif owned_requirement is None:
                 actions = ShiftAssetActionsReadModel(
                     assign=ShiftAssetActionReadModel(allowed=True),
+                    designate_project=ShiftAssetActionReadModel(
+                        allowed=False,
+                        reason="asset_assignment_missing",
+                    ),
                     change=ShiftAssetActionReadModel(
                         allowed=False,
                         reason="asset_assignment_missing",
@@ -2747,6 +2753,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                 )
                 actions = ShiftAssetActionsReadModel(
                     assign=incomplete,
+                    designate_project=incomplete,
                     change=incomplete,
                     release=incomplete,
                 )
@@ -2756,6 +2763,7 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
                         allowed=False,
                         reason="asset_assignment_attached",
                     ),
+                    designate_project=ShiftAssetActionReadModel(allowed=True),
                     change=ShiftAssetActionReadModel(allowed=True),
                     release=ShiftAssetActionReadModel(allowed=True),
                 )
