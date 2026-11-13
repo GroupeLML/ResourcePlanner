@@ -385,6 +385,7 @@ export type Dashboard = {
   config: {
     roadmap_issue: number
     canonical_pipeline_issue: number
+    canonical_pipeline_source_mode: 'LEGACY_EMBEDDED' | 'DEDICATED_STRICT'
     migration_candidate_pipeline_issue: number
     stalled_after_minutes: number
     token_configured: boolean
@@ -406,6 +407,7 @@ export type Dashboard = {
     url: string | null
     updated_at: string | null
     strict: boolean
+    mode: 'LEGACY_EMBEDDED' | 'DEDICATED_STRICT'
   }
   reconciliation: PipelineReconciliation
   execution: ExecutionControl
