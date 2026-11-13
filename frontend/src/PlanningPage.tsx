@@ -485,7 +485,7 @@ function ShiftCard({
           Assigner un actif
         </button>
       )}
-      {asset && shift.asset_actions?.designate_project.allowed && onAssignAsset && (
+      {asset && shift.asset_actions?.designate_project?.allowed && onAssignAsset && (
         <button
           type="button"
           className="shift-asset-action"
