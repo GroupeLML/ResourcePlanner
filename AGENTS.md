@@ -838,6 +838,22 @@ Do not store the current next issue or current active step in this file. AGENTS.
 
 If a canonical block exists but is invalid, do not work around it by editing the cockpit heuristics or by inferring a different active step from surrounding Markdown. Correct #55 so the canonical contract becomes valid again.
 
+#### #842 pipeline-source migration — pre-cutover contract
+
+The implementation now distinguishes the **human roadmap issue** from the **configured machine pipeline issue**. This is migration support only until an explicit Product Owner cutover.
+
+During #842 Phase 2A:
+
+- human roadmap authority remains GitHub issue **#55**;
+- the active/default machine pipeline authority also remains the embedded `COCKPIT_PIPELINE_V1` in **#55**;
+- GitHub issue **#851** is a **NON-CANONICAL MIGRATION CANDIDATE** only;
+- `canonical_pipeline_issue` is repository-owned configuration and defaults to #55; environment-variable drift must not silently redirect machine product authority;
+- a dedicated machine source uses strict `COCKPIT_PIPELINE_V1` parsing with no legacy Markdown fallback;
+- a dedicated machine source must validate its referenced parent WorkItem issues before it is treated as usable;
+- #800 remains outside V1 unless the Product Owner explicitly classifies it later.
+
+No supported reader may dynamically choose between #55 and #851. Phase 2B requires explicit Product Owner authorization to switch the configured machine source. Only after that switch may the dedicated issue become the sole machine-readable authority; #55 then remains the human roadmap.
+
 ### Dev Cockpit Safe Writeback and deterministic DEV reconciliation
 
 Two different roadmap mutation paths exist and must not be confused.
