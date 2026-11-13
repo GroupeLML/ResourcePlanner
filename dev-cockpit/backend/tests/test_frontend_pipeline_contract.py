@@ -59,6 +59,9 @@ class FrontendPipelineContractTests(unittest.TestCase):
         self.assertIn("PipelineHorizonGroup", panel)
         self.assertIn("PipelineStepAccordion", panel)
         self.assertIn("PipelineUnavailable", panel)
+        self.assertIn("dashboard.pipeline_source.number", panel)
+        self.assertIn("dashboard.roadmap.number", panel)
+        self.assertNotIn("Pipeline #55 invalide", panel)
         self.assertIn("MissionBlock", panel)
         self.assertIn("Mission courante", panel)
         self.assertIn("HANDOFF PACK", panel)
@@ -112,6 +115,8 @@ class FrontendPipelineContractTests(unittest.TestCase):
         self.assertIn("pr_to_green_minutes", types)
 
         self.assertIn("dashboard?.execution.missions", roles)
+        self.assertIn("dashboard.pipeline_source.number", roles)
+        self.assertNotIn("Pipeline #55 invalide", roles)
         self.assertIn("dashboard?.handoff.packs", roles)
         self.assertIn("Préparer la reprise + ouvrir", roles)
         self.assertIn("handoffRole", roles)
