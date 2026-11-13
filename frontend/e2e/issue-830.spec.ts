@@ -70,7 +70,7 @@ test("#830 chantier contact create/edit/reopen/clear uses request-owned fields",
     await expect(name).toHaveValue("");
     await expect(phone).toHaveValue("");
 
-    const detail = await page.request.get(`/api/v1/demands/${encodeURIComponent(demandNumber)}`);
+    const detail = await page.request.get(`/api/v1/demands/${encodeURIComponent(demandNumber)}/detail`);
     expect(detail.ok(), await detail.text()).toBeTruthy();
     const body = await detail.json() as any;
     const demand = body.demand ?? body;
