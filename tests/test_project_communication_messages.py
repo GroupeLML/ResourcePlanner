@@ -167,28 +167,54 @@ def project(
 
 
 def projection(*projects: ProjectCommunicationProject) -> ProjectCommunicationProjection:
+    # Give each synthetic physical Shift a unique identity. Resource fixtures
+    # are reused across dates and projects, but those are distinct real Shifts.
+    seen_shifts: set[str] = set()
     complete_projects = []
     for source in projects:
         days = []
         for day in source.days:
             tasks = []
-            for task in day.tasks:
-                provenance = tuple(
-                    ProjectCommunicationRequestAssignment(
-                        shift_id=shift_id,
-                        requirement_id="REQ-1",
-                        workforce_request_id="DEMAND-1",
-                        request_number="DMO-1",
-                        resource_id=row.resource_id,
-                        resource_name=row.resource_name,
-                        hours=row.hours / len(row.shift_ids),
-                        site_contact_name=None,
-                        site_contact_phone=None,
-                    )
-                    for row in task.resources
-                    for shift_id in row.shift_ids
+            for index, task in enumerate(day.tasks):
+                resources = []
+                provenance = []
+                shift_replacements: dict[str, str] = {}
+                for row in task.resources:
+                    new_shift_ids = []
+                    for original_shift_id in row.shift_ids:
+                        shift_id = original_shift_id
+                        if shift_id in seen_shifts:
+                            shift_id = (
+                                f"{original_shift_id}:{source.project_id}:"
+                                f"{day.day.isoformat()}:{index}"
+                            )
+                        if shift_id in seen_shifts:
+                            raise AssertionError("Synthetic Shift identity is not unique")
+                        seen_shifts.add(shift_id)
+                        shift_replacements[original_shift_id] = shift_id
+                        new_shift_ids.append(shift_id)
+                        provenance.append(ProjectCommunicationRequestAssignment(
+                            shift_id=shift_id,
+                            requirement_id="REQ-1",
+                            workforce_request_id="DEMAND-1",
+                            request_number="DMO-1",
+                            resource_id=row.resource_id,
+                            resource_name=row.resource_name,
+                            hours=row.hours / len(row.shift_ids),
+                            site_contact_name=None,
+                            site_contact_phone=None,
+                        ))
+                    resources.append(replace(row, shift_ids=tuple(new_shift_ids)))
+                responsibility_assignments = tuple(
+                    replace(item, shift_id=shift_replacements.get(item.shift_id, item.shift_id))
+                    for item in task.responsibility_assignments
                 )
-                tasks.append(replace(task, request_assignments=provenance))
+                tasks.append(replace(
+                    task,
+                    resources=tuple(resources),
+                    responsibility_assignments=responsibility_assignments,
+                    request_assignments=tuple(provenance),
+                ))
             days.append(replace(day, tasks=tuple(tasks)))
         complete_projects.append(replace(source, days=tuple(days)))
     return ProjectCommunicationProjection(
@@ -198,7 +224,6 @@ def projection(*projects: ProjectCommunicationProject) -> ProjectCommunicationPr
         request_provenance_version=1,
         request_provenance_complete=True,
     )
-
 
 class ProjectCommunicationMessageTests(unittest.TestCase):
     def test_resource_line_without_asset_is_unchanged(self) -> None:

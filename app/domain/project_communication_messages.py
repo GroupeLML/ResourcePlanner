@@ -677,7 +677,7 @@ def _project_body(
 
     for day in project.days:
         for task in day.tasks:
-            lines.extend(("", f"Description : {task.task_description}"))
+            lines.extend(("", f"{french_long_date(day.day)} — {task.task_description}"))
             if task.request_assignments:
                 by_request: dict[str | None, list[ProjectCommunicationRequestAssignment]] = {}
                 for item in task.request_assignments:
@@ -691,7 +691,6 @@ def _project_body(
                         lines.append(f"Contact chantier — Demande {label} ({people}) : {contact}")
                     elif len(by_request) > 1:
                         lines.append(f"Demande {label} ({people}) : Aucun contact chantier renseigné")
-            lines.append(f"Horaire : {french_long_date(day.day)}")
             assignments_by_resource: dict[str, list[ContactResolution]] = {}
             for assignment in task.responsibility_assignments:
                 assignments_by_resource.setdefault(

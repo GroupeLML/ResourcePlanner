@@ -148,6 +148,8 @@ class DemandServiceTests(unittest.TestCase):
             record=DemandReadModel(
                 number="DMO-830",
                 status="En planification",
+                desired_start=date(2026, 8, 25),
+                desired_end=date(2026, 8, 29),
                 version=3,
             )
         )

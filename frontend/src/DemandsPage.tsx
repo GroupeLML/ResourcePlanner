@@ -807,8 +807,14 @@ export default function DemandsPage({
         desired_start: form.desired_start,
         desired_end: form.desired_end || null,
         description: form.description.trim(),
-        site_contact_name: form.site_contact_name.trim() || null,
-        site_contact_phone: form.site_contact_phone.trim() || null,
+        ...((creating
+          || form.site_contact_name.trim() !== (selectedDemand?.site_contact_name ?? "").trim()
+          || form.site_contact_phone.trim() !== (selectedDemand?.site_contact_phone ?? "").trim())
+          ? {
+              site_contact_name: form.site_contact_name.trim() || null,
+              site_contact_phone: form.site_contact_phone.trim() || null,
+            }
+          : {}),
         resource_count: resourceCount,
         required_competencies: null,
         required_competency_ids: form.required_competency_ids,
@@ -851,6 +857,10 @@ export default function DemandsPage({
           form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "")
           || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "")
         ) && !contextDirty && lineMode === Boolean(selectedDemand.line_mode);
+        const contactFieldsChanged = (
+          form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "").trim()
+          || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "").trim()
+        );
         const result = onlyContactEdited
           ? await updateDemandSiteContact(
               selectedDemand.number,
@@ -862,6 +872,7 @@ export default function DemandsPage({
           selectedDemand.number,
           {
             ...payload,
+            ...(contactFieldsChanged ? { expected_version: selectedDemand.version } : {}),
             ...(selectedDetail?.policy.expected_operational_version != null
               ? {
                   expected_operational_version:

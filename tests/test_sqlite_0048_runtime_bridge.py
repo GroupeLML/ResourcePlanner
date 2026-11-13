@@ -787,6 +787,11 @@ def _reshape_as_0048(path: Path) -> None:
             SET version_num = '0048_identity_admin_audit';
             """
         )
+        # The 0048 fixture is built from current ORM metadata for its other
+        # unchanged tables. Remove only the two post-0048 #830 columns before
+        # marking it as the frozen source revision; migration 0035 owns them.
+        raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_contact_phone")
+        raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_contact_name")
         raw.commit()
     finally:
         raw.close()

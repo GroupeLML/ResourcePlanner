@@ -122,6 +122,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0034_request_shift_survivor_protections",
                 "0033_erp_sync_scheduler_observation",
                 "0032_erp_sync_plausibility_review_decisions",
                 "0031_erp_sync_evidence_checkpoint",
