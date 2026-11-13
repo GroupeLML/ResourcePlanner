@@ -1425,14 +1425,6 @@ class SqlAssetService:
                 "La réservation projet ne couvre pas la date du quart.",
                 code="asset_project_reservation_date_conflict",
             )
-        owned_requirement, owned_allocation = self.shift_ad_hoc_attachment(
-            shift.id
-        )
-        if owned_requirement is not None or owned_allocation is not None:
-            raise ApplicationConflictError(
-                "Le quart possède déjà une affectation d'actif.",
-                code="asset_assignment_attached",
-            )
         if allocation.operator_resource_id == shift.resource_id:
             raise ApplicationConflictError(
                 "Cette réservation projet est déjà héritée par la ressource du quart.",
@@ -2288,7 +2280,7 @@ class SqlAssetService:
             if qualification_state != QUALIFICATION_SATISFIED:
                 reasons.append("operator_not_qualified")
 
-            if reusable is not None and current_allocation is None:
+            if reusable is not None:
                 existing_requirement = overlapping_requirements[
                     reusable.asset_requirement_id
                 ]
