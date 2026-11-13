@@ -202,12 +202,15 @@ Le commit de `main` affiché dans le footer est uniquement une référence sur l
 
 GitHub reste la source de vérité du produit. Le cockpit ne conserve aucun état produit local.
 
-Le backend distingue maintenant deux identités :
+Le backend distingue maintenant deux identités et un mode de source explicite :
 
 - `roadmap_issue` — roadmap humain, actuellement **#55**;
-- `canonical_pipeline_issue` — source machine de `COCKPIT_PIPELINE_V1`.
+- `canonical_pipeline_issue` — source machine de `COCKPIT_PIPELINE_V1`;
+- `canonical_pipeline_source_mode` — contrat repository-owned valant `LEGACY_EMBEDDED` ou `DEDICATED_STRICT`.
 
-**Pré-cutover #842 Phase 2A :** `canonical_pipeline_issue` reste fixé à **#55**. L'issue **#851** est supportée pour validation explicite seulement et demeure **NON-CANONICAL**. Le changement de source active vers #851 est réservé à Phase 2B après autorisation PO.
+Le mode ne dépend jamais de l'égalité numérique entre le roadmap humain et la source machine. `LEGACY_EMBEDDED` est réservé à la source historique embarquée **#55**; une combinaison incompatible échoue fermée. `DEDICATED_STRICT` exige un unique contrat V1 valide, sans fallback Markdown et sans marqueurs de versions concurrentes/non supportées.
+
+**Pré-cutover #842 Phase 2A :** `canonical_pipeline_issue` reste fixé à **#55** avec `LEGACY_EMBEDDED`. L'issue **#851** est supportée pour validation explicite seulement et demeure **NON-CANONICAL**. Le changement de source active vers #851 et `DEDICATED_STRICT` est réservé à Phase 2B après autorisation PO.
 
 Quand la source machine configurée contient le bloc versionné `COCKPIT_PIPELINE_V1`, ce bloc est autoritaire pour déterminer le focus courant, les horizons Maintenant/Ensuite, les gates, le prompt Developer et la clé utilisée pour rechercher une PR ou une branche. Le texte humain détaillé de #55 reste de la documentation et ne peut jamais remplacer la source machine en mode dédié.
 
