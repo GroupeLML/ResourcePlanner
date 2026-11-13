@@ -4,7 +4,7 @@ from difflib import unified_diff
 import hashlib
 from typing import Any
 
-from .config import Settings
+from .config import Settings, canonical_pipeline_is_strict
 from .github import GitHubClient
 from .roadmap import (
     COCKPIT_PIPELINE_END,
@@ -190,7 +190,7 @@ async def build_roadmap_writeback_preview(
     body = str(roadmap.get("body") or "")
     current_contract = (
         resolve_canonical_pipeline_source(body)
-        if settings.canonical_pipeline_issue != settings.roadmap_issue
+        if canonical_pipeline_is_strict(settings)
         else parse_cockpit_pipeline(body)
     )
     if not current_contract.present or not current_contract.valid:
@@ -314,7 +314,7 @@ async def apply_roadmap_writeback(
     updated_body = str(updated.get("body") or "")
     updated_contract = (
         resolve_canonical_pipeline_source(updated_body)
-        if settings.canonical_pipeline_issue != settings.roadmap_issue
+        if canonical_pipeline_is_strict(settings)
         else parse_cockpit_pipeline(updated_body)
     )
     if updated_body != proposed_body or not updated_contract.valid:
@@ -331,7 +331,7 @@ async def apply_roadmap_writeback(
     verified_body = str(verified.get("body") or "")
     verified_contract = (
         resolve_canonical_pipeline_source(verified_body)
-        if settings.canonical_pipeline_issue != settings.roadmap_issue
+        if canonical_pipeline_is_strict(settings)
         else parse_cockpit_pipeline(verified_body)
     )
     expected_body_sha = _sha256(proposed_body)
