@@ -216,6 +216,8 @@ class DemandCreateRequest(StrictRequest):
     desired_end: date | None = None
     description: str = ""
     site_client: str = ""
+    site_contact_name: str | None = Field(default=None, max_length=255)
+    site_contact_phone: str | None = Field(default=None, max_length=64)
     location: str = ""
     resource_count: int = Field(default=1, ge=1)
     required_competencies: str | None = None
@@ -254,6 +256,8 @@ class DemandUpdateRequest(StrictRequest):
     desired_end: date | None = None
     description: str | None = None
     site_client: str | None = None
+    site_contact_name: str | None = Field(default=None, max_length=255)
+    site_contact_phone: str | None = Field(default=None, max_length=64)
     location: str | None = None
     resource_count: int | None = Field(default=None, ge=1)
     required_competencies: str | None = None

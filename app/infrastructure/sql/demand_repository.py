@@ -134,6 +134,8 @@ class SqlDemandRepository(DemandRepositoryPort):
             desired_start=request.desired_start,
             desired_end=request.desired_end,
             description=_optional_text(request.description),
+            site_contact_name=_optional_text(request.site_contact_name),
+            site_contact_phone=_optional_text(request.site_contact_phone),
             work_package_ref=(
                 _optional_text(work_package.legacy_effort_id) or work_package.id
                 if work_package is not None
@@ -1328,6 +1330,8 @@ class SqlDemandRepository(DemandRepositoryPort):
             desired_end=values.get("DateFinSouhaitee"),
             description=_optional_text(values.get("Description")),
             site_client=_optional_text(values.get("SiteClient")),
+            site_contact_name=_optional_text(values.get("SiteContactName")),
+            site_contact_phone=_optional_text(values.get("SiteContactPhone")),
             location=_optional_text(values.get("Lieu")),
             resource_count=int(values.get("NombreRessources") or 1),
             required_competencies=_optional_text(values.get("CompetencesRequises")),
@@ -1897,6 +1901,10 @@ class SqlDemandRepository(DemandRepositoryPort):
             request.description = _optional_text(updates.get("Description"))
         if "SiteClient" in updates:
             request.site_client = _optional_text(updates.get("SiteClient"))
+        if "SiteContactName" in updates:
+            request.site_contact_name = _optional_text(updates.get("SiteContactName"))
+        if "SiteContactPhone" in updates:
+            request.site_contact_phone = _optional_text(updates.get("SiteContactPhone"))
         if "Lieu" in updates:
             request.location = _optional_text(updates.get("Lieu"))
         if "NombreRessources" in updates:

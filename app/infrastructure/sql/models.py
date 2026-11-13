@@ -513,6 +513,8 @@ class WorkforceRequest(TimestampMixin, Base):
     desired_end: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     site_client: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    site_contact_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    site_contact_phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     resource_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     required_competencies: Mapped[str | None] = mapped_column(Text, nullable=True)

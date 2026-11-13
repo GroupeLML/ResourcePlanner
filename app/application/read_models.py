@@ -115,6 +115,8 @@ class DemandReadModel:
     desired_end: date | None = None
     description: str | None = None
     site_client: str | None = None
+    site_contact_name: str | None = None
+    site_contact_phone: str | None = None
     location: str | None = None
     work_package_ref: str | None = None
     work_package_name: str | None = None
@@ -193,6 +195,8 @@ class DemandReadModel:
             desired_start=_date(row.get("DateDebutSouhaitee")),
             desired_end=_date(row.get("DateFinSouhaitee")),
             description=_optional_text(row.get("Description")),
+            site_contact_name=_optional_text(row.get("SiteContactName")),
+            site_contact_phone=_optional_text(row.get("SiteContactPhone")),
             site_client=_optional_text(row.get("SiteClient")),
             location=_optional_text(row.get("Lieu")),
             work_package_ref=_optional_text(row.get("SourceEffortID")),
