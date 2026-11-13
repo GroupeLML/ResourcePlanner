@@ -23,6 +23,17 @@ KEY | TYPE | STATUS | PARENT | LANE | TITLE
 <!-- /COCKPIT_PIPELINE_V1 -->
 """
 
+LEGACY_ROADMAP = """
+### Suite produit
+Chemin principal retenu :
+
+```text
+#999 travail historique
+  ↓
+#842 migration
+```
+"""
+
 CANDIDATE = """<!-- COCKPIT_PIPELINE_V1 -->
 KEY | TYPE | STATUS | PARENT | LANE | TITLE
 840 | WORK | DONE | #840 | MAIN | delivered
@@ -32,7 +43,15 @@ ASTRA-644 | ARCHITECTURE_GATE | BLOCKED | #644 | MAIN | architecture gate
 
 
 class FakeGitHub:
-    def __init__(self, *, candidate_body=CANDIDATE, missing_parent=None, missing_candidate=False):
+    def __init__(
+        self,
+        *,
+        human_body=HUMAN_ROADMAP,
+        candidate_body=CANDIDATE,
+        missing_parent=None,
+        missing_candidate=False,
+    ):
+        self.human_body = human_body
         self.candidate_body = candidate_body
         self.missing_parent = missing_parent
         self.missing_candidate = missing_candidate
@@ -47,7 +66,7 @@ class FakeGitHub:
             return {
                 "number": 55,
                 "title": "Roadmap humain",
-                "body": HUMAN_ROADMAP,
+                "body": self.human_body,
                 "state": "open",
                 "html_url": "https://github.test/issues/55",
                 "updated_at": "2026-11-13T00:00:00Z",
@@ -138,6 +157,37 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(mixed_v2_v1.valid)
         self.assertIn("V2", " ".join(mixed_v2_v1.errors))
+
+        duplicate_v1 = resolve_canonical_pipeline_source(CANDIDATE + "\n" + CANDIDATE)
+        self.assertFalse(duplicate_v1.valid)
+        self.assertIn("exactement un marqueur", " ".join(duplicate_v1.errors))
+
+    async def test_legacy_pre_cutover_mode_keeps_legacy_fallback(self):
+        client = FakeGitHub(human_body=LEGACY_ROADMAP)
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+            roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
+        )
+        _, contract = await load_pipeline_source(
+            client,
+            "GroupeLML/ResourcePlanner",
+            settings.canonical_pipeline_issue,
+            strict=canonical_pipeline_is_strict(settings),
+            validate_references=False,
+        )
+        self.assertFalse(contract.present)
+        self.assertTrue(contract.valid)
+        self.assertEqual(contract.source, "legacy")
+        self.assertTrue(contract.steps)
+
+    def test_unknown_source_mode_fails_closed(self):
+        with self.assertRaises(ValueError):
+            canonical_pipeline_is_strict(
+                Settings(canonical_pipeline_source_mode="AUTO")
+            )
 
     async def test_strict_source_validates_referenced_parent_issues(self):
         client = FakeGitHub(missing_parent=644)
