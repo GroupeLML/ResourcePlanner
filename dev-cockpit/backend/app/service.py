@@ -651,6 +651,8 @@ def _dashboard_without_active_work(
     handoff = build_handoff_packs(
         roadmap_issue=settings.roadmap_issue,
         roadmap_url=roadmap_raw.get("html_url"),
+        canonical_pipeline_issue=settings.canonical_pipeline_issue,
+        canonical_pipeline_url=pipeline_raw.get("html_url"),
         pipeline_now=pipeline_projection.get("now"),
         execution=execution,
         active_work=None,
@@ -1088,6 +1090,8 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
     handoff = build_handoff_packs(
         roadmap_issue=settings.roadmap_issue,
         roadmap_url=roadmap_raw.get("html_url"),
+        canonical_pipeline_issue=settings.canonical_pipeline_issue,
+        canonical_pipeline_url=pipeline_raw.get("html_url"),
         pipeline_now=pipeline_projection.get("now"),
         execution=execution,
         active_work=active_work_projection,
