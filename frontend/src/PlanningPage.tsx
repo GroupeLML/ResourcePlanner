@@ -327,7 +327,7 @@ function ShiftCard({
   shift: ShiftReadModel;
   diagnostic: PlanningSegmentCapacityDiagnosticReadModel | null;
   onEdit?: (shift: ShiftReadModel) => void;
-  onAssignAsset?: (shift: ShiftReadModel) => void;
+  onAssignAsset?: (shift: ShiftReadModel, mode: ShiftAssetAssignmentMode) => void;
   dragEnabled: boolean;
 }) {
   const confirmation = confirmationKind(shift.confirmation);
@@ -342,6 +342,14 @@ function ShiftCard({
   const relatedAssets = shift.related_asset_reservations ?? [];
   const inheritedAssets = relatedAssets.filter((reservation) =>
     reservation.association_kind.startsWith("INHERITED_"),
+  );
+  const visibleAssets = Array.from(
+    new Map(
+      [...(asset ? [asset] : []), ...inheritedAssets].map((reservation) => [
+        reservation.allocation_id,
+        reservation,
+      ]),
+    ).values(),
   );
   const assetDiagnostics = shift.asset_diagnostics ?? [];
   const managerColorId = shift.project_manager_color_id;
@@ -450,11 +458,11 @@ function ShiftCard({
         >
           {scopeNeighbor
             ? "Détails hors périmètre"
-            : asset
-              ? `Actif : ${asset.asset_code}${asset.asset_active ? "" : " · inactif"}`
-              : inheritedAssets.length > 0
-                ? `Actif lié : ${inheritedAssets.map((reservation) => reservation.asset_code).join(", ")}`
-                : "Aucun actif"}
+            : visibleAssets.length > 0
+              ? `${asset ? "Actif" : "Actif lié"} : ${visibleAssets.map((reservation) =>
+                  `${reservation.asset_code}${reservation.asset_active ? "" : " · inactif"}`
+                ).join(", ")}`
+              : "Aucun actif"}
           {!scopeNeighbor && assetDiagnostics.length > 0 && (
             <span
               className="shift-asset-diagnostic"
@@ -471,10 +479,21 @@ function ShiftCard({
           type="button"
           className="shift-asset-action"
           draggable={false}
-          onClick={() => onAssignAsset(shift)}
+          onClick={() => onAssignAsset(shift, "assign")}
           aria-label={`Assigner un actif à ${resourceDisplayName(shift.resource_name)} pour le quart ${shift.allocation_id}`}
         >
           Assigner un actif
+        </button>
+      )}
+      {asset && shift.asset_actions?.designate_project.allowed && onAssignAsset && (
+        <button
+          type="button"
+          className="shift-asset-action"
+          draggable={false}
+          onClick={() => onAssignAsset(shift, "designate_project")}
+          aria-label={`Associer une réservation projet à ${resourceDisplayName(shift.resource_name)} pour le quart ${shift.allocation_id}`}
+        >
+          Associer une réservation projet
         </button>
       )}
     </article>
@@ -656,7 +675,7 @@ function ResourceRow({
   capacity: PlanningResourceCapacityReadModel | null;
   diagnostics: Map<string, PlanningSegmentCapacityDiagnosticReadModel>;
   onEditShift?: (shift: ShiftReadModel) => void;
-  onAssignAsset?: (shift: ShiftReadModel) => void;
+  onAssignAsset?: (shift: ShiftReadModel, mode: ShiftAssetAssignmentMode) => void;
   onCreateQuickShift?: (resource: ResourceReadModel, day: string) => void;
   dragEnabled: boolean;
   manualOrder?: ManualResourceOrderControls;
@@ -2253,7 +2272,7 @@ export default function PlanningPage({
                     capacity={capacity}
                     diagnostics={diagnosticsBySegment}
                     onEditShift={canManagePlanning ? setEditingShift : undefined}
-                    onAssignAsset={canManagePlanning ? (shift) => setAssetAssignment({ shift, mode: "assign" }) : undefined}
+                    onAssignAsset={canManagePlanning ? (shift, mode) => setAssetAssignment({ shift, mode }) : undefined}
                     onCreateQuickShift={canManagePlanning ? (targetResource, day) => {
                       setQuickShiftSeed({ resourceId: targetResource.id, day });
                       setQuickShiftOpen(true);
