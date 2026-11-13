@@ -822,39 +822,39 @@ A task is not complete merely because code exists on a branch.
 
 ### Dev Cockpit pipeline contract
 
-When roadmap #55 contains a versioned `COCKPIT_PIPELINE_V1` block, that block is the machine-readable contract used by the Dev Cockpit. Human roadmap prose, tables, PR numbers, CI numbers and commit SHAs must never be used as substitute step identities.
+The human roadmap and machine pipeline are separate GitHub authorities:
 
-Any change to the work order or completion state in #55 must:
+- **#55** is the human roadmap for narrative, planning history and product context;
+- **#851** is the sole machine-readable `COCKPIT_PIPELINE_V1` authority;
+- the configured source mode is **`DEDICATED_STRICT`**.
 
-- update `COCKPIT_PIPELINE_V1` in the same roadmap edit;
+The embedded `COCKPIT_PIPELINE_V1` still physically present in #55 is historical/non-authoritative machine text. Supported machine readers and writers must ignore it.
+
+Any change to machine work order or completion state must update the canonical block in **#851** and must:
+
 - preserve stable issue/sub-slice identity (`399`, `399A`, etc.);
 - mark a merged/completed step `DONE` and promote the actual next MAIN step to `READY`;
 - keep later MAIN steps `BLOCKED`;
-- keep the human roadmap text consistent with the canonical block;
 - never use a PR, CI run or commit number as `KEY`;
-- verify after the roadmap edit that the canonical parser resolves the expected active step.
+- verify after the edit that the strict canonical parser resolves the expected active step.
 
-Do not store the current next issue or current active step in this file. AGENTS.md contains only the durable rules of the contract; #55 contains the current product state.
+Human roadmap edits to #55 may update narrative/context, but must never establish or override machine state.
 
-If a canonical block exists but is invalid, do not work around it by editing the cockpit heuristics or by inferring a different active step from surrounding Markdown. Correct #55 so the canonical contract becomes valid again.
+Do not store the current next issue or current active step in this file. AGENTS.md contains only durable rules; #851 contains the current machine product state and #55 contains human roadmap context.
 
-#### #842 pipeline-source migration — pre-cutover contract
+The source selector is repository-controlled. Do not dynamically choose between #55 and #851 by title, label, search, environment drift or runtime arbitration. `LEGACY_EMBEDDED` remains supported only for historical compatibility tests/source handling; active authority is #851 with `DEDICATED_STRICT`.
 
-The implementation now distinguishes the **human roadmap issue** from the **configured machine pipeline issue**. This is migration support only until an explicit Product Owner cutover.
+A dedicated machine source requires a valid V1 block, rejects unsupported or mixed pipeline versions, validates referenced parent Issues, and never falls back to human Markdown or the old embedded #55 block. If #851 is missing or invalid, fail closed and correct #851 rather than inferring work elsewhere.
 
-During #842 Phase 2A:
+#### #842 controlled cutover operations
 
-- human roadmap authority remains GitHub issue **#55**;
-- the active/default machine pipeline authority also remains the embedded `COCKPIT_PIPELINE_V1` in **#55**;
-- GitHub issue **#851** is a **NON-CANONICAL MIGRATION CANDIDATE** only;
-- `canonical_pipeline_issue` is repository-owned configuration and defaults to #55; environment-variable drift must not silently redirect machine product authority;
-- `canonical_pipeline_source_mode` is also repository-owned and explicitly selects `LEGACY_EMBEDDED` or `DEDICATED_STRICT`; parser strictness must never be inferred from whether issue numbers happen to match;
-- `LEGACY_EMBEDDED` is valid only for the historical embedded #55 machine source; incompatible source-mode/issue combinations fail closed;
-- a `DEDICATED_STRICT` machine source uses strict `COCKPIT_PIPELINE_V1` parsing with no legacy Markdown fallback and rejects unsupported or mixed pipeline-version markers;
-- a dedicated machine source must validate its referenced parent WorkItem issues before it is treated as usable;
-- #800 remains outside V1 unless the Product Owner explicitly classifies it later.
+For the selector-switch deployment, the Product Owner must enforce:
 
-No supported reader may dynamically choose between #55 and #851. Phase 2B requires explicit Product Owner authorization to switch the configured machine source. Only after that switch may the dedicated issue become the sole machine-readable authority; #55 then remains the human roadmap.
+- **before merge/cutover:** quiesce old Dev Cockpit readers/writers that could mutate machine state and discard any pending Safe Writeback preview/confirmation created under #55 authority;
+- **cutover:** manually merge the reviewed selector change;
+- **after cutover:** restart/use only the source-compatible version and verify effective machine source = **#851 / DEDICATED_STRICT** before any roadmap reconciliation.
+
+The selector merge itself does not authorize post-cutover reconciliation and does not authorize ASTRA-644. #842 remains READY and ASTRA-644 remains BLOCKED until a separate Product Owner action.
 
 ### Dev Cockpit Safe Writeback and deterministic DEV reconciliation
 
