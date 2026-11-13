@@ -322,30 +322,40 @@ def parse_cockpit_pipeline(body: str) -> PipelineContract:
 
 def resolve_canonical_pipeline_source(body: str) -> PipelineContract:
     """Resolve a dedicated machine source without any legacy Markdown fallback."""
+    marker_inventory = re.findall(
+        r"<!--\s*/?COCKPIT_PIPELINE_V(\d+)\s*-->",
+        body,
+    )
+    unsupported_versions = sorted(
+        {value for value in marker_inventory if value != "1"},
+        key=int,
+    )
+    if unsupported_versions:
+        version_text = ", ".join(f"V{value}" for value in unsupported_versions)
+        return PipelineContract(
+            present=bool(marker_inventory),
+            valid=False,
+            source="canonical_v1",
+            steps=[],
+            errors=[
+                "Source canonique invalide: version COCKPIT_PIPELINE non supportée "
+                f"({version_text}); une source dédiée ne peut contenir que COCKPIT_PIPELINE_V1."
+            ],
+        )
+
     canonical = parse_cockpit_pipeline(body)
     if canonical.present:
         return canonical
 
-    version_markers = sorted(
-        set(re.findall(r"<!--\s*/?COCKPIT_PIPELINE_V(\d+)\s*-->", body))
-    )
-    if version_markers:
-        version_text = ", ".join(f"V{value}" for value in version_markers)
-        error = (
-            "Source canonique invalide: version COCKPIT_PIPELINE inconnue "
-            f"({version_text}); COCKPIT_PIPELINE_V1 est requis."
-        )
-    else:
-        error = (
-            "Source canonique invalide: le bloc COCKPIT_PIPELINE_V1 est absent. "
-            "Aucun fallback Markdown legacy n'est permis."
-        )
     return PipelineContract(
         present=False,
         valid=False,
         source="canonical_v1",
         steps=[],
-        errors=[error],
+        errors=[
+            "Source canonique invalide: le bloc COCKPIT_PIPELINE_V1 est absent. "
+            "Aucun fallback Markdown legacy n'est permis."
+        ],
     )
 
 
