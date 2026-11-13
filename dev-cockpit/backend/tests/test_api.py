@@ -17,7 +17,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(config.status_code, 200)
         combined = health.text + config.text
         self.assertNotIn(secret, combined)
-        self.assertTrue(config.json()["token_configured"])
+        payload = config.json()
+        self.assertTrue(payload["token_configured"])
+        self.assertEqual(payload["roadmap_issue"], 55)
+        self.assertEqual(payload["canonical_pipeline_issue"], 851)
+        self.assertEqual(payload["canonical_pipeline_source_mode"], "DEDICATED_STRICT")
 
     def test_dashboard_without_token_returns_useful_configuration_error(self):
         client = TestClient(create_app(Settings(github_token=None)))
