@@ -1040,6 +1040,7 @@ export type ShiftAssetActionReadModel = {
 
 export type ShiftAssetActionsReadModel = {
   assign: ShiftAssetActionReadModel;
+  designate_project?: ShiftAssetActionReadModel;
   change: ShiftAssetActionReadModel;
   release: ShiftAssetActionReadModel;
 };

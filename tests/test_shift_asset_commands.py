@@ -1033,6 +1033,7 @@ class ShiftAssetCommandTests(unittest.TestCase):
             row["asset_actions"]["assign"]["reason"],
             "asset_assignment_attached",
         )
+        self.assertTrue(row["asset_actions"]["designate_project"]["allowed"])
         self.assertTrue(row["asset_actions"]["change"]["allowed"])
         self.assertTrue(row["asset_actions"]["release"]["allowed"])
 
@@ -1214,6 +1215,144 @@ class ShiftAssetCommandTests(unittest.TestCase):
                 self.assertIsNone(ad_hoc)
         finally:
             engine.dispose()
+
+    def test_844_owned_shift_asset_can_coexist_with_designated_project_reservation(self) -> None:
+        assigned = self._set_asset(
+            asset_id="ASSET-A",
+            version=self._version(),
+            key="844-owned-a",
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        owned_allocation_id = assigned.json()["allocation_id"]
+
+        created = self.client.post(
+            "/api/v1/assets/project-reservations",
+            headers={"Idempotency-Key": "844-project-b"},
+            json={
+                "project_id": "PROJECT-560B",
+                "asset_type_id": "TYPE-560B",
+                "asset_id": "ASSET-B",
+                "start_date": DAY.isoformat(),
+                "end_date": DAY.isoformat(),
+                "operator_resource_id": None,
+                "expected_planning_version": self._version(),
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        project_allocation_id = created.json()["allocation_id"]
+
+        before = self.client.get(
+            "/api/v1/shifts",
+            params={"start": DAY.isoformat(), "end": DAY.isoformat()},
+        )
+        self.assertEqual(before.status_code, 200, before.text)
+        before_shift = next(
+            row for row in before.json()
+            if row["allocation_id"] == "ALLOC-SKILLED"
+        )
+        self.assertEqual(before_shift["asset_assignment"]["allocation_id"], owned_allocation_id)
+        self.assertFalse(before_shift["asset_actions"]["assign"]["allowed"])
+        self.assertTrue(before_shift["asset_actions"]["designate_project"]["allowed"])
+
+        candidates = self.client.get(
+            "/api/v1/assets/shifts/SHIFT-SKILLED/assignment/candidates"
+        )
+        self.assertEqual(candidates.status_code, 200, candidates.text)
+        candidate = next(
+            row for row in candidates.json()["candidates"]
+            if row["id"] == "ASSET-B"
+        )
+        self.assertEqual(candidate["selection_mode"], "DESIGNATE_PROJECT_OPERATOR")
+        self.assertTrue(candidate["allowed"])
+        self.assertEqual(candidate["existing_allocation_id"], project_allocation_id)
+
+        designated = self._set_asset(
+            asset_id="ASSET-B",
+            allocation_id=project_allocation_id,
+            version=candidates.json()["planning_version"],
+            key="844-designate-b",
+        )
+        self.assertEqual(designated.status_code, 200, designated.text)
+        self.assertEqual(designated.json()["operation"], "DESIGNATE_PROJECT_OPERATOR")
+        self.assertEqual(designated.json()["allocation_id"], project_allocation_id)
+
+        projected = self.client.get(
+            "/api/v1/shifts",
+            params={"start": DAY.isoformat(), "end": DAY.isoformat()},
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        shift = next(
+            row for row in projected.json()
+            if row["allocation_id"] == "ALLOC-SKILLED"
+        )
+        self.assertEqual(shift["asset_assignment"]["allocation_id"], owned_allocation_id)
+        inherited = [
+            row for row in shift["related_asset_reservations"]
+            if row["allocation_id"] == project_allocation_id
+        ]
+        self.assertEqual(len(inherited), 1)
+        self.assertEqual(inherited[0]["association_kind"], "INHERITED_PROJECT_DIRECT")
+
+        engine = create_sql_engine(self.url)
+        factory = create_session_factory(engine)
+        try:
+            with factory() as session:
+                allocations = session.scalars(
+                    select(AssetAllocation).where(
+                        AssetAllocation.id.in_(
+                            (owned_allocation_id, project_allocation_id)
+                        )
+                    )
+                ).all()
+                self.assertEqual({row.id for row in allocations}, {
+                    owned_allocation_id,
+                    project_allocation_id,
+                })
+                self.assertEqual(len(allocations), 2)
+                owned_requirement = session.get(
+                    AssetRequirement,
+                    shift["asset_assignment"]["requirement_id"],
+                )
+                self.assertIsNotNone(owned_requirement)
+                assert owned_requirement is not None
+                self.assertEqual(owned_requirement.origin, "SHIFT_AD_HOC")
+                self.assertEqual(owned_requirement.shift_id, "SHIFT-SKILLED")
+        finally:
+            engine.dispose()
+
+    def test_844_multiple_inherited_allocations_are_projected_once_by_allocation(self) -> None:
+        for asset_id, key in (("ASSET-B", "844-project-b-inherited"), ("ASSET-C", "844-project-c-inherited")):
+            created = self.client.post(
+                "/api/v1/assets/project-reservations",
+                headers={"Idempotency-Key": key},
+                json={
+                    "project_id": "PROJECT-560B",
+                    "asset_type_id": "TYPE-560B",
+                    "asset_id": asset_id,
+                    "start_date": DAY.isoformat(),
+                    "end_date": DAY.isoformat(),
+                    "operator_resource_id": "RESOURCE-SKILLED",
+                    "expected_planning_version": self._version(),
+                },
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+
+        projected = self.client.get(
+            "/api/v1/shifts",
+            params={"start": DAY.isoformat(), "end": DAY.isoformat()},
+        )
+        self.assertEqual(projected.status_code, 200, projected.text)
+        shift = next(
+            row for row in projected.json()
+            if row["allocation_id"] == "ALLOC-SKILLED"
+        )
+        inherited = [
+            row for row in shift["related_asset_reservations"]
+            if row["association_kind"] == "INHERITED_PROJECT_DIRECT"
+        ]
+        self.assertEqual(len(inherited), 2)
+        self.assertEqual(len({row["allocation_id"] for row in inherited}), 2)
+        self.assertEqual({row["asset_id"] for row in inherited}, {"ASSET-B", "ASSET-C"})
 
     def test_project_direct_reserved_for_other_operator_is_not_reassigned_implicitly(self) -> None:
         engine = create_sql_engine(self.url)

@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClientId } from "./clientId";
 import { useAuth } from "./AuthContext";
+import type { ShiftAssetAssignmentMode } from "./ShiftAssetAssignmentDialog";
 import {
   ApiError,
   ResourceReadModel,
@@ -159,7 +160,7 @@ export default function ShiftEditor({
   onSaved: () => void;
   onStale: () => void;
   onOpenDemand: (demandNumber: string) => void;
-  onAssetAction: (mode: "assign" | "change" | "release") => void;
+  onAssetAction: (mode: ShiftAssetAssignmentMode) => void;
 }) {
   const { can } = useAuth();
   const canManagePlanning = can("manage_planning");
@@ -865,6 +866,16 @@ export default function ShiftEditor({
                   <small>Qualification : {assetQualificationLabel(shift.asset_assignment.qualification_state)}</small>
                 </div>
                 <div className="shift-asset-section-actions">
+                  {shift.asset_actions?.designate_project?.allowed && (
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => onAssetAction("designate_project")}
+                      disabled={saving}
+                    >
+                      Associer une réservation projet
+                    </button>
+                  )}
                   {shift.asset_actions?.change.allowed && (
                     <button
                       type="button"
