@@ -4,7 +4,7 @@ import unittest
 
 import httpx
 
-from app.config import Settings
+from app.config import PIPELINE_SOURCE_LEGACY_EMBEDDED, Settings
 from app.github import GitHubClient
 from app.service import build_dashboard
 
@@ -323,6 +323,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="secret-that-must-not-leak",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -380,6 +382,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -469,6 +473,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -575,6 +581,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -669,6 +677,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -776,6 +786,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -876,6 +888,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -952,6 +966,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -1067,6 +1083,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -1160,6 +1178,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
@@ -1217,6 +1237,8 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
             stalled_after_minutes=20,
             github_api_url="https://api.github.test",
         )
