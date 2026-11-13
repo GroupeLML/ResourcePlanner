@@ -399,7 +399,10 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(dashboard["pipeline"]["valid"])
         self.assertIsNone(dashboard["active_work"])
-        self.assertIn("#851", dashboard["execution"]["next_action"])
+        self.assertEqual(
+            dashboard["execution"]["next_action"],
+            "Corriger COCKPIT_PIPELINE_V1 dans #851.",
+        )
         self.assertIn("#851", dashboard["next_action"])
 
         po_pack = dashboard["handoff"]["packs"]["product-owner"]
