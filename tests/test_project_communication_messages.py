@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import replace
+import json
 import unittest
 
 from app.domain.operational_contacts import ContactResolution, STATUS_RESOLVED
@@ -11,6 +13,7 @@ from app.domain.project_communication import (
     ProjectCommunicationProject,
     ProjectCommunicationProjection,
     ProjectCommunicationResource,
+    ProjectCommunicationRequestAssignment,
     ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
 )
@@ -164,10 +167,36 @@ def project(
 
 
 def projection(*projects: ProjectCommunicationProject) -> ProjectCommunicationProjection:
+    complete_projects = []
+    for source in projects:
+        days = []
+        for day in source.days:
+            tasks = []
+            for task in day.tasks:
+                provenance = tuple(
+                    ProjectCommunicationRequestAssignment(
+                        shift_id=shift_id,
+                        requirement_id="REQ-1",
+                        workforce_request_id="DEMAND-1",
+                        request_number="DMO-1",
+                        resource_id=row.resource_id,
+                        resource_name=row.resource_name,
+                        hours=row.hours / len(row.shift_ids),
+                        site_contact_name=None,
+                        site_contact_phone=None,
+                    )
+                    for row in task.resources
+                    for shift_id in row.shift_ids
+                )
+                tasks.append(replace(task, request_assignments=provenance))
+            days.append(replace(day, tasks=tuple(tasks)))
+        complete_projects.append(replace(source, days=tuple(days)))
     return ProjectCommunicationProjection(
         week_start=WEEK,
         week_end=date(2026, 9, 27),
-        projects=projects,
+        projects=tuple(complete_projects),
+        request_provenance_version=1,
+        request_provenance_complete=True,
     )
 
 
@@ -722,6 +751,58 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         self.assertNotIn("Alice", draft.body)
         self.assertIn("Bob", draft.body)
+
+    def test_830_contact_add_change_clear_and_legacy_delta(self) -> None:
+        base = projection(project())
+        old_project = base.projects[0]
+        task = old_project.days[0].tasks[0]
+        def with_contact(name, phone):
+            changed = replace(
+                task,
+                request_assignments=tuple(
+                    replace(row, site_contact_name=name, site_contact_phone=phone)
+                    for row in task.request_assignments
+                ),
+            )
+            day = replace(old_project.days[0], tasks=(changed,))
+            return replace(base, projects=(replace(old_project, days=(day,)),))
+
+        added = with_contact("Jean Tremblay", "514-555-0101")
+        changed = with_contact("Pierre Gagnon", "450-555-0202")
+        self.assertEqual(len(compare_project_communication_projections(base, added)), 1)
+        self.assertEqual(len(compare_project_communication_projections(added, changed)), 1)
+        self.assertEqual(len(compare_project_communication_projections(added, base)), 1)
+        self.assertIn("Contact chantier", build_project_confirmation_batch(added).drafts[0].body)
+        self.assertEqual(
+            project_projection_fingerprint(
+                deserialize_project_projection(serialize_project_projection(added))
+            ),
+            project_projection_fingerprint(added),
+        )
+        legacy = replace(
+            base,
+            projects=(replace(old_project, days=(
+                replace(old_project.days[0], tasks=(replace(task, request_assignments=()),)),
+            )),),
+            request_provenance_version=None,
+            request_provenance_complete=False,
+        )
+        self.assertEqual(compare_project_communication_projections(legacy, base), ())
+        self.assertEqual(len(compare_project_communication_projections(legacy, added)), 1)
+
+    def test_830_version_and_completeness_fail_closed(self) -> None:
+        current = projection(project())
+        encoded = json.loads(serialize_project_projection(current))
+        encoded["request_provenance_version"] = 2
+        with self.assertRaises(ValueError):
+            deserialize_project_projection(json.dumps(encoded))
+        encoded["request_provenance_version"] = 1
+        encoded["projects"][0]["days"][0]["tasks"][0]["request_assignments"] = []
+        with self.assertRaises(ValueError):
+            deserialize_project_projection(json.dumps(encoded))
+        encoded.pop("request_provenance_version")
+        with self.assertRaises(ValueError):
+            deserialize_project_projection(json.dumps(encoded))
 
     def test_no_standalone_technician_message_is_generated(self) -> None:
         batch = build_project_confirmation_batch(projection(project()))

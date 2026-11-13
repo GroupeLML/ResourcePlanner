@@ -99,6 +99,21 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
         self.assertEqual(resource.confirmations, ("Confirmée", "Tentative"))
         self.assertTrue(resource.outside_schedule)
 
+    def test_830_shift_identity_is_unique_and_provenance_is_not_double_counted(self) -> None:
+        result = build_project_communication_projection(
+            week_start=WEEK, week_end=date(2026, 9, 27),
+            assignments=(self._row(shift_id="S1", hours=3), self._row(shift_id="S2", hours=5)),
+        )
+        task = result.projects[0].days[0].tasks[0]
+        self.assertEqual(task.resources[0].hours, 8)
+        self.assertEqual({row.shift_id for row in task.request_assignments}, {"S1", "S2"})
+        self.assertTrue(result.request_provenance_complete)
+        with self.assertRaises(ValueError):
+            build_project_communication_projection(
+                week_start=WEEK, week_end=date(2026, 9, 27),
+                assignments=(self._row(shift_id="S1"), self._row(shift_id="S1")),
+            )
+
     def test_same_manager_can_still_produce_two_project_groups(self) -> None:
         result = build_project_communication_projection(
             week_start=WEEK,
