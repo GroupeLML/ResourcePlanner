@@ -1,12 +1,19 @@
 # RessourcePlanner Dev Cockpit
 
-Outil de développement local, isolé fonctionnellement de l'application métier RessourcePlanner. Il observe GitHub, dérive l'état de développement et génère des contextes de reprise pour ChatGPT. Il n'intègre aucune API IA/OpenAI et ne pilote aucun agent. La seule mutation GitHub supportée est un **Safe Writeback explicite** du bloc canonique de #55, décrit plus bas; toutes les autres vues restent observationnelles.
+Outil de développement local, isolé fonctionnellement de l'application métier RessourcePlanner. Il observe GitHub, dérive l'état de développement et génère des contextes de reprise pour ChatGPT. Il n'intègre aucune API IA/OpenAI et ne pilote aucun agent. La seule mutation GitHub supportée est un **Safe Writeback explicite** du bloc canonique configuré, décrit plus bas; toutes les autres vues restent observationnelles.
 
 ## Source de vérité
 
-Le cockpit ne crée aucun roadmap parallèle. Il lit notamment :
+Le cockpit ne crée aucun roadmap parallèle. Il distingue maintenant :
 
-- le roadmap maître GitHub configuré (`#55` par défaut);
+- le **roadmap humain** GitHub (`#55`);
+- la **source machine configurée** pour `COCKPIT_PIPELINE_V1`.
+
+Pendant **#842 Phase 2A**, les deux identités configurées pointent encore par défaut vers #55. L'issue **#851** existe uniquement comme **NON-CANONICAL MIGRATION CANDIDATE**; aucun cutover n'a encore eu lieu.
+
+Il lit notamment :
+
+- le roadmap humain GitHub configuré (`#55` par défaut);
 - l'issue active et ses sous-tranches;
 - les PR, branches, commits, Actions et jobs GitHub;
 - `AGENTS.md` pour déterminer si l'enchaînement d'un même bloc est documenté;
@@ -191,11 +198,18 @@ La clé de travail active vient d'abord de l'état documenté dans l'issue/roadm
 
 Le commit de `main` affiché dans le footer est uniquement une référence sur l'état du dépôt. Les états `IN_PROGRESS`, `STALLED`, la dernière activité, les workflows associés et le détail Developer utilisent le HEAD de la branche active ou de la PR active.
 
-## Pipeline canonique du roadmap #55
+## Pipeline canonique — source humaine et source machine séparées
 
-GitHub #55 reste la source de vérité du produit. Le cockpit ne conserve aucun état produit local.
+GitHub reste la source de vérité du produit. Le cockpit ne conserve aucun état produit local.
 
-Quand #55 contient le bloc versionné `COCKPIT_PIPELINE_V1`, ce bloc est **autoritaire** pour déterminer le focus courant, les horizons Maintenant/Ensuite, les gates, le prompt Developer et la clé utilisée pour rechercher une PR ou une branche. Le texte humain détaillé de #55 reste de la documentation; il ne peut ni remplacer ni contredire le bloc canonique dans le resolver.
+Le backend distingue maintenant deux identités :
+
+- `roadmap_issue` — roadmap humain, actuellement **#55**;
+- `canonical_pipeline_issue` — source machine de `COCKPIT_PIPELINE_V1`.
+
+**Pré-cutover #842 Phase 2A :** `canonical_pipeline_issue` reste fixé à **#55**. L'issue **#851** est supportée pour validation explicite seulement et demeure **NON-CANONICAL**. Le changement de source active vers #851 est réservé à Phase 2B après autorisation PO.
+
+Quand la source machine configurée contient le bloc versionné `COCKPIT_PIPELINE_V1`, ce bloc est autoritaire pour déterminer le focus courant, les horizons Maintenant/Ensuite, les gates, le prompt Developer et la clé utilisée pour rechercher une PR ou une branche. Le texte humain détaillé de #55 reste de la documentation et ne peut jamais remplacer la source machine en mode dédié.
 
 Format exact :
 
@@ -236,7 +250,7 @@ Le parser valide notamment :
 
 Si au moins un marqueur `COCKPIT_PIPELINE_V1` est présent mais que le bloc est incomplet, invalide, ambigu ou incohérent, le cockpit **ne revient jamais** aux heuristiques Markdown historiques. Il retourne `pipeline.valid = false`, aucune étape `now`, aucune issue/tranche active, et un message demandant de corriger #55. Le Developer ne reçoit aucun prompt lui demandant de démarrer une tranche inventée.
 
-Si le bloc canonique est complètement absent, le resolver historique reste disponible comme fallback de compatibilité pour les anciens roadmaps. Ce fallback continue de lire la section `Suite produit` / `Pipeline produit`, son bloc `text`, ses marqueurs et sa table Markdown. Il n'est jamais combiné au bloc canonique V1.
+Si le bloc canonique est complètement absent **dans le mode historique où la source machine est encore #55**, le resolver historique reste disponible comme fallback de compatibilité. En revanche, une **source machine dédiée** utilise un resolver strict : bloc absent, version inconnue, marqueurs dupliqués, syntaxe invalide ou parent WorkItem introuvable rendent le pipeline invalide. Il n'existe alors aucun fallback vers le Markdown humain de #55 ni vers son ancien bloc embarqué.
 
 Aucun état local n'enregistre qu'une étape ou une gate est terminée. Toute évolution du produit doit mettre à jour le bloc canonique de #55. Après fusion d'une tranche, son statut passe à `DONE`, la prochaine étape MAIN passe à `READY`, et les suivantes restent `BLOCKED`.
 
@@ -262,20 +276,21 @@ Lorsqu'une étape MAIN `READY` est prouvée livrée, le cockpit génère une pro
 1. passe cette étape de `READY` à `DONE`;
 2. promeut la prochaine étape MAIN non terminée de `BLOCKED` à `READY`;
 3. conserve l'ordre, les identités, les lanes et les titres;
-4. produit le bloc `COCKPIT_PIPELINE_V1` complet à recopier dans #55.
+4. produit le bloc `COCKPIT_PIPELINE_V1` complet à appliquer à la source machine configurée.
 
 Une étape `PARALLEL READY` prouvée livrée peut être proposée `DONE` sans modifier la lane MAIN.
 
 Le bloc proposé reste disponible à la copie manuelle. Lorsque le token local possède **Issues: write**, le cockpit permet aussi un Safe Writeback explicite.
 
-### Safe Writeback de #55
+### Safe Writeback de la source machine
 
-Le Safe Writeback ferme la boucle du Reconciler sans créer de second état produit. Il ne peut écrire que lorsque le pipeline canonique est valide, que le Reconciler retourne `stale` et qu'une proposition déterministe existe déjà.
+Le Safe Writeback ferme la boucle du Reconciler sans créer de second état produit. Il cible **uniquement l'issue machine configurée** et ne peut écrire que lorsque le pipeline canonique est valide, que le Reconciler retourne `stale` et qu'une proposition déterministe existe déjà. Pendant Phase 2A, cette cible active reste #55; #851 n'est utilisée que dans des validations/configurations explicites.
 
 Le parcours comporte deux étapes obligatoires :
 
-1. **Voir le diff** appelle `POST /api/roadmap-writeback/preview`. Le backend reconstruit le dashboard depuis GitHub, relit #55 et vérifie que le bloc analysé correspond encore exactement au bloc courant. La réponse contient le diff, `updated_at`, le SHA-256 du body complet et le SHA-256 de la proposition.
-2. **Confirmer et appliquer à #55** appelle `POST /api/roadmap-writeback/apply`. Le backend relit #55, vérifie `updated_at + body SHA-256`, recalcule le Reconciler, vérifie que la proposition n'a pas changé, relit encore #55 immédiatement avant le PATCH, puis remplace uniquement `COCKPIT_PIPELINE_V1`.
+1. **Voir le diff** appelle `POST /api/roadmap-writeback/preview`. Le backend reconstruit le dashboard depuis GitHub, relit l'issue machine configurée et vérifie que le bloc analysé correspond encore exactement au bloc courant. La réponse contient le diff, `updated_at`, le SHA-256 du body complet et le SHA-256 de la proposition.
+2. **Confirmer et appliquer à #<pipeline>** appelle `POST /api/roadmap-writeback/apply`. Le backend relit l'issue machine, vérifie `updated_at + body SHA-256`, recalcule le Reconciler, vérifie que la proposition n'a pas changé, relit encore immédiatement avant le PATCH, puis remplace uniquement `COCKPIT_PIPELINE_V1`.
+3. Après PATCH, le backend effectue un **GET indépendant** et exige le body exact, le SHA-256 exact, un parse V1 valide et le bloc proposé exact avant de rapporter le succès.
 
 Invariants :
 
@@ -283,14 +298,14 @@ Invariants :
 - le Markdown avant et après `COCKPIT_PIPELINE_V1` reste octet-pour-octet identique;
 - un pipeline legacy, invalide ou non-stale ne peut pas être écrit;
 - aucune gate d'architecture/environnement n'est automatiquement déclarée terminée;
-- une modification concurrente de #55 produit `ROADMAP_CHANGED` (HTTP 409) et aucune écriture;
+- une modification concurrente de la source machine configurée produit `ROADMAP_CHANGED` (HTTP 409) et aucune écriture;
 - une proposition différente de celle prévisualisée produit `PROPOSAL_CHANGED` et exige un nouveau diff;
-- le résultat GitHub est relu dans la réponse du PATCH et revalidé comme pipeline canonique valide;
+- la réponse PATCH est validée puis une relecture GET indépendante doit confirmer exactement le résultat attendu;
 - aucune mutation n'est déclenchée par polling, refresh ou Attention Center : l'utilisateur doit cliquer sur la confirmation finale.
 
 GitHub Issues ne fournit pas au cockpit un champ CAS applicatif transactionnel. La protection est donc un verrou optimiste fort basé sur **`updated_at + SHA-256 du body complet`**, vérifié deux fois avant le PATCH, puis vérifié après l'écriture. Le cockpit échoue fermé dès qu'un écart est observé.
 
-Le texte humain de #55 n'est volontairement pas réécrit par ce mécanisme : le Safe Writeback est limité au contrat machine `COCKPIT_PIPELINE_V1`. Les mises à jour documentaires plus larges restent des éditions GitHub explicites.
+Le texte humain de #55 n'est volontairement pas réécrit par ce mécanisme une fois la source machine séparée : le Safe Writeback est limité au contrat machine `COCKPIT_PIPELINE_V1`. Pendant Phase 2A, l'autorité active reste néanmoins le bloc embarqué de #55 jusqu'au cutover explicitement autorisé.
 
 ### Attention Center
 
