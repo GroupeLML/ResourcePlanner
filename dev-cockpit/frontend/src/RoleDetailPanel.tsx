@@ -47,7 +47,7 @@ function PipelineUnavailable({ dashboard }: { dashboard: Dashboard }) {
   return (
     <section className="role-detail-section">
       <div className="role-detail-section-title">
-        {invalid ? 'Pipeline #55 invalide' : 'Aucune étape active'}
+        {invalid ? `Pipeline #${dashboard.pipeline_source.number} invalide` : 'Aucune étape active'}
       </div>
       <p className="role-detail-muted">{dashboard.next_action}</p>
       {invalid && dashboard.pipeline.errors.length > 0 && (
@@ -332,7 +332,7 @@ function PipelineStepAccordion({
             <dd>{step.kind}</dd>
           </div>
           <div>
-            <dt>État #55</dt>
+            <dt>État machine</dt>
             <dd>{step.status || (step.done ? 'terminé' : 'non terminé')}</dd>
           </div>
           <div>
@@ -480,8 +480,8 @@ function ProductOwnerDetails({ dashboard }: { dashboard: Dashboard | null }) {
             Trajectoire produit · {dashboard.pipeline.completed_count}/{dashboard.pipeline.steps.length} franchie(s)
           </div>
           <p className="role-detail-muted">
-            Pipeline déterministe lu depuis le roadmap maître. Ouvre une tranche pour
-            afficher son contexte #55 puis son détail GitHub.
+            Pipeline déterministe lu depuis la source machine #{dashboard.pipeline_source.number}. Ouvre une tranche pour
+            afficher son contexte humain #{dashboard.roadmap.number} puis son détail GitHub.
           </p>
           <div className="pipeline-horizon-stack">
             <PipelineHorizonGroup
@@ -538,7 +538,7 @@ function ProductOwnerDetails({ dashboard }: { dashboard: Dashboard | null }) {
             <details className="role-document-accordion roadmap-source">
               <summary>
                 <div>
-                  <strong>Document maître #55</strong>
+                  <strong>Roadmap humain #{roadmap.number}</strong>
                   <small>Contenu complet du roadmap GitHub</small>
                 </div>
               </summary>

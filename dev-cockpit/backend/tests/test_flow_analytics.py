@@ -152,7 +152,18 @@ class FakeGitHub:
         return repo
 
     async def get_issue(self, repo, number):
-        return self.issue
+        if number == self.issue["number"]:
+            return self.issue
+        if number == 101:
+            return {
+                "number": 101,
+                "title": "Issue 101",
+                "body": "",
+                "state": "open",
+                "html_url": "https://github.test/issues/101",
+                "updated_at": "2026-09-25T12:00:00Z",
+            }
+        raise AssertionError(f"Unexpected issue lookup: #{number}")
 
     async def list_pulls(self, repo, state="open", per_page=20):
         return self.closed if state == "closed" else []
@@ -212,6 +223,22 @@ class FlowAnalyticsTests(unittest.IsolatedAsyncioTestCase):
         # PR #504 mentions 101B only in an out-of-scope sentence; it must not
         # become the delivery identity for 101B.
         self.assertNotEqual(second["pr"]["number"], 504)
+
+    async def test_post_cutover_analytics_reads_issue_851_in_strict_mode(self):
+        fake = FakeGitHub()
+        fake.issue["number"] = 851
+        report = await build_flow_analytics(
+            fake,
+            "tchi99/RessourcePlanner",
+            851,
+            12,
+            strict_source=True,
+        )
+        self.assertEqual(report["pipeline_issue"], 851)
+        self.assertNotEqual(report["status"], "unavailable")
+        self.assertTrue(
+            any("réconciliation #851" in note for note in report["notes"])
+        )
 
     async def test_no_branch_creation_or_reconciliation_timestamp_is_invented(self):
         report = await build_flow_analytics(

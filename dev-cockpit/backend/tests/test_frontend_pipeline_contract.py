@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -59,6 +60,9 @@ class FrontendPipelineContractTests(unittest.TestCase):
         self.assertIn("PipelineHorizonGroup", panel)
         self.assertIn("PipelineStepAccordion", panel)
         self.assertIn("PipelineUnavailable", panel)
+        self.assertIn("dashboard.pipeline_source.number", panel)
+        self.assertIn("dashboard.roadmap.number", panel)
+        self.assertNotIn("Pipeline #55 invalide", panel)
         self.assertIn("MissionBlock", panel)
         self.assertIn("Mission courante", panel)
         self.assertIn("HANDOFF PACK", panel)
@@ -112,9 +116,55 @@ class FrontendPipelineContractTests(unittest.TestCase):
         self.assertIn("pr_to_green_minutes", types)
 
         self.assertIn("dashboard?.execution.missions", roles)
+        self.assertIn("dashboard.pipeline_source.number", roles)
+        self.assertNotIn("Pipeline #55 invalide", roles)
         self.assertIn("dashboard?.handoff.packs", roles)
         self.assertIn("Préparer la reprise + ouvrir", roles)
         self.assertIn("handoffRole", roles)
+
+
+    def test_role_detail_identity_templates_render_dynamic_values(self):
+        cockpit_root = Path(__file__).resolve().parents[2]
+        panel = (cockpit_root / "frontend" / "src" / "RoleDetailPanel.tsx").read_text(
+            encoding="utf-8"
+        )
+
+        pipeline_match = re.search(
+            r"invalid \? `([^`]*dashboard\.pipeline_source\.number[^`]*)` : 'Aucune étape active'",
+            panel,
+        )
+        self.assertIsNotNone(pipeline_match)
+        pipeline_template = pipeline_match.group(1)
+        self.assertEqual(
+            pipeline_template.replace("${dashboard.pipeline_source.number}", "851"),
+            "Pipeline #851 invalide",
+        )
+        self.assertEqual(
+            pipeline_template.replace("${dashboard.pipeline_source.number}", "407"),
+            "Pipeline #407 invalide",
+        )
+        self.assertNotRegex(
+            pipeline_template.replace("${dashboard.pipeline_source.number}", "851"),
+            r"[{}]",
+        )
+
+        architect_match = re.search(
+            r"dashboard\.active_work\.subitem_key \|\| `([^`]*dashboard\.active_work\.issue_number[^`]*)`",
+            panel,
+        )
+        self.assertIsNotNone(architect_match)
+        issue_template = architect_match.group(1)
+        rendered_issue = issue_template.replace(
+            "${dashboard.active_work.issue_number}",
+            "842",
+        )
+        self.assertEqual(rendered_issue, "#842")
+        self.assertNotRegex(rendered_issue, r"[{}]")
+
+        # Preserve existing JSX `||` precedence: a present subitem key wins over
+        # the parent issue fallback, while an empty subitem uses the rendered issue.
+        self.assertEqual("842A" or rendered_issue, "842A")
+        self.assertEqual("" or rendered_issue, "#842")
 
 
 if __name__ == "__main__":

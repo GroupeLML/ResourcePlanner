@@ -82,7 +82,7 @@ The repository supports two equivalent orchestration modes.
    - The Product Owner monitors PR state, CI results, architecture reviews, merge completion and roadmap progression manually.
    - The Product Owner may return to the same DEV session with exact PR/head/CI/review evidence and corrective instructions.
    - The DEV agent must stop at each GitHub handoff point and must not remain active polling or waiting for CI, review or merge completion.
-   - After a proven merge, the Product Owner may explicitly instruct the DEV agent or another authorized agent to reconcile roadmap #55.
+   - After a proven merge, the Product Owner may explicitly instruct the DEV agent or another authorized agent to reconcile the canonical machine pipeline in #851.
 
 2. **DevCockpit / supported browser-extension orchestration — optional**
    - When DevCockpit or the supported browser extension is explicitly in use, it may perform the same observation, corrective reactivation, merge monitoring, roadmap reconciliation and prompt chaining described in this file.
@@ -116,7 +116,7 @@ If the orchestrator later sends a corrective prompt for the same WorkItem becaus
 
 If that corrective scope is complex under section 3B, the orchestrator should send a phased correction prompt instead of asking the DEV agent to clear every failure family in one session. The DEV agent must then complete only the authorized phase and stop for the Product Owner handoff before continuing.
 
-After GitHub proves that the PR is merged and required CI is green, roadmap reconciliation may be initiated manually by explicit Product Owner instruction or automatically by DevCockpit when that orchestration mode is explicitly active. That reconciliation turn is authorized only to reflect the already-proven delivery: mark the delivered WorkItem DONE, promote the true next already-defined item to READY according to the existing order/dependencies/gates, keep later items BLOCKED when appropriate, and keep human roadmap text/checklists coherent with the canonical block. It must not change scope, ordering, dependencies, REPLACES, WorkItem identity or decomposition.
+After GitHub proves that the PR is merged and required CI is green, machine-pipeline reconciliation may be initiated manually by explicit Product Owner instruction or automatically by DevCockpit when that orchestration mode is explicitly active. That reconciliation turn is authorized only to reflect the already-proven delivery in #851: mark the delivered WorkItem DONE, promote the true next already-defined item to READY according to the existing order/dependencies/gates, and keep later items BLOCKED when appropriate. Human roadmap #55 remains context and is not a fallback machine authority. The reconciliation must not change scope, ordering, dependencies, REPLACES, WorkItem identity or decomposition.
 
 A completed implementation DEV turn is not the same as a completed WorkItem. The WorkItem remains unfinished until authoritative GitHub and roadmap evidence satisfy the Definition of Done.
 
@@ -822,39 +822,39 @@ A task is not complete merely because code exists on a branch.
 
 ### Dev Cockpit pipeline contract
 
-When roadmap #55 contains a versioned `COCKPIT_PIPELINE_V1` block, that block is the machine-readable contract used by the Dev Cockpit. Human roadmap prose, tables, PR numbers, CI numbers and commit SHAs must never be used as substitute step identities.
+The human roadmap and machine pipeline are separate GitHub authorities:
 
-Any change to the work order or completion state in #55 must:
+- **#55** is the human roadmap for narrative, planning history and product context;
+- **#851** is the sole machine-readable `COCKPIT_PIPELINE_V1` authority;
+- the configured source mode is **`DEDICATED_STRICT`**.
 
-- update `COCKPIT_PIPELINE_V1` in the same roadmap edit;
+The embedded `COCKPIT_PIPELINE_V1` still physically present in #55 is historical/non-authoritative machine text. Supported machine readers and writers must ignore it.
+
+Any change to machine work order or completion state must update the canonical block in **#851** and must:
+
 - preserve stable issue/sub-slice identity (`399`, `399A`, etc.);
 - mark a merged/completed step `DONE` and promote the actual next MAIN step to `READY`;
 - keep later MAIN steps `BLOCKED`;
-- keep the human roadmap text consistent with the canonical block;
 - never use a PR, CI run or commit number as `KEY`;
-- verify after the roadmap edit that the canonical parser resolves the expected active step.
+- verify after the edit that the strict canonical parser resolves the expected active step.
 
-Do not store the current next issue or current active step in this file. AGENTS.md contains only the durable rules of the contract; #55 contains the current product state.
+Human roadmap edits to #55 may update narrative/context, but must never establish or override machine state.
 
-If a canonical block exists but is invalid, do not work around it by editing the cockpit heuristics or by inferring a different active step from surrounding Markdown. Correct #55 so the canonical contract becomes valid again.
+Do not store the current next issue or current active step in this file. AGENTS.md contains only durable rules; #851 contains the current machine product state and #55 contains human roadmap context.
 
-#### #842 pipeline-source migration — pre-cutover contract
+The source selector is repository-controlled. Do not dynamically choose between #55 and #851 by title, label, search, environment drift or runtime arbitration. `LEGACY_EMBEDDED` remains supported only for historical compatibility tests/source handling; active authority is #851 with `DEDICATED_STRICT`.
 
-The implementation now distinguishes the **human roadmap issue** from the **configured machine pipeline issue**. This is migration support only until an explicit Product Owner cutover.
+A dedicated machine source requires a valid V1 block, rejects unsupported or mixed pipeline versions, validates referenced parent Issues, and never falls back to human Markdown or the old embedded #55 block. If #851 is missing or invalid, fail closed and correct #851 rather than inferring work elsewhere.
 
-During #842 Phase 2A:
+#### #842 controlled cutover operations
 
-- human roadmap authority remains GitHub issue **#55**;
-- the active/default machine pipeline authority also remains the embedded `COCKPIT_PIPELINE_V1` in **#55**;
-- GitHub issue **#851** is a **NON-CANONICAL MIGRATION CANDIDATE** only;
-- `canonical_pipeline_issue` is repository-owned configuration and defaults to #55; environment-variable drift must not silently redirect machine product authority;
-- `canonical_pipeline_source_mode` is also repository-owned and explicitly selects `LEGACY_EMBEDDED` or `DEDICATED_STRICT`; parser strictness must never be inferred from whether issue numbers happen to match;
-- `LEGACY_EMBEDDED` is valid only for the historical embedded #55 machine source; incompatible source-mode/issue combinations fail closed;
-- a `DEDICATED_STRICT` machine source uses strict `COCKPIT_PIPELINE_V1` parsing with no legacy Markdown fallback and rejects unsupported or mixed pipeline-version markers;
-- a dedicated machine source must validate its referenced parent WorkItem issues before it is treated as usable;
-- #800 remains outside V1 unless the Product Owner explicitly classifies it later.
+For the selector-switch deployment, the Product Owner must enforce:
 
-No supported reader may dynamically choose between #55 and #851. Phase 2B requires explicit Product Owner authorization to switch the configured machine source. Only after that switch may the dedicated issue become the sole machine-readable authority; #55 then remains the human roadmap.
+- **before merge/cutover:** quiesce old Dev Cockpit readers/writers that could mutate machine state and discard any pending Safe Writeback preview/confirmation created under #55 authority;
+- **cutover:** manually merge the reviewed selector change;
+- **after cutover:** restart/use only the source-compatible version and verify effective machine source = **#851 / DEDICATED_STRICT** before any roadmap reconciliation.
+
+The selector merge itself does not authorize post-cutover reconciliation and does not authorize ASTRA-644. #842 remains READY and ASTRA-644 remains BLOCKED until a separate Product Owner action.
 
 ### Dev Cockpit Safe Writeback and deterministic DEV reconciliation
 
@@ -887,16 +887,16 @@ No additional product decision is required for the deterministic reconciliation 
 The DEV must:
 
 1. synchronize with current `main`;
-2. reread this AGENTS.md and the latest #55;
+2. reread this AGENTS.md, canonical machine issue #851, and human roadmap #55 when human context is relevant;
 3. verify the referenced PR is merged and required CI for the delivered head is green;
-4. reread #55 immediately before editing so a concurrent change is not overwritten blindly;
-5. update #55 directly through GitHub;
+4. reread #851 immediately before editing so a concurrent machine-state change is not overwritten blindly;
+5. update the canonical `COCKPIT_PIPELINE_V1` in #851 directly through GitHub;
 6. mark only the proven delivered WorkItem `DONE`;
 7. promote only the true next already-defined item(s) to `READY` according to existing order, dependencies and gates;
 8. keep later items `BLOCKED` when they are not yet authorized;
-9. keep the human roadmap text/checklists consistent with the canonical block;
-10. reread #55 after the edit and verify the canonical parser would resolve the expected active step;
-11. report the resulting roadmap state and stop. Do not begin the next WorkItem.
+9. never use human roadmap #55 as a fallback machine-state source; update human narrative separately only when needed;
+10. reread #851 after the edit and verify the strict canonical parser resolves the expected active step;
+11. report the resulting machine roadmap state and stop. Do not begin the next WorkItem.
 
 This deterministic reconciliation must not invent or change scope, WorkItem identity, decomposition, ordering, dependencies or REPLACES. If such a structural change is needed, stop and use the appropriate architecture/product/Safe Writeback path instead.
 
@@ -913,7 +913,7 @@ Durable invariants:
 - derive delivery identity from canonical WORK keys and the same strict PR identity rule used by the Roadmap Reconciler;
 - exclude docs-only PRs from DEV delivery metrics;
 - use only timestamps explicitly returned by GitHub for commits, PRs, workflows/jobs and merges;
-- never invent branch creation timestamps, historical stall intervals or historical #55 reconciliation timestamps;
+- never invent branch creation timestamps, historical stall intervals or historical #851 reconciliation timestamps;
 - when a metric cannot be reconstructed reliably, return it as unavailable/partial rather than estimating it;
 - keep historical analytics off the 60-second dashboard polling path; load it separately and on demand;
 - bound historical GitHub API work so analytics cannot dominate normal cockpit traffic;
@@ -1046,7 +1046,7 @@ The DEV agent is not responsible for staying active while CI, review or merge ar
 
 Under manual orchestration, the Product Owner performs subsequent observation and returns with any required corrective, review or reconciliation instruction. When DevCockpit orchestration is explicitly active, it may perform those same observation and follow-up functions automatically.
 
-A deterministic ROADMAP_RECONCILE turn ends after #55 is updated, reread, verified and reported.
+A deterministic ROADMAP_RECONCILE turn ends after #851 is updated, reread, verified and reported.
 
 Therefore:
 
@@ -1071,7 +1071,7 @@ Useful DEV checkpoints are:
 - corrective CI/review prompt received; cause identified;
 - correction pushed; updated head SHA and new CI run reported;
 - ROADMAP_RECONCILE requested after merged green delivery;
-- #55 reconciled, reread and final canonical state reported;
+- #851 reconciled, reread and final canonical machine state reported;
 - architecture/product decision required.
 
 Do not produce lengthy status reports for routine implementation details, and do not emit repeated status updates merely because CI is still running. The external orchestrator — normally the Product Owner, or DevCockpit when explicitly active — owns that waiting/observation phase.

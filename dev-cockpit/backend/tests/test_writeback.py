@@ -1,7 +1,11 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.config import PIPELINE_SOURCE_DEDICATED_STRICT, Settings
+from app.config import (
+    PIPELINE_SOURCE_DEDICATED_STRICT,
+    PIPELINE_SOURCE_LEGACY_EMBEDDED,
+    Settings,
+)
 from app.github import GitHubError
 from app.roadmap import parse_cockpit_pipeline
 from app.writeback import (
@@ -123,6 +127,8 @@ class RoadmapWritebackTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
         )
 
     def test_replace_changes_only_canonical_block(self):
@@ -259,15 +265,43 @@ class RoadmapWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["pipeline_block"], PROPOSED_BLOCK)
         self.assertGreaterEqual(client.get_calls.count(55), 4)
 
+    async def test_preview_targets_post_cutover_issue_851_not_human_55(self):
+        client = FakeGitHub(body=CURRENT_BLOCK)
+        settings = Settings(
+            github_token="test",
+            repository="tchi99/RessourcePlanner",
+            roadmap_issue=55,
+        )
+        strict_dashboard = dashboard()
+        strict_dashboard["pipeline"]["steps"] = [
+            step.to_dict() for step in parse_cockpit_pipeline(CURRENT_BLOCK).steps
+        ]
+        with patch(
+            "app.writeback.build_dashboard",
+            new=AsyncMock(return_value=strict_dashboard),
+        ):
+            preview = await build_roadmap_writeback_preview(
+                client,
+                settings,
+                "tchi99/RessourcePlanner",
+            )
+
+        self.assertEqual(preview["human_roadmap_issue"], 55)
+        self.assertEqual(preview["pipeline_issue"], 851)
+        self.assertIn(851, client.get_calls)
+        self.assertNotIn(55, client.get_calls)
+
     async def test_apply_targets_configured_pipeline_issue_not_human_roadmap(self):
         client = FakeGitHub(body=CURRENT_BLOCK)
         settings = Settings(
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
-            canonical_pipeline_issue=851,
-            canonical_pipeline_source_mode=PIPELINE_SOURCE_DEDICATED_STRICT,
-            migration_candidate_pipeline_issue=851,
+        )
+        self.assertEqual(settings.canonical_pipeline_issue, 851)
+        self.assertEqual(
+            settings.canonical_pipeline_source_mode,
+            PIPELINE_SOURCE_DEDICATED_STRICT,
         )
         strict_dashboard = dashboard()
         strict_dashboard["pipeline"]["steps"] = [

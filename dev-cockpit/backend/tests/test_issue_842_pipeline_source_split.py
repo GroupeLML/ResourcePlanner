@@ -143,12 +143,15 @@ class FakeGitHub:
 
 
 class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
-    def test_default_authority_remains_55_and_candidate_is_explicit(self):
+    def test_default_authority_is_post_cutover_851_strict_and_human_roadmap_stays_55(self):
         settings = Settings()
         self.assertEqual(settings.roadmap_issue, 55)
-        self.assertEqual(settings.canonical_pipeline_issue, 55)
-        self.assertEqual(settings.canonical_pipeline_source_mode, PIPELINE_SOURCE_LEGACY_EMBEDDED)
-        self.assertFalse(canonical_pipeline_is_strict(settings))
+        self.assertEqual(settings.canonical_pipeline_issue, 851)
+        self.assertEqual(
+            settings.canonical_pipeline_source_mode,
+            PIPELINE_SOURCE_DEDICATED_STRICT,
+        )
+        self.assertTrue(canonical_pipeline_is_strict(settings))
         self.assertEqual(settings.migration_candidate_pipeline_issue, 851)
 
     def test_strict_resolver_refuses_missing_block_and_unknown_version(self):
@@ -183,6 +186,70 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         duplicate_v1 = resolve_canonical_pipeline_source(CANDIDATE + "\n" + CANDIDATE)
         self.assertFalse(duplicate_v1.valid)
         self.assertIn("exactement un marqueur", " ".join(duplicate_v1.errors))
+
+    async def test_post_cutover_defaults_use_851_strict_and_keep_55_human_context(self):
+        client = FakeGitHub()
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+        )
+
+        dashboard = await build_dashboard(
+            client,
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+
+        self.assertEqual(dashboard["roadmap"]["number"], 55)
+        self.assertEqual(dashboard["pipeline_source"]["number"], 851)
+        self.assertTrue(dashboard["pipeline_source"]["strict"])
+        self.assertEqual(
+            dashboard["pipeline_source"]["mode"],
+            PIPELINE_SOURCE_DEDICATED_STRICT,
+        )
+        self.assertTrue(dashboard["pipeline"]["valid"])
+        self.assertEqual(dashboard["pipeline"]["now"]["key"], "842")
+        self.assertEqual(dashboard["pipeline"]["next"][0]["key"], "ASTRA-644")
+        self.assertEqual(dashboard["pipeline"]["next"][0]["status"], "BLOCKED")
+        self.assertNotEqual(dashboard["pipeline"]["now"]["key"], "999")
+
+        po_pack = dashboard["handoff"]["packs"]["product-owner"]
+        self.assertIn("Roadmap humain : #55", po_pack["prompt"])
+        self.assertIn("Pipeline canonique : #851", po_pack["prompt"])
+        source_urls = {source["label"]: source["url"] for source in po_pack["sources"]}
+        self.assertEqual(
+            source_urls["Roadmap humain #55"],
+            "https://github.test/issues/55",
+        )
+        self.assertEqual(
+            source_urls["Pipeline canonique #851"],
+            "https://github.test/issues/851",
+        )
+
+    async def test_post_cutover_missing_851_never_falls_back_to_embedded_55(self):
+        client = FakeGitHub(missing_candidate=True)
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+        )
+
+        dashboard = await build_dashboard(
+            client,
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+
+        self.assertEqual(dashboard["roadmap"]["number"], 55)
+        self.assertEqual(dashboard["pipeline_source"]["number"], 851)
+        self.assertFalse(dashboard["pipeline"]["valid"])
+        self.assertIsNone(dashboard["pipeline"]["now"])
+        self.assertIsNone(dashboard["active_work"])
+        self.assertEqual(dashboard["execution"]["phase"], "PIPELINE_INVALID")
+        self.assertNotIn("#999", dashboard["dev_prompt"])
+        self.assertEqual(
+            dashboard["execution"]["next_action"],
+            "Corriger COCKPIT_PIPELINE_V1 dans #851.",
+        )
 
     async def test_legacy_pre_cutover_mode_keeps_legacy_fallback(self):
         client = FakeGitHub(human_body=LEGACY_ROADMAP)
