@@ -438,7 +438,7 @@ async def _reconcile_canonical_pipeline(
     repo: str,
     *,
     pipeline_contract: Any,
-    pipeline_issue: int,
+    pipeline_issue: int = 55,
     open_raw: list[dict[str, Any]],
     closed_raw: list[dict[str, Any]],
 ) -> dict[str, Any]:
