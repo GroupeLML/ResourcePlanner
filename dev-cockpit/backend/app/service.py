@@ -666,6 +666,7 @@ def _dashboard_without_active_work(
         handoff=handoff,
         active_work=None,
         pipeline_now=pipeline_projection.get("now"),
+        canonical_pipeline_issue=settings.canonical_pipeline_issue,
     )
     return {
         "repo": repo,
@@ -691,6 +692,7 @@ def _dashboard_without_active_work(
             "url": pipeline_raw.get("html_url"),
             "updated_at": pipeline_raw.get("updated_at"),
             "strict": canonical_pipeline_is_strict(settings),
+            "mode": settings.canonical_pipeline_source_mode,
         },
         "reconciliation": reconciliation,
         "execution": execution,
@@ -1110,6 +1112,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         handoff=handoff,
         active_work=active_work_projection,
         pipeline_now=pipeline_projection.get("now"),
+        canonical_pipeline_issue=settings.canonical_pipeline_issue,
     )
 
     warnings: list[str] = []
@@ -1143,6 +1146,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             "url": pipeline_raw.get("html_url"),
             "updated_at": pipeline_raw.get("updated_at"),
             "strict": canonical_pipeline_is_strict(settings),
+            "mode": settings.canonical_pipeline_source_mode,
         },
         "reconciliation": reconciliation,
         "execution": execution,
