@@ -12,6 +12,7 @@ from zipfile import ZipFile
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.application.communications import CommunicationTransportResult
 from app.application.security import AuthPrincipal, ROLE_ADMIN
@@ -1833,17 +1834,47 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
     def test_project_create_drafts_passes_persisted_to_and_cc_to_transport(self) -> None:
         with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request = session.get(WorkforceRequest, "D1")
+                    assert request is not None
+                    request.site_contact_name = "Jean Tremblay"
+                    request.site_contact_phone = "555-0101"
+                    shift_ids_before = tuple(
+                        sorted(row[0] for row in session.execute(
+                            select(Shift.id).where(
+                                Shift.resource_requirement_id.in_(("REQ1", "REQ2"))
+                            )
+                        ))
+                    )
+            finally:
+                engine.dispose()
+
             transport = FakeProjectDraftTransport()
             app = create_api_app(
-                self._database(directory),
+                database_url,
                 auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
                 communication_transport=transport,
             )
             with TestClient(app) as client:
-                preview = client.get(
+                preview_response = client.get(
                     "/api/v1/communications/project-preview"
                     "?week_start=2026-09-23"
-                ).json()
+                )
+                self.assertEqual(preview_response.status_code, 200, preview_response.text)
+                preview = preview_response.json()
+                self.assertIn(
+                    "Demande DMO-290A-1",
+                    preview["drafts"][0]["body"],
+                )
+                self.assertIn(
+                    "Contact chantier : Jean Tremblay — 555-0101",
+                    preview["drafts"][0]["body"],
+                )
+
                 prepared = client.post(
                     "/api/v1/communications/project-batches",
                     json={
@@ -1853,7 +1884,42 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(prepared.status_code, 201, prepared.text)
-                batch_id = prepared.json()["id"]
+                prepared_payload = prepared.json()
+                batch_id = prepared_payload["id"]
+                self.assertIn(
+                    "Contact chantier : Jean Tremblay — 555-0101",
+                    prepared_payload["messages"][0]["body"],
+                )
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        request = session.get(WorkforceRequest, "D1")
+                        assert request is not None
+                        request.site_contact_name = "Pierre Gagnon"
+                        request.site_contact_phone = "555-0202"
+                        shift_ids_after = tuple(
+                            sorted(row[0] for row in session.execute(
+                                select(Shift.id).where(
+                                    Shift.resource_requirement_id.in_(("REQ1", "REQ2"))
+                                )
+                            ))
+                        )
+                finally:
+                    engine.dispose()
+                self.assertEqual(shift_ids_after, shift_ids_before)
+
+                current_preview = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(current_preview.status_code, 200, current_preview.text)
+                self.assertIn(
+                    "Contact chantier : Pierre Gagnon — 555-0202",
+                    current_preview.json()["drafts"][0]["body"],
+                )
+
                 approved = client.post(
                     f"/api/v1/communications/project-batches/{batch_id}/approve"
                 )
@@ -1906,6 +1972,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 "resource-one" + chr(64) + TEST_DOMAIN,
             ),
         )
+        self.assertIn(
+            "Contact chantier : Jean Tremblay — 555-0101",
+            transport.messages[0].body,
+        )
+        self.assertNotIn("Pierre Gagnon", transport.messages[0].body)
 
         mime = BytesParser(policy=policy.default).parsebytes(downloaded.content)
         self.assertEqual(mime["Subject"], transport.messages[0].subject)
