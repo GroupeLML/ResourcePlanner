@@ -1215,6 +1215,12 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                 label="Actif segment sans opérateur",
                                 asset_type_id="TYPE-EQ-708B",
                             ),
+                            Asset(
+                                id="ASSET-REQUEST-843",
+                                code="REQ-843",
+                                label="Actif demande 843",
+                                asset_type_id="TYPE-EQ-708B",
+                            ),
                         ]
                     )
                     session.add(
@@ -1275,6 +1281,19 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                 status="Affecté",
                             ),
                             AssetRequirement(
+                                id="AREQ-REQUEST-843",
+                                project_id="P1",
+                                origin="REQUEST",
+                                workforce_request_id="D1",
+                                source_request_line_id="L1",
+                                approved_entry_key="REQ-ASSET-843",
+                                slot_index=0,
+                                asset_type_id="TYPE-EQ-708B",
+                                start_date=WEEK,
+                                end_date=WEEK,
+                                status="Affecté",
+                            ),
+                            AssetRequirement(
                                 id="AREQ-CONTEXT-708B",
                                 project_id="P1",
                                 origin="SEGMENT",
@@ -1330,6 +1349,16 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                 source="MANUAL",
                             ),
                             AssetAllocation(
+                                id="ALLOC-REQUEST-843",
+                                asset_requirement_id="AREQ-REQUEST-843",
+                                asset_id="ASSET-REQUEST-843",
+                                operator_resource_id="R1",
+                                start_date=WEEK,
+                                end_date=WEEK,
+                                locked=True,
+                                source="MANUAL",
+                            ),
+                            AssetAllocation(
                                 id="ALLOC-CONTEXT-708B",
                                 asset_requirement_id="AREQ-CONTEXT-708B",
                                 asset_id="ASSET-CONTEXT-708B",
@@ -1362,11 +1391,22 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     by_shift = {row.shift_id: row for row in r1_rows}
                     self.assertEqual(
                         {asset.asset_label for asset in by_shift["S1"].assets},
-                        {"Nacelle 708B", "Camion 708B"},
+                        {"Nacelle 708B", "Camion 708B", "Actif demande 843"},
                     )
                     self.assertEqual(
                         {asset.asset_label for asset in by_shift["S1-SECOND-708B"].assets},
-                        {"Camion 708B"},
+                        {"Camion 708B", "Actif demande 843"},
+                    )
+                    s2 = next(row for row in assignments if row.shift_id == "S2")
+                    self.assertNotIn(
+                        "Actif demande 843",
+                        {asset.asset_label for asset in s2.assets},
+                    )
+                    self.assertEqual(
+                        [asset.allocation_id for asset in by_shift["S1"].assets].count(
+                            "ALLOC-REQUEST-843"
+                        ),
+                        1,
                     )
                     self.assertNotIn(
                         "Actif autre ressource",
@@ -1401,7 +1441,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         for row in projection.drafts
                         if row.project_id == "P1"
                     )
-                    self.assertIn("Actif : V-708B / EQ-708B", draft.body)
+                    self.assertIn("Actif : V-708B / REQ-843 / EQ-708B", draft.body)
                     self.assertNotIn("Camion 708B", draft.body)
                     self.assertNotIn("Nacelle 708B", draft.body)
 

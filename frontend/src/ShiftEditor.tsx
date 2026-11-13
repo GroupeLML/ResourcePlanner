@@ -108,6 +108,8 @@ function assetAssociationLabel(kind: string) {
   switch (kind) {
     case "RELATED_REQUEST":
       return "Réservation de la demande";
+    case "INHERITED_REQUEST":
+      return "Héritée de la demande";
     case "INHERITED_RESOURCE_PERIOD":
       return "Héritée de la période ressource";
     case "INHERITED_PROJECT_DIRECT":

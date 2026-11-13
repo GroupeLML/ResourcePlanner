@@ -14,6 +14,7 @@ from .models import ResourceRequirement, Shift
 
 ASSOCIATION_OWNED_SHIFT = "OWNED_SHIFT"
 ASSOCIATION_RELATED_REQUEST = "RELATED_REQUEST"
+ASSOCIATION_INHERITED_REQUEST = "INHERITED_REQUEST"
 ASSOCIATION_INHERITED_RESOURCE_PERIOD = "INHERITED_RESOURCE_PERIOD"
 ASSOCIATION_INHERITED_PROJECT_DIRECT = "INHERITED_PROJECT_DIRECT"
 ASSOCIATION_INHERITED_SEGMENT = "INHERITED_SEGMENT"
@@ -54,7 +55,10 @@ def asset_shift_association(
             and requirement.start_date <= shift.work_date
             and (requirement.end_date is None or shift.work_date <= requirement.end_date)
         ):
-            return ASSOCIATION_RELATED_REQUEST
+            if allocation.operator_resource_id is None:
+                return ASSOCIATION_RELATED_REQUEST
+            if allocation.operator_resource_id == shift.resource_id:
+                return ASSOCIATION_INHERITED_REQUEST
         return None
 
     if origin == AssetRequirementOrigin.RESOURCE_PERIOD.value:
