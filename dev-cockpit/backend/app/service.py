@@ -759,8 +759,8 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
     )
     pipeline_now = pipeline_projection.get("now")
 
-    if pipeline_contract.present and (
-        not pipeline_contract.valid or pipeline_now is None
+    if (not pipeline_contract.valid) or (
+        pipeline_contract.present and pipeline_now is None
     ):
         return _dashboard_without_active_work(
             repo=repo,
