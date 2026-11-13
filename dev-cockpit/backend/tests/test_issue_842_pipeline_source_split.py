@@ -275,6 +275,10 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dashboard["roadmap"]["number"], 55)
         self.assertEqual(dashboard["pipeline_source"]["number"], 851)
         self.assertTrue(dashboard["pipeline_source"]["strict"])
+        self.assertEqual(
+            dashboard["pipeline_source"]["mode"],
+            PIPELINE_SOURCE_DEDICATED_STRICT,
+        )
         self.assertTrue(dashboard["pipeline"]["valid"])
         self.assertEqual(dashboard["pipeline"]["now"]["key"], "842")
         self.assertNotEqual(dashboard["pipeline"]["now"]["key"], "999")
