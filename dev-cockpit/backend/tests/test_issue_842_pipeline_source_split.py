@@ -344,7 +344,8 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
             source_urls["Pipeline canonique #55"],
             "https://github.test/issues/55",
         )
-        self.assertEqual(dashboard["execution"]["roadmap_issue"], 55)
+        self.assertIn("#55", dashboard["execution"]["next_action"])
+        self.assertNotIn("#851", dashboard["execution"]["next_action"])
 
     async def test_dedicated_source_collision_with_human_issue_still_fails_closed(self):
         client = FakeGitHub(candidate_body="# human prose without canonical V1")
@@ -398,7 +399,7 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(dashboard["pipeline"]["valid"])
         self.assertIsNone(dashboard["active_work"])
-        self.assertEqual(dashboard["execution"]["roadmap_issue"], 851)
+        self.assertIn("#851", dashboard["execution"]["next_action"])
         self.assertIn("#851", dashboard["next_action"])
 
         po_pack = dashboard["handoff"]["packs"]["product-owner"]
