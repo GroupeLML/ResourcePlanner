@@ -682,15 +682,52 @@ def _project_body(
                 by_request: dict[str | None, list[ProjectCommunicationRequestAssignment]] = {}
                 for item in task.request_assignments:
                     by_request.setdefault(item.workforce_request_id, []).append(item)
-                for request_id, group in sorted(by_request.items(), key=lambda item: item[0] or ""):
-                    first = group[0]
-                    label = first.request_number or ("Sans demande" if request_id is None else request_id)
-                    people = " / ".join(sorted({person.resource_name for person in group}, key=str.casefold))
-                    if first.site_contact_name or first.site_contact_phone:
-                        contact = " — ".join(value for value in (first.site_contact_name, first.site_contact_phone) if value)
-                        lines.append(f"Contact chantier — Demande {label} ({people}) : {contact}")
-                    elif len(by_request) > 1:
-                        lines.append(f"Demande {label} ({people}) : Aucun contact chantier renseigné")
+                # A single contactless request needs no extra detail; preserve
+                # the existing compact aggregated schedule in that case.
+                show_request_work = (
+                    len(by_request) > 1
+                    or any(
+                        item.site_contact_name or item.site_contact_phone
+                        for item in task.request_assignments
+                    )
+                )
+                if show_request_work:
+                    for request_id, group in sorted(
+                        by_request.items(), key=lambda pair: pair[0] or ""
+                    ):
+                        first = group[0]
+                        label = (
+                            first.request_number or request_id
+                            if request_id is not None
+                            else "Sans demande"
+                        )
+                        lines.append(f"Demande {label}" if request_id is not None else label)
+                        if first.site_contact_name or first.site_contact_phone:
+                            contact = " — ".join(
+                                part for part in (
+                                    first.site_contact_name,
+                                    first.site_contact_phone,
+                                ) if part
+                            )
+                            lines.append(f"  Contact chantier : {contact}")
+                        elif request_id is not None:
+                            lines.append("  Aucun contact chantier renseigné")
+                        # These are subdivisions of the canonical resource
+                        # totals below, not additional scheduled hours.
+                        by_resource: dict[str, tuple[str, float]] = {}
+                        for item in group:
+                            name, hours = by_resource.get(
+                                item.resource_id, (item.resource_name, 0.0)
+                            )
+                            by_resource[item.resource_id] = (
+                                name, hours + item.hours
+                            )
+                        for resource_id, (name, hours) in sorted(
+                            by_resource.items(),
+                            key=lambda pair: (pair[1][0].casefold(), pair[0]),
+                        ):
+                            lines.append(f"  ↳ {name} — {hours:g} h (part de la demande)")
+                    lines.append("  Totaux planifiés (toutes demandes) :")
             assignments_by_resource: dict[str, list[ContactResolution]] = {}
             for assignment in task.responsibility_assignments:
                 assignments_by_resource.setdefault(

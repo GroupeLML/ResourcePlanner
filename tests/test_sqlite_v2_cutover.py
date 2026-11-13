@@ -677,6 +677,10 @@ def _reshape_source_as_0048(path: Path) -> None:
             SET version_num = '0048_identity_admin_audit';
             """
         )
+        # Current Base.metadata supplies newer columns during fixture setup.
+        # Remove #830's post-0048 columns so the source is historically truthful.
+        raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_contact_phone")
+        raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_contact_name")
         raw.commit()
     finally:
         raw.close()
@@ -975,6 +979,19 @@ class SqliteV2CutoverTests(unittest.TestCase):
             _seed_source(source)
             _reshape_source_as_0048(source)
             self.assertNotIn("residence_city", _resource_columns(source))
+            with sqlite3.connect(source) as raw:
+                columns = {
+                    row[1] for row in raw.execute(
+                        "PRAGMA table_info(workforce_requests)"
+                    )
+                }
+                self.assertNotIn("site_contact_name", columns)
+                self.assertNotIn("site_contact_phone", columns)
+                self.assertEqual(
+                    raw.execute(
+                        "SELECT COUNT(*) FROM workforce_requests WHERE id='REQUEST-REAL'"
+                    ).fetchone()[0], 1,
+                )
             _seed_target(target)
             source_before = _hash(source)
 
@@ -1027,6 +1044,14 @@ class SqliteV2CutoverTests(unittest.TestCase):
             self.assertIn(
                 ("missing_columns_with_defaults", "resources"),
                 adaptations,
+            )
+            self.assertIn(
+                ("missing_columns_with_defaults", "workforce_requests"),
+                adaptations,
+            )
+            self.assertEqual(
+                _hash(source), source_before,
+                "Le dry-run doit conserver les octets source historiques.",
             )
 
             by_table = {row["table"]: row for row in report["tables"]}
@@ -1101,6 +1126,16 @@ class SqliteV2CutoverTests(unittest.TestCase):
                     ).one()
                     self.assertEqual(migrated_resource.id, "RESOURCE-REAL")
                     self.assertIsNone(migrated_resource.residence_city)
+                    copied_request = connection.execute(
+                        select(
+                            WorkforceRequest.id,
+                            WorkforceRequest.site_contact_name,
+                            WorkforceRequest.site_contact_phone,
+                        ).where(WorkforceRequest.id == "REQUEST-REAL")
+                    ).one()
+                    self.assertEqual(copied_request.id, "REQUEST-REAL")
+                    self.assertIsNone(copied_request.site_contact_name)
+                    self.assertIsNone(copied_request.site_contact_phone)
 
                 factory = create_session_factory(engine)
                 with factory.begin() as session:

@@ -815,6 +815,107 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertEqual(compare_project_communication_projections(legacy, base), ())
         self.assertEqual(len(compare_project_communication_projections(legacy, added)), 1)
 
+    def test_830_request_specific_hours_render_2_6_and_6_2_distinctly(self) -> None:
+        base = projection(
+            project(resources=(resource("R1", "Alice", address=email("alice")),))
+        )
+        old_project = base.projects[0]
+        day = old_project.days[0]
+        task = day.tasks[0]
+        original = task.resources[0]
+
+        def allocate(first_hours: float, second_hours: float):
+            a = replace(
+                task.request_assignments[0],
+                shift_id="S-A",
+                requirement_id="REQ-A",
+                workforce_request_id="DEMAND-A",
+                request_number="DM-A",
+                hours=first_hours,
+                site_contact_name="Jean",
+                site_contact_phone="555-0101",
+            )
+            b = replace(
+                task.request_assignments[0],
+                shift_id="S-B",
+                requirement_id="REQ-B",
+                workforce_request_id="DEMAND-B",
+                request_number="DM-B",
+                hours=second_hours,
+                site_contact_name="Pierre",
+                site_contact_phone="555-0202",
+            )
+            adjusted = replace(
+                task,
+                resources=(replace(original, shift_ids=("S-A", "S-B")),),
+                request_assignments=(a, b),
+            )
+            changed_day = replace(day, tasks=(adjusted,))
+            return replace(
+                base,
+                projects=(replace(old_project, days=(changed_day,)),),
+            )
+
+        two_six = allocate(2.0, 6.0)
+        six_two = allocate(6.0, 2.0)
+        drafts = (
+            build_project_confirmation_batch(two_six).drafts,
+            build_project_confirmation_batch(six_two).drafts,
+        )
+        self.assertEqual(len(drafts[0]), 1)
+        self.assertEqual(len(drafts[1]), 1)
+        one = drafts[0][0]
+        two = drafts[1][0]
+        self.assertEqual(one.message_key, "project:P1")
+        self.assertEqual(one.to_recipients, two.to_recipients)
+        self.assertEqual(one.cc_recipients, two.cc_recipients)
+        self.assertIn("Lundi le 21 septembre 2026 — Installation de poteaux", one.body)
+        self.assertIn("Demande DM-A\\n  Contact chantier : Jean — 555-0101\\n  ↳ Alice — 2 h", one.body)
+        self.assertIn("Demande DM-B\\n  Contact chantier : Pierre — 555-0202\\n  ↳ Alice — 6 h", one.body)
+        self.assertIn("Demande DM-A\\n  Contact chantier : Jean — 555-0101\\n  ↳ Alice — 6 h", two.body)
+        self.assertIn("Demande DM-B\\n  Contact chantier : Pierre — 555-0202\\n  ↳ Alice — 2 h", two.body)
+        self.assertIn("  • Alice — 8 h", one.body)
+        self.assertIn("  • Alice — 8 h", two.body)
+        self.assertNotEqual(one.body, two.body)
+        self.assertNotEqual(project_projection_fingerprint(two_six), project_projection_fingerprint(six_two))
+        self.assertEqual(
+            deserialize_project_projection(
+                serialize_project_projection(two_six)
+            ), two_six,
+        )
+
+    def test_830_different_employees_shared_contacts_and_adhoc_work(self) -> None:
+        alice = resource("R1", "Alice", address=email("alice"), hours=2)
+        bob = resource("R2", "Bob", address=email("bob"), hours=6)
+        carol = resource("R3", "Carol", address=email("carol"), hours=1)
+        base = projection(project(resources=(alice, bob, carol)))
+        task = base.projects[0].days[0].tasks[0]
+        by_id = {row.resource_id: row for row in task.request_assignments}
+        provenance = (
+            replace(by_id["R1"], workforce_request_id="REQ-A", request_number="DM-A",
+                    site_contact_name="Jean", site_contact_phone="555-0101"),
+            replace(by_id["R2"], workforce_request_id="REQ-B", request_number="DM-B",
+                    site_contact_name="Jean", site_contact_phone="555-0101"),
+            replace(by_id["R3"], workforce_request_id=None, request_number=None,
+                    site_contact_name=None, site_contact_phone=None),
+        )
+        updated_task = replace(task, request_assignments=provenance)
+        updated_day = replace(base.projects[0].days[0], tasks=(updated_task,))
+        current = replace(
+            base,
+            projects=(replace(base.projects[0], days=(updated_day,)),),
+        )
+        draft = build_project_confirmation_batch(current).drafts[0]
+        self.assertIn("Demande DM-A\\n  Contact chantier : Jean — 555-0101\\n  ↳ Alice — 2 h", draft.body)
+        self.assertIn("Demande DM-B\\n  Contact chantier : Jean — 555-0101\\n  ↳ Bob — 6 h", draft.body)
+        self.assertIn("Sans demande\\n  ↳ Carol — 1 h", draft.body)
+        self.assertEqual(draft.body.count("Contact chantier : Jean"), 2)
+        self.assertEqual(len(build_project_confirmation_batch(current).drafts), 1)
+        self.assertEqual({row.email for row in draft.cc_recipients}, {email("alice"), email("bob"), email("carol")})
+        self.assertIn("  • Alice — 2 h", draft.body)
+        self.assertIn("  • Bob — 6 h", draft.body)
+        self.assertIn("  • Carol — 1 h", draft.body)
+
     def test_830_version_and_completeness_fail_closed(self) -> None:
         current = projection(project())
         encoded = json.loads(serialize_project_projection(current))
