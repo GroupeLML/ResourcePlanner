@@ -158,7 +158,7 @@ class DemandServiceTests(unittest.TestCase):
                 number="DMO-830",
                 expected_version=3,
                 site_contact_name="Jean Tremblay",
-                site_contact_phone="514-555-0101",
+                site_contact_phone="555-0101",
             )
         )
         self.assertFalse(required)
@@ -166,7 +166,7 @@ class DemandServiceTests(unittest.TestCase):
         self.assertEqual(len(writes), 1)
         data = writes[0][2]
         self.assertEqual(data["SiteContactName"], "Jean Tremblay")
-        self.assertEqual(data["SiteContactPhone"], "514-555-0101")
+        self.assertEqual(data["SiteContactPhone"], "555-0101")
         self.assertEqual(data["ExpectedVersion"], 3)
         self.assertNotIn("Statut", data)
         self.assertFalse(any(event[0] in {"sync", "rebuild"} for event in events))

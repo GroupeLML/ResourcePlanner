@@ -220,7 +220,7 @@ class SqlRepositoryTests(unittest.TestCase):
                         number=number,
                         expected_version=version,
                         site_contact_name="François Émond",
-                        site_contact_phone="450-555-0180",
+                        site_contact_phone="555-0180",
                     )
                 )
             )
@@ -229,7 +229,7 @@ class SqlRepositoryTests(unittest.TestCase):
             self.assertEqual(after.status, "En planification")
             self.assertEqual(after.version, version + 1)
             self.assertEqual(after.site_contact_name, "François Émond")
-            self.assertEqual(after.site_contact_phone, "450-555-0180")
+            self.assertEqual(after.site_contact_phone, "555-0180")
             self.assertEqual(planning.calls, initial_planning_calls)
             self.assertEqual(tuple(sync.calls), initial_sync_calls)
             self.assertEqual(tuple(session.scalars(select(Shift.id)).all()), before_shift_ids)

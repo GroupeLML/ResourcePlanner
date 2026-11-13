@@ -792,8 +792,8 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             day = replace(old_project.days[0], tasks=(changed,))
             return replace(base, projects=(replace(old_project, days=(day,)),))
 
-        added = with_contact("Jean Tremblay", "514-555-0101")
-        changed = with_contact("Pierre Gagnon", "450-555-0202")
+        added = with_contact("Jean Tremblay", "555-0101")
+        changed = with_contact("Pierre Gagnon", "555-0202")
         self.assertEqual(len(compare_project_communication_projections(base, added)), 1)
         self.assertEqual(len(compare_project_communication_projections(added, changed)), 1)
         self.assertEqual(len(compare_project_communication_projections(added, base)), 1)
