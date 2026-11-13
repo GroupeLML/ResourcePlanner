@@ -34,6 +34,28 @@ Chemin principal retenu :
 ```
 """
 
+LEGACY_MACHINE_842 = """
+La prochaine tranche active est #842.
+"""
+
+HUMAN_851_999 = """
+# Roadmap humain alternatif
+
+La prochaine tranche active est #999.
+"""
+
+HUMAN_851_777 = """
+# Roadmap humain alternatif modifié
+
+La prochaine tranche active est #777.
+"""
+
+NO_ACTIONABLE_MACHINE = """
+# Historique machine
+
+Aucune tranche active n'est déclarée ici.
+"""
+
 CANDIDATE = """<!-- COCKPIT_PIPELINE_V1 -->
 KEY | TYPE | STATUS | PARENT | LANE | TITLE
 840 | WORK | DONE | #840 | MAIN | delivered
@@ -214,6 +236,101 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(contract.valid)
         self.assertEqual(contract.steps, [])
         self.assertIn("#851 introuvable", " ".join(contract.errors))
+
+    async def test_legacy_machine_source_wins_over_separate_human_roadmap(self):
+        client = FakeGitHub(
+            human_body=LEGACY_MACHINE_842,
+            candidate_body=HUMAN_851_999,
+        )
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+            roadmap_issue=851,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
+            migration_candidate_pipeline_issue=851,
+        )
+
+        dashboard = await build_dashboard(
+            client,
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+
+        self.assertEqual(dashboard["pipeline_source"]["number"], 55)
+        self.assertEqual(dashboard["pipeline"]["source"], "legacy")
+        self.assertEqual(dashboard["active_work"]["key"], "842")
+        self.assertNotEqual(dashboard["active_work"]["key"], "999")
+        self.assertEqual(dashboard["roadmap"]["number"], 851)
+        self.assertEqual(dashboard["roadmap"]["declared_active"], "999")
+
+    async def test_human_roadmap_changes_do_not_change_legacy_machine_actionability(self):
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+            roadmap_issue=851,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
+            migration_candidate_pipeline_issue=851,
+        )
+        first = await build_dashboard(
+            FakeGitHub(
+                human_body=LEGACY_MACHINE_842,
+                candidate_body=HUMAN_851_999,
+            ),
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+        second = await build_dashboard(
+            FakeGitHub(
+                human_body=LEGACY_MACHINE_842,
+                candidate_body=HUMAN_851_777,
+            ),
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+
+        self.assertEqual(first["active_work"]["key"], "842")
+        self.assertEqual(second["active_work"]["key"], "842")
+        self.assertEqual(first["execution"]["phase"], second["execution"]["phase"])
+        self.assertEqual(
+            first["execution"]["missions"]["developer"]["state"],
+            second["execution"]["missions"]["developer"]["state"],
+        )
+        self.assertEqual(first["dev_prompt"], second["dev_prompt"])
+        self.assertEqual(first["roadmap"]["declared_active"], "999")
+        self.assertEqual(second["roadmap"]["declared_active"], "777")
+
+    async def test_legacy_machine_without_actionable_work_does_not_fallback_to_human(self):
+        client = FakeGitHub(
+            human_body=NO_ACTIONABLE_MACHINE,
+            candidate_body=HUMAN_851_999,
+        )
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+            roadmap_issue=851,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
+            migration_candidate_pipeline_issue=851,
+        )
+
+        dashboard = await build_dashboard(
+            client,
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+
+        self.assertEqual(dashboard["pipeline_source"]["number"], 55)
+        self.assertEqual(dashboard["pipeline"]["source"], "legacy")
+        self.assertIsNone(dashboard["active_work"])
+        self.assertEqual(dashboard["execution"]["phase"], "NO_ACTIVE_WORK")
+        self.assertEqual(
+            dashboard["execution"]["missions"]["developer"]["state"],
+            "clear",
+        )
+        self.assertNotIn("#999", dashboard["dev_prompt"])
+        self.assertEqual(dashboard["roadmap"]["declared_active"], "999")
 
     async def test_dedicated_source_collision_with_human_issue_still_fails_closed(self):
         client = FakeGitHub(candidate_body="# human prose without canonical V1")
