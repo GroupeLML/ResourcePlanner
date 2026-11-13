@@ -82,7 +82,7 @@ The repository supports two equivalent orchestration modes.
    - The Product Owner monitors PR state, CI results, architecture reviews, merge completion and roadmap progression manually.
    - The Product Owner may return to the same DEV session with exact PR/head/CI/review evidence and corrective instructions.
    - The DEV agent must stop at each GitHub handoff point and must not remain active polling or waiting for CI, review or merge completion.
-   - After a proven merge, the Product Owner may explicitly instruct the DEV agent or another authorized agent to reconcile roadmap #55.
+   - After a proven merge, the Product Owner may explicitly instruct the DEV agent or another authorized agent to reconcile the canonical machine pipeline in #851.
 
 2. **DevCockpit / supported browser-extension orchestration — optional**
    - When DevCockpit or the supported browser extension is explicitly in use, it may perform the same observation, corrective reactivation, merge monitoring, roadmap reconciliation and prompt chaining described in this file.
@@ -887,16 +887,16 @@ No additional product decision is required for the deterministic reconciliation 
 The DEV must:
 
 1. synchronize with current `main`;
-2. reread this AGENTS.md and the latest #55;
+2. reread this AGENTS.md, canonical machine issue #851, and human roadmap #55 when human context is relevant;
 3. verify the referenced PR is merged and required CI for the delivered head is green;
-4. reread #55 immediately before editing so a concurrent change is not overwritten blindly;
-5. update #55 directly through GitHub;
+4. reread #851 immediately before editing so a concurrent machine-state change is not overwritten blindly;
+5. update the canonical `COCKPIT_PIPELINE_V1` in #851 directly through GitHub;
 6. mark only the proven delivered WorkItem `DONE`;
 7. promote only the true next already-defined item(s) to `READY` according to existing order, dependencies and gates;
 8. keep later items `BLOCKED` when they are not yet authorized;
-9. keep the human roadmap text/checklists consistent with the canonical block;
-10. reread #55 after the edit and verify the canonical parser would resolve the expected active step;
-11. report the resulting roadmap state and stop. Do not begin the next WorkItem.
+9. never use human roadmap #55 as a fallback machine-state source; update human narrative separately only when needed;
+10. reread #851 after the edit and verify the strict canonical parser resolves the expected active step;
+11. report the resulting machine roadmap state and stop. Do not begin the next WorkItem.
 
 This deterministic reconciliation must not invent or change scope, WorkItem identity, decomposition, ordering, dependencies or REPLACES. If such a structural change is needed, stop and use the appropriate architecture/product/Safe Writeback path instead.
 
@@ -913,7 +913,7 @@ Durable invariants:
 - derive delivery identity from canonical WORK keys and the same strict PR identity rule used by the Roadmap Reconciler;
 - exclude docs-only PRs from DEV delivery metrics;
 - use only timestamps explicitly returned by GitHub for commits, PRs, workflows/jobs and merges;
-- never invent branch creation timestamps, historical stall intervals or historical #55 reconciliation timestamps;
+- never invent branch creation timestamps, historical stall intervals or historical #851 reconciliation timestamps;
 - when a metric cannot be reconstructed reliably, return it as unavailable/partial rather than estimating it;
 - keep historical analytics off the 60-second dashboard polling path; load it separately and on demand;
 - bound historical GitHub API work so analytics cannot dominate normal cockpit traffic;
@@ -1046,7 +1046,7 @@ The DEV agent is not responsible for staying active while CI, review or merge ar
 
 Under manual orchestration, the Product Owner performs subsequent observation and returns with any required corrective, review or reconciliation instruction. When DevCockpit orchestration is explicitly active, it may perform those same observation and follow-up functions automatically.
 
-A deterministic ROADMAP_RECONCILE turn ends after #55 is updated, reread, verified and reported.
+A deterministic ROADMAP_RECONCILE turn ends after #851 is updated, reread, verified and reported.
 
 Therefore:
 
@@ -1071,7 +1071,7 @@ Useful DEV checkpoints are:
 - corrective CI/review prompt received; cause identified;
 - correction pushed; updated head SHA and new CI run reported;
 - ROADMAP_RECONCILE requested after merged green delivery;
-- #55 reconciled, reread and final canonical state reported;
+- #851 reconciled, reread and final canonical machine state reported;
 - architecture/product decision required.
 
 Do not produce lengthy status reports for routine implementation details, and do not emit repeated status updates merely because CI is still running. The external orchestrator — normally the Product Owner, or DevCockpit when explicitly active — owns that waiting/observation phase.
