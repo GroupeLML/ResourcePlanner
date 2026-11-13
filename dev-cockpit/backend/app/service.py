@@ -969,7 +969,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         active_runs=active_runs,
         explicit_in_progress=explicit_in_progress,
         issue_updated_at=active_issue_raw.get("updated_at"),
-        roadmap_updated_at=roadmap_raw.get("updated_at"),
+        roadmap_updated_at=pipeline_raw.get("updated_at"),
         blocked_by_roadmap=blocked_by_roadmap,
     )
 
@@ -1017,7 +1017,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         primary_pr=primary_pr,
         active_branch=active_branch,
         derived=derived,
-        roadmap_issue=settings.roadmap_issue,
+        roadmap_issue=settings.canonical_pipeline_issue,
         merged_but_unmarked_pr=merged_but_unmarked,
         remaining_subitems=remaining_subitems,
     )
