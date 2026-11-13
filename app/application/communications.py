@@ -72,6 +72,7 @@ class CommunicationMessageRecord:
     included: bool
     message_key: str | None = None
     project_id: str | None = None
+    project_number: str | None = None
     cc_emails: tuple[str, ...] = ()
     to_emails: tuple[str, ...] = ()
     content_fingerprint: str | None = None
