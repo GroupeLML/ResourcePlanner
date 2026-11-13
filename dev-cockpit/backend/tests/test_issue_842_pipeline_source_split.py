@@ -143,12 +143,15 @@ class FakeGitHub:
 
 
 class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
-    def test_default_authority_remains_55_and_candidate_is_explicit(self):
+    def test_default_authority_is_post_cutover_851_strict_and_human_roadmap_stays_55(self):
         settings = Settings()
         self.assertEqual(settings.roadmap_issue, 55)
-        self.assertEqual(settings.canonical_pipeline_issue, 55)
-        self.assertEqual(settings.canonical_pipeline_source_mode, PIPELINE_SOURCE_LEGACY_EMBEDDED)
-        self.assertFalse(canonical_pipeline_is_strict(settings))
+        self.assertEqual(settings.canonical_pipeline_issue, 851)
+        self.assertEqual(
+            settings.canonical_pipeline_source_mode,
+            PIPELINE_SOURCE_DEDICATED_STRICT,
+        )
+        self.assertTrue(canonical_pipeline_is_strict(settings))
         self.assertEqual(settings.migration_candidate_pipeline_issue, 851)
 
     def test_strict_resolver_refuses_missing_block_and_unknown_version(self):
