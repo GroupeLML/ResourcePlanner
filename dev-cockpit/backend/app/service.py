@@ -648,7 +648,7 @@ def _dashboard_without_active_work(
         fallback_dev_prompt=dev_prompt,
     )
     handoff = build_handoff_packs(
-        roadmap_issue=settings.roadmap_issue,
+        roadmap_issue=settings.canonical_pipeline_issue,
         roadmap_url=roadmap_raw.get("html_url"),
         canonical_pipeline_issue=settings.canonical_pipeline_issue,
         canonical_pipeline_url=pipeline_raw.get("html_url"),
@@ -736,8 +736,8 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
     )
 
     roadmap_body = roadmap_raw.get("body") or ""
-    top_items = top_level_items(roadmap_body)
-    legacy_declared_key = extract_declared_active(roadmap_body)
+    human_top_items = top_level_items(roadmap_body)
+    human_declared_key = extract_declared_active(roadmap_body)
     strict_pipeline_source = canonical_pipeline_is_strict(settings)
     pipeline_raw, pipeline_contract = await load_pipeline_source(
         client,
@@ -746,6 +746,9 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         strict=strict_pipeline_source,
         validate_references=strict_pipeline_source,
     )
+    machine_source_body = pipeline_raw.get("body") or ""
+    machine_top_items = top_level_items(machine_source_body)
+    machine_legacy_declared_key = extract_declared_active(machine_source_body)
     pipeline_steps = pipeline_contract.steps
     pipeline_projection = (
         pipeline_window(pipeline_steps)
@@ -770,8 +773,8 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             pipeline_raw=pipeline_raw,
             latest_repo_commit=latest_repo_commit,
             architecture_raw=architecture_raw,
-            top_items=top_items,
-            legacy_declared_key=legacy_declared_key,
+            top_items=human_top_items,
+            legacy_declared_key=human_declared_key,
             pipeline_contract=pipeline_contract,
             pipeline_projection=pipeline_projection,
             agents_text=agents_text,
@@ -787,23 +790,35 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             if pipeline_now and pipeline_now.get("kind") == "WORK"
             else None
         )
-        declared_key = pipeline_work_key or legacy_declared_key
+        first_machine_top = first_unfinished(machine_top_items)
+        declared_key = (
+            pipeline_work_key
+            or machine_legacy_declared_key
+            or (first_machine_top.key if first_machine_top else None)
+        )
         declared_parent = numeric_issue(declared_key or "")
         if declared_parent is None:
-            first_top = first_unfinished(top_items)
-            declared_parent = (
-                numeric_issue(first_top.key)
-                if first_top
-                else settings.roadmap_issue
+            return _dashboard_without_active_work(
+                repo=repo,
+                settings=settings,
+                roadmap_raw=roadmap_raw,
+                pipeline_raw=pipeline_raw,
+                latest_repo_commit=latest_repo_commit,
+                architecture_raw=architecture_raw,
+                top_items=human_top_items,
+                legacy_declared_key=human_declared_key,
+                pipeline_contract=pipeline_contract,
+                pipeline_projection=pipeline_projection,
+                agents_text=agents_text,
             )
-        parent_issue = declared_parent or settings.roadmap_issue
+        parent_issue = declared_parent
 
     active_issue_raw = await client.get_issue(repo, parent_issue)
     issue_body = active_issue_raw.get("body") or ""
-    roadmap_block = active_block(roadmap_body, parent_issue)
+    machine_block = active_block(machine_source_body, parent_issue)
     issue_subitems = subitems_from_text(issue_body, parent_issue)
-    roadmap_subitems = subitems_from_text(roadmap_block, parent_issue)
-    subitems = merge_subitems(issue_subitems, roadmap_subitems)
+    machine_subitems = subitems_from_text(machine_block, parent_issue)
+    subitems = merge_subitems(issue_subitems, machine_subitems)
     if not canonical_mode:
         pipeline_steps = merge_pipeline_work_status(pipeline_steps, subitems)
         pipeline_projection = pipeline_window(pipeline_steps)
@@ -819,7 +834,10 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         else None
     )
 
-    parent_item = next((item for item in top_items if item.key == str(parent_issue)), None)
+    parent_item = next(
+        (item for item in machine_top_items if item.key == str(parent_issue)),
+        None,
+    )
     if canonical_mode:
         block_done = False
         active_key = str(pipeline_now.get("key"))
@@ -987,7 +1005,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         remaining_subitems = [item.key for item in subitems if not item.done]
         can_chain_block = bool(
             not block_done
-            and has_explicit_block_order(issue_body, roadmap_block, subitems)
+            and has_explicit_block_order(issue_body, machine_block, subitems)
             and agents_allow_chaining(agents_text)
         )
 
@@ -1025,7 +1043,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
 
     adr_entries = _architecture_entries(architecture_raw)
     adr_names = [str(entry["name"]) for entry in adr_entries if entry.get("name")]
-    referenced = referenced_adrs(issue_body + "\n" + roadmap_block, adr_names)
+    referenced = referenced_adrs(issue_body + "\n" + machine_block, adr_names)
     referenced_adr_entries = [
         entry
         for entry in adr_entries
@@ -1149,10 +1167,13 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             "title": roadmap_raw.get("title"),
             "url": roadmap_raw.get("html_url"),
             "updated_at": roadmap_raw.get("updated_at"),
-            "declared_active": legacy_declared_key,
+            "declared_active": human_declared_key,
             "active_issue": parent_issue,
             "effective_active": active_key,
-            "items": [item.to_dict() for item in focus_items(top_items, subitems, parent_issue)],
+            "items": [
+                item.to_dict()
+                for item in focus_items(human_top_items, subitems, parent_issue)
+            ],
         },
         "active_work": active_work_projection,
         "architecture": {
