@@ -72,7 +72,7 @@ DEV_COCKPIT_STALLED_AFTER_MINUTES=30
 DEV_COCKPIT_HTTP_PORT=8081
 ```
 
-`DEV_COCKPIT_GITHUB_TOKEN` peut rester un token GitHub local en lecture seule pour toutes les fonctions d'observation (Issues, PR, Actions, branches, détails). Pour utiliser **Appliquer à #55**, le même token doit en plus posséder l'autorisation **Issues: write** sur le dépôt surveillé. Le token :
+`DEV_COCKPIT_GITHUB_TOKEN` peut rester un token GitHub local en lecture seule pour toutes les fonctions d'observation (Issues, PR, Actions, branches, détails). Pour utiliser **Appliquer à #851**, le même token doit en plus posséder l'autorisation **Issues: write** sur le dépôt surveillé. Le token :
 
 - n'est jamais envoyé à React;
 - n'est jamais retourné par l'API;
@@ -355,8 +355,8 @@ Le cockpit dérive maintenant une **phase d'exécution** à partir du contrat ca
 
 Phases principales :
 
-- `PIPELINE_INVALID` : le contrat #55 est invalide; aucun nouveau travail ne doit être lancé;
-- `ROADMAP_UPDATE_REQUIRED` : une livraison GitHub vérifiée n'est pas encore reflétée dans #55;
+- `PIPELINE_INVALID` : le contrat machine #851 est invalide; aucun nouveau travail ne doit être lancé;
+- `ROADMAP_UPDATE_REQUIRED` : une livraison GitHub vérifiée n'est pas encore reflétée dans #851;
 - `ARCHITECTURE_GATE` / `ENVIRONMENT_GATE` : la prochaine étape est une gate, pas du développement applicatif;
 - `READY` : la tranche canonique est prête et aucune branche/PR active n'est détectée;
 - `DEVELOPING` : une branche ou un travail actif existe sans PR prête;
@@ -370,13 +370,13 @@ Phases principales :
 
 Chaque phase expose un label, un résumé, la prochaine action, le rôle responsable, un prompt de reprise et un lien primaire lorsque GitHub en fournit un.
 
-Le contrôleur donne toujours priorité à la cohérence du roadmap : si le reconciler retourne `stale`, la phase devient `ROADMAP_UPDATE_REQUIRED` même si une autre activité GitHub est observable. Le cockpit demande alors de réconcilier #55 avant de lancer implicitement la tranche suivante.
+Le contrôleur donne toujours priorité à la cohérence du roadmap : si le reconciler retourne `stale`, la phase devient `ROADMAP_UPDATE_REQUIRED` même si une autre activité GitHub est observable. Le cockpit demande alors de réconcilier #851 avant de lancer implicitement la tranche suivante.
 
 ### Missions par rôle et handoff ChatGPT
 
 Le même état dérive une mission pour chaque avatar standard :
 
-- **Product Owner** : cohérence du pipeline, décisions/gates et réconciliation #55;
+- **Product Owner** : cohérence du pipeline, décisions/gates et réconciliation #851;
 - **Developer** : démarrage, reprise, correction CI ou attente selon la phase;
 - **Architecte** : gate architecture active ou disponibilité sans nouvelle décision;
 - **Reviewer** : jobs rouges, revue finale ou attente des checks;
@@ -467,7 +467,7 @@ Limites assumées :
 
 - aucune date de création de branche n'est inventée;
 - les stalls historiques ne sont pas reconstruits, car le cockpit ne les persiste pas;
-- le timestamp exact de réconciliation historique de #55 n'est pas déduit de l'`updated_at` courant de l'issue;
+- le timestamp exact de réconciliation historique de #851 n'est pas déduit de l'`updated_at` courant de l'issue;
 - si l'historique de workflow d'un commit n'est pas lisible, la livraison devient partielle plutôt que de fabriquer une mesure;
 - pour limiter les appels GitHub, l'analyse CI d'une très grosse PR est bornée aux 20 derniers commits, tout en conservant le premier commit de la PR pour la durée totale.
 
