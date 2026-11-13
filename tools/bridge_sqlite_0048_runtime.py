@@ -95,6 +95,8 @@ SOURCE_EXPECTED_TABLES = frozenset(
 )
 
 SOURCE_MISSING_COLUMNS = {
+    # Added by migration 0035 after the frozen 0048 source schema.
+    "workforce_requests": {"site_contact_name", "site_contact_phone"},
     "projects": {
         "co_managers_version",
         "operational_responsible_override_contact_id",

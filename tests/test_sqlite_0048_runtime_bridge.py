@@ -978,6 +978,27 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
                 str(raised.exception),
             )
 
+    def test_exact_0048_shape_rejects_unapproved_missing_historical_column(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "resourceplanner.db"
+            _create_current_database(source)
+            _reshape_as_0048(source)
+            raw = sqlite3.connect(source)
+            try:
+                # site_client is an actual historical request column and is
+                # deliberately not in SOURCE_MISSING_COLUMNS. The bridge must
+                # reject its absence even though the two later #830 columns
+                # are allowed to be absent from frozen 0048.
+                raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_client")
+                raw.commit()
+            finally:
+                raw.close()
+
+            with self.assertRaises(BridgeBlocked) as raised:
+                bridge_sqlite_0048(source)
+            self.assertIn("workforce_requests", str(raised.exception))
+            self.assertIn("site_client", str(raised.exception))
+
     def test_exact_0048_shape_rejects_unapproved_extra_table(self) -> None:
         with TemporaryDirectory() as directory:
             source = Path(directory) / "resourceplanner.db"
