@@ -244,8 +244,9 @@ export type AttentionCenter = {
 export type RoadmapWritebackPreview = {
   status: 'ready'
   repo: string
-  roadmap_issue: number
-  roadmap_url: string | null
+  human_roadmap_issue: number
+  pipeline_issue: number
+  pipeline_url: string | null
   expected_updated_at: string
   expected_body_sha256: string
   proposal_sha256: string
@@ -269,8 +270,9 @@ export type RoadmapWritebackPreview = {
 export type RoadmapWritebackResult = {
   status: 'applied'
   repo: string
-  roadmap_issue: number
-  roadmap_url: string | null
+  human_roadmap_issue: number
+  pipeline_issue: number
+  pipeline_url: string | null
   previous_body_sha256: string
   body_sha256: string
   updated_at: string | null
@@ -348,6 +350,7 @@ export type FlowAnalyticsDelivery = {
 export type FlowAnalyticsReport = {
   status: 'complete' | 'partial' | 'unavailable'
   repo: string
+  pipeline_issue: number
   generated_at: string
   reason: string | null
   summary: {
@@ -381,6 +384,8 @@ export type Dashboard = {
   generated_at: string
   config: {
     roadmap_issue: number
+    canonical_pipeline_issue: number
+    migration_candidate_pipeline_issue: number
     stalled_after_minutes: number
     token_configured: boolean
   }
@@ -394,6 +399,13 @@ export type Dashboard = {
     parallel: PipelineStep[]
     next: PipelineStep[]
     later: PipelineStep[]
+  }
+  pipeline_source: {
+    number: number
+    title: string | null
+    url: string | null
+    updated_at: string | null
+    strict: boolean
   }
   reconciliation: PipelineReconciliation
   execution: ExecutionControl
@@ -452,6 +464,8 @@ export type Dashboard = {
 export type CockpitConfig = {
   repository: string
   roadmap_issue: number
+  canonical_pipeline_issue: number
+  migration_candidate_pipeline_issue: number
   stalled_after_minutes: number
   token_configured: boolean
 }
