@@ -248,11 +248,11 @@ Le parser valide notamment :
 
 ### Fail closed
 
-Si au moins un marqueur `COCKPIT_PIPELINE_V1` est présent mais que le bloc est incomplet, invalide, ambigu ou incohérent, le cockpit **ne revient jamais** aux heuristiques Markdown historiques. Il retourne `pipeline.valid = false`, aucune étape `now`, aucune issue/tranche active, et un message demandant de corriger #55. Le Developer ne reçoit aucun prompt lui demandant de démarrer une tranche inventée.
+Si au moins un marqueur `COCKPIT_PIPELINE_V1` est présent mais que le bloc est incomplet, invalide, ambigu ou incohérent, le cockpit **ne revient jamais** aux heuristiques Markdown historiques. Il retourne `pipeline.valid = false`, aucune étape `now`, aucune issue/tranche active, et un message demandant de corriger la source machine configurée. Le Developer ne reçoit aucun prompt lui demandant de démarrer une tranche inventée.
 
 Si le bloc canonique est complètement absent **dans le mode historique où la source machine est encore #55**, le resolver historique reste disponible comme fallback de compatibilité. En revanche, une **source machine dédiée** utilise un resolver strict : bloc absent, version inconnue, marqueurs dupliqués, syntaxe invalide ou parent WorkItem introuvable rendent le pipeline invalide. Il n'existe alors aucun fallback vers le Markdown humain de #55 ni vers son ancien bloc embarqué.
 
-Aucun état local n'enregistre qu'une étape ou une gate est terminée. Toute évolution du produit doit mettre à jour le bloc canonique de #55. Après fusion d'une tranche, son statut passe à `DONE`, la prochaine étape MAIN passe à `READY`, et les suivantes restent `BLOCKED`.
+Aucun état local n'enregistre qu'une étape ou une gate est terminée. Toute évolution du produit doit mettre à jour la **source machine configurée**. Pendant Phase 2A cette source reste #55; après un éventuel cutover Phase 2B, #55 restera le roadmap humain et seule l'issue machine dédiée portera ces transitions. Après fusion d'une tranche, son statut passe à `DONE`, la prochaine étape MAIN passe à `READY`, et les suivantes restent `BLOCKED`.
 
 Le dashboard principal affiche une projection compacte sous **Maintenant / Parallèle disponible / Ensuite**. Le panneau **Product Owner** conserve la trajectoire détaillée sous **Maintenant / En parallèle / Ensuite / Plus tard**. Une gate READY reste une gate : elle ne devient jamais une tranche DEV et le prompt Developer interdit explicitement de lancer du travail applicatif tant qu'elle n'est pas passée à `DONE`.
 
