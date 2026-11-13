@@ -59,7 +59,7 @@ def _timeline(
         events.append(
             {
                 "kind": "roadmap",
-                "label": f"Roadmap #{roadmap_issue} mis à jour",
+                "label": f"Pipeline #{roadmap_issue} mis à jour",
                 "detail": reconciliation.get("summary") or "État canonique GitHub.",
                 "at": roadmap_updated_at,
                 "url": roadmap_url,
@@ -222,7 +222,7 @@ def _control_copy(
                 "Ne démarre aucune tranche DEV. Corrige d'abord le contrat canonique, "
                 "puis vérifie que le cockpit résout une unique étape MAIN READY."
             ),
-            _link(f"Roadmap #{roadmap_issue}", roadmap_url),
+            _link(f"Pipeline #{roadmap_issue}", roadmap_url),
         )
 
     if phase == "ROADMAP_UPDATE_REQUIRED":
@@ -235,11 +235,11 @@ def _control_copy(
             "Une livraison GitHub vérifiée n'est pas encore reflétée dans #55.",
             f"Mettre à jour #{roadmap_issue}" + (f" : {change_text}" if change_text else "."),
             (
-                f"Ne démarre pas la tranche suivante tant que le roadmap #{roadmap_issue} n'est pas réconcilié. "
+                f"Ne démarre pas la tranche suivante tant que le pipeline #{roadmap_issue} n'est pas réconcilié. "
                 "Applique la proposition déterministe du Roadmap Reconciler, garde le bloc "
                 "COCKPIT_PIPELINE_V1 autoritaire et vérifie ensuite la nouvelle étape READY."
             ),
-            _link(f"Roadmap #{roadmap_issue}", roadmap_url),
+            _link(f"Pipeline #{roadmap_issue}", roadmap_url),
         )
 
     if phase == "ARCHITECTURE_GATE":
@@ -384,7 +384,7 @@ def _control_copy(
         "Le pipeline ne fournit actuellement aucune tranche exécutable.",
         fallback_next_action,
         fallback_dev_prompt,
-        _link(f"Roadmap #{roadmap_issue}", roadmap_url),
+        _link(f"Pipeline #{roadmap_issue}", roadmap_url),
     )
 
 
@@ -409,7 +409,7 @@ def _missions(
             "Corriger le pipeline canonique",
             f"#{roadmap_issue} est invalide; aucune prochaine tranche ne doit être déduite.",
             control["prompt"],
-            link=_link(f"Roadmap #{roadmap_issue}", roadmap_url),
+            link=_link(f"Pipeline #{roadmap_issue}", roadmap_url),
         )
     elif phase == "ROADMAP_UPDATE_REQUIRED":
         po = _mission(
@@ -417,7 +417,7 @@ def _missions(
             "Réconcilier #55",
             reconciliation.get("summary") or "Le roadmap est en retard sur GitHub.",
             control["prompt"],
-            link=_link(f"Roadmap #{roadmap_issue}", roadmap_url),
+            link=_link(f"Pipeline #{roadmap_issue}", roadmap_url),
         )
     elif reconciliation.get("status") == "attention":
         po = _mission(
@@ -428,7 +428,7 @@ def _missions(
                 f"Examine les écarts signalés par le Roadmap Reconciler pour #{roadmap_issue}. "
                 "Ne change l'ordre canonique que si les preuves GitHub justifient réellement une mise à jour."
             ),
-            link=_link(f"Roadmap #{roadmap_issue}", roadmap_url),
+            link=_link(f"Pipeline #{roadmap_issue}", roadmap_url),
         )
     else:
         po = _mission(
@@ -439,7 +439,7 @@ def _missions(
                 f"Surveille le pipeline canonique #{roadmap_issue}. Aucune décision produit n'est requise pour {key} "
                 "tant qu'un nouvel écart ou une gate n'apparaît pas."
             ),
-            link=_link(f"Roadmap #{roadmap_issue}", roadmap_url),
+            link=_link(f"Pipeline #{roadmap_issue}", roadmap_url),
         )
 
     if phase in {"PIPELINE_INVALID", "ROADMAP_UPDATE_REQUIRED", "DELIVERY_UNVERIFIED"}:
