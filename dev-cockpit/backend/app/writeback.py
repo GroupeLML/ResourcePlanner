@@ -12,6 +12,7 @@ from .roadmap import (
     PipelineStep,
     parse_cockpit_pipeline,
     render_cockpit_pipeline,
+    resolve_canonical_pipeline_source,
 )
 from .service import build_dashboard
 
@@ -123,7 +124,7 @@ def _require_writeback_candidate(dashboard: dict[str, Any]) -> dict[str, Any]:
         raise RoadmapWritebackError(
             409,
             "LEGACY_PIPELINE",
-            "Le writeback est désactivé tant que #55 n'utilise pas COCKPIT_PIPELINE_V1.",
+            "Le writeback est désactivé tant que #{settings.canonical_pipeline_issue} n'utilise pas COCKPIT_PIPELINE_V1.",
         )
     if not pipeline.get("valid"):
         raise RoadmapWritebackError(
@@ -154,7 +155,7 @@ def _verify_snapshot(
         raise RoadmapWritebackError(
             409,
             "ROADMAP_CHANGED",
-            "Le roadmap #55 a changé depuis la preview. Recharge avant d'appliquer.",
+            "Le roadmap #{settings.canonical_pipeline_issue} a changé depuis la preview. Recharge avant d'appliquer.",
             context={
                 "expected_updated_at": expected_updated_at,
                 "actual_updated_at": actual_updated_at,
@@ -174,12 +175,16 @@ async def build_roadmap_writeback_preview(
     dashboard = await build_dashboard(client, settings, repo)
     proposal = _require_writeback_candidate(dashboard)
 
-    # Re-read #55 after the dashboard evidence has been derived. If the source
+    # Re-read #{settings.canonical_pipeline_issue} after the dashboard evidence has been derived. If the source
     # changed while reconciliation was running, fail closed instead of showing
     # a preview built from mixed versions.
-    roadmap = await client.get_issue(repo, settings.roadmap_issue)
+    roadmap = await client.get_issue(repo, settings.canonical_pipeline_issue)
     body = str(roadmap.get("body") or "")
-    current_contract = parse_cockpit_pipeline(body)
+    current_contract = (
+        resolve_canonical_pipeline_source(body)
+        if settings.canonical_pipeline_issue != settings.roadmap_issue
+        else parse_cockpit_pipeline(body)
+    )
     if not current_contract.present or not current_contract.valid:
         raise RoadmapWritebackError(
             409,
@@ -202,7 +207,7 @@ async def build_roadmap_writeback_preview(
         raise RoadmapWritebackError(
             409,
             "NO_CHANGE",
-            "La proposition ne produit aucun changement sur #55.",
+            "La proposition ne produit aucun changement sur #{settings.canonical_pipeline_issue}.",
         )
 
     expected_updated_at = str(roadmap.get("updated_at") or "")
@@ -212,8 +217,9 @@ async def build_roadmap_writeback_preview(
     return {
         "status": "ready",
         "repo": repo,
-        "roadmap_issue": settings.roadmap_issue,
-        "roadmap_url": roadmap.get("html_url"),
+        "human_roadmap_issue": settings.roadmap_issue,
+        "pipeline_issue": settings.canonical_pipeline_issue,
+        "pipeline_url": roadmap.get("html_url"),
         "expected_updated_at": expected_updated_at,
         "expected_body_sha256": expected_body_sha,
         "proposal_sha256": proposal_sha,
@@ -251,7 +257,7 @@ async def apply_roadmap_writeback(
     repo = client.validate_repo(repo)
 
     # First optimistic guard, before any expensive evidence recomputation.
-    initial = await client.get_issue(repo, settings.roadmap_issue)
+    initial = await client.get_issue(repo, settings.canonical_pipeline_issue)
     _verify_snapshot(
         initial,
         expected_updated_at=expected_updated_at,
@@ -266,7 +272,7 @@ async def apply_roadmap_writeback(
         raise RoadmapWritebackError(
             409,
             "ROADMAP_CHANGED",
-            "Le roadmap #55 a changé depuis la preview. Recharge avant d'appliquer.",
+            "Le roadmap #{settings.canonical_pipeline_issue} a changé depuis la preview. Recharge avant d'appliquer.",
         )
     if preview["proposal_sha256"] != expected_proposal_sha256:
         raise RoadmapWritebackError(
@@ -282,7 +288,7 @@ async def apply_roadmap_writeback(
     # Second guard immediately before the PATCH. GitHub Issues does not expose
     # an application-level CAS field, so the cockpit fails closed on both
     # updated_at and the full body hash and verifies again after the write.
-    current = await client.get_issue(repo, settings.roadmap_issue)
+    current = await client.get_issue(repo, settings.canonical_pipeline_issue)
     current_body = _verify_snapshot(
         current,
         expected_updated_at=expected_updated_at,
@@ -292,27 +298,59 @@ async def apply_roadmap_writeback(
 
     updated = await client.update_issue_body(
         repo,
-        settings.roadmap_issue,
+        settings.canonical_pipeline_issue,
         proposed_body,
     )
     updated_body = str(updated.get("body") or "")
-    updated_contract = parse_cockpit_pipeline(updated_body)
+    updated_contract = (
+        resolve_canonical_pipeline_source(updated_body)
+        if settings.canonical_pipeline_issue != settings.roadmap_issue
+        else parse_cockpit_pipeline(updated_body)
+    )
     if updated_body != proposed_body or not updated_contract.valid:
         raise RoadmapWritebackError(
             502,
             "WRITEBACK_VERIFICATION_FAILED",
-            "GitHub a accepté l'écriture, mais la réponse ne correspond pas exactement au résultat attendu.",
+            "GitHub a accepté l'écriture, mais la réponse PATCH ne correspond pas exactement au résultat attendu.",
             context={"pipeline_errors": list(updated_contract.errors)},
+        )
+
+    # Independent post-write verification. A successful PATCH response is not
+    # sufficient proof that the canonical source still equals the intended state.
+    verified = await client.get_issue(repo, settings.canonical_pipeline_issue)
+    verified_body = str(verified.get("body") or "")
+    verified_contract = (
+        resolve_canonical_pipeline_source(verified_body)
+        if settings.canonical_pipeline_issue != settings.roadmap_issue
+        else parse_cockpit_pipeline(verified_body)
+    )
+    expected_body_sha = _sha256(proposed_body)
+    if (
+        verified_body != proposed_body
+        or _sha256(verified_body) != expected_body_sha
+        or not verified_contract.valid
+        or _canonical_block(verified_body) != preview["proposed_block"]
+    ):
+        raise RoadmapWritebackError(
+            502,
+            "WRITEBACK_VERIFICATION_FAILED",
+            "La relecture GitHub après PATCH ne correspond pas exactement à l'état canonique demandé.",
+            context={
+                "expected_body_sha256": expected_body_sha,
+                "actual_body_sha256": _sha256(verified_body),
+                "pipeline_errors": list(verified_contract.errors),
+            },
         )
 
     return {
         "status": "applied",
         "repo": repo,
-        "roadmap_issue": settings.roadmap_issue,
-        "roadmap_url": updated.get("html_url"),
+        "human_roadmap_issue": settings.roadmap_issue,
+        "pipeline_issue": settings.canonical_pipeline_issue,
+        "pipeline_url": verified.get("html_url") or updated.get("html_url"),
         "previous_body_sha256": expected_body_sha256,
-        "body_sha256": _sha256(updated_body),
-        "updated_at": updated.get("updated_at"),
+        "body_sha256": _sha256(verified_body),
+        "updated_at": verified.get("updated_at"),
         "changes": preview["changes"],
-        "pipeline_block": _canonical_block(updated_body),
+        "pipeline_block": _canonical_block(verified_body),
     }
