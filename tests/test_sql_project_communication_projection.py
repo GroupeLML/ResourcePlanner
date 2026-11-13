@@ -1441,7 +1441,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         for row in projection.drafts
                         if row.project_id == "P1"
                     )
-                    self.assertIn("Actif : V-708B / EQ-708B", draft.body)
+                    self.assertIn("Actif : V-708B / REQ-843 / EQ-708B", draft.body)
                     self.assertNotIn("Camion 708B", draft.body)
                     self.assertNotIn("Nacelle 708B", draft.body)
 

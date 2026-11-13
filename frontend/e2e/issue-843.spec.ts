@@ -128,6 +128,21 @@ test("843 projette automatiquement un actif REQUEST avec opérateur sur le quart
     });
     expect(demandCreate.status(), await demandCreate.text()).toBe(201);
     const demandNumber = String((await demandCreate.json()).demand_number);
+    const demandResponse = await page.request.get(
+      `/api/v1/demands/${encodeURIComponent(demandNumber)}`,
+    );
+    expect(demandResponse.ok(), await demandResponse.text()).toBeTruthy();
+    const demand = await demandResponse.json() as {
+      lines: Array<{
+        line_id: string;
+        kind: "WORKFORCE" | "ASSET";
+        asset_type_id: string | null;
+      }>;
+    };
+    const assetLine = demand.lines.find(
+      (row) => row.kind === "ASSET" && row.asset_type_id === assetType.id,
+    );
+    expect(assetLine).toBeTruthy();
 
     const snapshotResponse = await page.request.get(
       `/api/v1/planning/snapshot?start=${day}&end=${day}&scope=global`,
@@ -139,9 +154,38 @@ test("843 projette automatiquement un actif REQUEST avec opérateur sur le quart
     );
     expect(approve.status(), await approve.text()).toBe(200);
 
-    const actions = await page.request.get(
-      `/api/v1/planning/actions?start=${day}&end=${day}&scope=global`,
+    const assetState = await page.request.get("/api/v1/assets/requirements");
+    expect(assetState.ok(), await assetState.text()).toBeTruthy();
+    const state = await assetState.json() as {
+      requirements: Array<{
+        id: string;
+        origin: string;
+        request_line_id: string | null;
+        asset_type_id: string;
+        start_date: string;
+        end_date: string | null;
+      }>;
+      allocations: Array<{ requirement_id: string }>;
+      planning_version: number;
+    };
+    const requestRequirement = state.requirements.find(
+      (row) =>
+        row.origin === "REQUEST"
+        && row.request_line_id === assetLine!.line_id
+        && row.asset_type_id === assetType.id,
     );
+    expect(requestRequirement).toBeTruthy();
+    requirementId = String(requestRequirement!.id);
+    const coveredDay = String(requestRequirement!.start_date);
+    expect(coveredDay).not.toBe("");
+    if (requestRequirement!.end_date) {
+      expect(coveredDay <= requestRequirement!.end_date).toBeTruthy();
+    }
+
+    const actions = await page.request.get(
+      `/api/v1/planning/actions?start=${coveredDay}&end=${coveredDay}&scope=global`,
+    );
+    expect(actions.ok(), await actions.text()).toBeTruthy();
     const assignment = (await actions.json() as Array<any>).find(
       (row) => row.kind === "ASSIGNMENT" && row.demand_number === demandNumber,
     );
@@ -154,24 +198,14 @@ test("843 projette automatiquement un actif REQUEST avec opérateur sur le quart
     );
     expect(assigned.status(), await assigned.text()).toBe(200);
 
-    const assetState = await page.request.get("/api/v1/assets/requirements");
-    const state = await assetState.json() as { requirements: Array<any>; allocations: Array<any>; planning_version: number };
-    const requestRequirement = state.requirements.find(
-      (row) => row.origin === "REQUEST" && row.asset_type_id === assetType.id && row.demand_number === demandNumber,
-    ) ?? state.requirements.find(
-      (row) => row.origin === "REQUEST" && row.asset_type_id === assetType.id && !state.allocations.some((a) => a.requirement_id === row.id),
-    );
-    expect(requestRequirement).toBeTruthy();
-    requirementId = String(requestRequirement.id);
-
     const reserve = await page.request.put(
       `/api/v1/assets/requirements/${encodeURIComponent(requirementId)}/reservation`,
       {
         headers: { "Idempotency-Key": `${fixtureKey}-reserve` },
         data: {
           asset_id: assetId,
-          start_date: day,
-          end_date: day,
+          start_date: coveredDay,
+          end_date: coveredDay,
           expected_planning_version: state.planning_version,
         },
       },
@@ -195,7 +229,10 @@ test("843 projette automatiquement un actif REQUEST avec opérateur sur le quart
     );
     expect(operator.status(), await operator.text()).toBe(200);
 
-    const shiftsResponse = await page.request.get(`/api/v1/shifts?start=${day}&end=${day}`);
+    const shiftsResponse = await page.request.get(
+      `/api/v1/shifts?start=${coveredDay}&end=${coveredDay}`,
+    );
+    expect(shiftsResponse.ok(), await shiftsResponse.text()).toBeTruthy();
     const shifts = await shiftsResponse.json() as Array<any>;
     const targetShift = shifts.find(
       (row) => row.demand_number === demandNumber && row.resource_id === resourceId,
@@ -210,9 +247,18 @@ test("843 projette automatiquement un actif REQUEST avec opérateur sur le quart
     await page.goto("/");
     await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
     await page.getByRole("button", { name: "Aujourd’hui", exact: true }).click();
+    const currentWeek = mondayOf(new Date());
+    const coveredWeek = mondayOf(new Date(`${coveredDay}T12:00:00`));
+    const weekOffset = Math.round(
+      (coveredWeek.getTime() - currentWeek.getTime()) / (7 * 24 * 60 * 60 * 1000),
+    );
+    const weekButton = weekOffset >= 0 ? "Suivante →" : "← Précédente";
+    for (let index = 0; index < Math.abs(weekOffset); index += 1) {
+      await page.getByRole("button", { name: weekButton, exact: true }).click();
+    }
 
     const card = page
-      .locator(`.planning-drop-day[data-resource-id="${resourceId}"][data-day="${day}"] .shift-card`)
+      .locator(`.planning-drop-day[data-resource-id="${resourceId}"][data-day="${coveredDay}"] .shift-card`)
       .filter({ hasText: demandNumber });
     await expect(card).toHaveCount(1);
     await expect(card.locator(".shift-assets")).toContainText(assetCode);

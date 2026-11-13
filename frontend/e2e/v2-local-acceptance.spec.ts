@@ -2416,17 +2416,9 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   const relatedHeading = relatedAssets.locator("strong").first();
   const nacelle63Reservation = relatedAssets.locator("div").filter({ hasText: "Nacelle #63" }).first();
   const nacelle64Reservation = relatedAssets.locator("div").filter({ hasText: "Nacelle #64" }).first();
-  await expect(nacelle63Reservation).toContainText("Réservation de la demande");
-  await expect(nacelle64Reservation).toContainText("Réservation de la demande");
-
-  const inheritedReservations = relatedAssets
-    .locator("div")
-    .filter({ hasText: "Héritée de la période ressource" });
-  if (await inheritedReservations.count()) {
-    await expect(relatedHeading).toHaveText("Réservations liées ou héritées");
-  } else {
-    await expect(relatedHeading).toHaveText("Réservations liées à la demande");
-  }
+  await expect(nacelle63Reservation).toContainText("Héritée de la demande");
+  await expect(nacelle64Reservation).toContainText("Héritée de la demande");
+  await expect(relatedHeading).toHaveText("Réservations liées ou héritées");
 
   await expect(shiftAssetRegion.getByRole("button", { name: "Assigner un actif" })).toBeVisible();
   await shiftAssetPopup.getByRole("button", { name: "Fermer" }).click();
