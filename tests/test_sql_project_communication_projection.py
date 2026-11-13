@@ -1832,6 +1832,92 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_830_contact_change_stales_prepared_batch_without_mutating_snapshot(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    request = session.get(WorkforceRequest, "D1")
+                    assert request is not None
+                    request.site_contact_name = "Jean Tremblay"
+                    request.site_contact_phone = "555-0101"
+                    shift_ids_before = tuple(sorted(session.scalars(select(Shift.id)).all()))
+            finally:
+                engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                original_fingerprint = preview.json()["snapshot_fingerprint"]
+                original_body = preview.json()["drafts"][0]["body"]
+                self.assertIn("Demande DMO-290A-1", original_body)
+                self.assertIn("Contact chantier : Jean Tremblay — 555-0101", original_body)
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": original_fingerprint,
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                batch_id = prepared.json()["id"]
+                self.assertEqual(prepared.json()["messages"][0]["body"], original_body)
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        request = session.get(WorkforceRequest, "D1")
+                        assert request is not None
+                        request.site_contact_name = "Pierre Gagnon"
+                        request.site_contact_phone = "555-0202"
+                        shift_ids_after = tuple(sorted(session.scalars(select(Shift.id)).all()))
+                finally:
+                    engine.dispose()
+                self.assertEqual(shift_ids_after, shift_ids_before)
+
+                current_preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(current_preview.status_code, 200, current_preview.text)
+                self.assertNotEqual(
+                    current_preview.json()["snapshot_fingerprint"],
+                    original_fingerprint,
+                )
+                self.assertIn(
+                    "Contact chantier : Pierre Gagnon — 555-0202",
+                    current_preview.json()["drafts"][0]["body"],
+                )
+                self.assertNotIn("Jean Tremblay", current_preview.json()["drafts"][0]["body"])
+
+                stale = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(
+                    stale.json()["error"]["code"],
+                    "project_communication_batch_stale",
+                )
+
+                reloaded = client.get(
+                    "/api/v1/communications/project-batches?week_start=2026-09-23"
+                )
+                self.assertEqual(reloaded.status_code, 200, reloaded.text)
+                stored = next(row for row in reloaded.json() if row["id"] == batch_id)
+                self.assertEqual(stored["messages"][0]["body"], original_body)
+                self.assertNotIn("Pierre Gagnon", stored["messages"][0]["body"])
+
+
     def test_project_create_drafts_passes_persisted_to_and_cc_to_transport(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
@@ -1889,35 +1975,6 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertIn(
                     "Contact chantier : Jean Tremblay — 555-0101",
                     prepared_payload["messages"][0]["body"],
-                )
-
-                engine = create_sql_engine(database_url)
-                factory = create_session_factory(engine)
-                try:
-                    with factory.begin() as session:
-                        request = session.get(WorkforceRequest, "D1")
-                        assert request is not None
-                        request.site_contact_name = "Pierre Gagnon"
-                        request.site_contact_phone = "555-0202"
-                        shift_ids_after = tuple(
-                            sorted(row[0] for row in session.execute(
-                                select(Shift.id).where(
-                                    Shift.resource_requirement_id.in_(("REQ1", "REQ2"))
-                                )
-                            ))
-                        )
-                finally:
-                    engine.dispose()
-                self.assertEqual(shift_ids_after, shift_ids_before)
-
-                current_preview = client.get(
-                    "/api/v1/communications/project-preview"
-                    "?week_start=2026-09-23"
-                )
-                self.assertEqual(current_preview.status_code, 200, current_preview.text)
-                self.assertIn(
-                    "Contact chantier : Pierre Gagnon — 555-0202",
-                    current_preview.json()["drafts"][0]["body"],
                 )
 
                 approved = client.post(
