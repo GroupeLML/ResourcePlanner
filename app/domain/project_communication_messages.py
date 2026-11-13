@@ -326,12 +326,17 @@ def _fingerprint_payload(payload: object) -> str:
 def project_projection_fingerprint(
     projection: ProjectCommunicationProjection,
 ) -> str:
-    _validate_provenance(projection)
+    if projection.request_provenance_version is not None:
+        _validate_provenance(projection)
     return _fingerprint_payload(
         (
             projection.week_start.isoformat(),
             projection.week_end.isoformat(),
-            tuple(_project_semantic_payload(project, include_provenance=True) for project in projection.projects),
+            tuple(
+                _project_semantic_payload(project, include_provenance=True)
+                if projection.request_provenance_version == 1 else _project_payload(project)
+                for project in projection.projects
+            ),
             tuple(projection.diagnostics),
         )
     )

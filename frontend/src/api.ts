@@ -2510,6 +2510,24 @@ export function updateDemand(number: string, payload: DemandWrite, comment: stri
   );
 }
 
+export function updateDemandSiteContact(
+  number: string,
+  expectedVersion: number,
+  siteContactName: string | null,
+  siteContactPhone: string | null,
+) {
+  return sendJson<DemandMutationResult>(
+    `/api/v1/demands/${encodeURIComponent(number)}`,
+    "PATCH",
+    {
+      expected_version: expectedVersion,
+      site_contact_name: siteContactName,
+      site_contact_phone: siteContactPhone,
+      comment: "Contact chantier modifié via React V2",
+    },
+  );
+}
+
 export function updateDemandConfirmation(
   number: string,
   confirmation: "Tentative" | "Confirmée",

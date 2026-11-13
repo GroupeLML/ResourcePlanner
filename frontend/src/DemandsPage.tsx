@@ -32,6 +32,7 @@ import {
   setDemandOperationalResponsible,
   updateDemand,
   updateDemandConfirmation,
+  updateDemandSiteContact,
 } from "./api";
 import CompetencyPicker from "./CompetencyPicker";
 import SearchableCombobox from "./SearchableCombobox";
@@ -840,7 +841,24 @@ export default function DemandsPage({
         await reloadDemand(result.demand_number);
         setNotice(`Demande ${result.demand_number} créée en brouillon.`);
       } else if (selectedDemand) {
-        const result = await updateDemand(
+        const previousForm = formFromDemand(selectedDemand);
+        const onlyContactEdited = (
+          Object.keys(form).every((key) => (
+            key === "site_contact_name" || key === "site_contact_phone"
+            || JSON.stringify(form[key as keyof FormState]) === JSON.stringify(previousForm[key as keyof FormState])
+          ))
+        ) && (
+          form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "")
+          || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "")
+        ) && !contextDirty && lineMode === Boolean(selectedDemand.line_mode);
+        const result = onlyContactEdited
+          ? await updateDemandSiteContact(
+              selectedDemand.number,
+              selectedDemand.version,
+              form.site_contact_name.trim() || null,
+              form.site_contact_phone.trim() || null,
+            )
+          : await updateDemand(
           selectedDemand.number,
           {
             ...payload,
