@@ -69,19 +69,35 @@ def dashboard(*, status="stale", proposed_block=PROPOSED_BLOCK):
 
 
 class FakeGitHub:
-    def __init__(self, *, body=BODY, updated_at="2026-09-24T19:30:00Z", update_error=None):
+    def __init__(
+        self,
+        *,
+        body=BODY,
+        updated_at="2026-09-24T19:30:00Z",
+        update_error=None,
+        post_write_get_body=None,
+    ):
         self.body = body
         self.updated_at = updated_at
         self.update_error = update_error
+        self.post_write_get_body = post_write_get_body
         self.update_calls = []
+        self.get_calls = []
+        self._written = False
 
     def validate_repo(self, repo):
         return repo
 
     async def get_issue(self, repo, number):
+        self.get_calls.append(number)
+        body = (
+            self.post_write_get_body
+            if self._written and self.post_write_get_body is not None
+            else self.body
+        )
         return {
             "number": number,
-            "body": self.body,
+            "body": body,
             "updated_at": self.updated_at,
             "html_url": f"https://github.test/{repo}/issues/{number}",
         }
@@ -91,6 +107,7 @@ class FakeGitHub:
         if self.update_error:
             raise self.update_error
         self.body = body
+        self._written = True
         self.updated_at = "2026-09-24T19:31:00Z"
         return {
             "number": number,
@@ -240,6 +257,56 @@ class RoadmapWritebackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Ne jamais modifier cette section.", written)
         self.assertNotIn(CURRENT_BLOCK, written)
         self.assertEqual(result["pipeline_block"], PROPOSED_BLOCK)
+        self.assertGreaterEqual(client.get_calls.count(55), 4)
+
+    async def test_apply_targets_configured_pipeline_issue_not_human_roadmap(self):
+        client = FakeGitHub(body=CURRENT_BLOCK)
+        settings = Settings(
+            github_token="test",
+            repository="tchi99/RessourcePlanner",
+            roadmap_issue=55,
+            canonical_pipeline_issue=851,
+            migration_candidate_pipeline_issue=851,
+        )
+        strict_dashboard = dashboard()
+        strict_dashboard["pipeline"]["steps"] = [
+            step.to_dict() for step in parse_cockpit_pipeline(CURRENT_BLOCK).steps
+        ]
+        with patch(
+            "app.writeback.build_dashboard",
+            new=AsyncMock(return_value=strict_dashboard),
+        ):
+            result = await apply_roadmap_writeback(
+                client,
+                settings,
+                "tchi99/RessourcePlanner",
+                expected_updated_at=client.updated_at,
+                expected_body_sha256=_sha256(CURRENT_BLOCK),
+                expected_proposal_sha256=_sha256(PROPOSED_BLOCK),
+                confirm=True,
+            )
+
+        self.assertEqual(client.update_calls[0][1], 851)
+        self.assertNotIn(55, [number for _, number, _ in client.update_calls])
+        self.assertEqual(result["human_roadmap_issue"], 55)
+        self.assertEqual(result["pipeline_issue"], 851)
+
+    async def test_apply_fails_if_independent_post_write_get_differs(self):
+        client = FakeGitHub(post_write_get_body=PROPOSED_BLOCK + "\nconcurrent tail")
+        with patch("app.writeback.build_dashboard", new=AsyncMock(return_value=dashboard())):
+            with self.assertRaises(RoadmapWritebackError) as caught:
+                await apply_roadmap_writeback(
+                    client,
+                    self.settings,
+                    "tchi99/RessourcePlanner",
+                    expected_updated_at=client.updated_at,
+                    expected_body_sha256=_sha256(BODY),
+                    expected_proposal_sha256=_sha256(PROPOSED_BLOCK),
+                    confirm=True,
+                )
+
+        self.assertEqual(caught.exception.code, "WRITEBACK_VERIFICATION_FAILED")
+        self.assertEqual(caught.exception.status_code, 502)
 
     async def test_github_permission_failure_is_not_swallowed(self):
         client = FakeGitHub(update_error=GitHubError(403, "Resource not accessible"))
