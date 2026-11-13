@@ -210,9 +210,9 @@ Le backend distingue maintenant deux identités et un mode de source explicite :
 
 Le mode ne dépend jamais de l'égalité numérique entre le roadmap humain et la source machine. `LEGACY_EMBEDDED` est réservé à la source historique embarquée **#55**; une combinaison incompatible échoue fermée. `DEDICATED_STRICT` exige un unique contrat V1 valide, sans fallback Markdown et sans marqueurs de versions concurrentes/non supportées.
 
-**Pré-cutover #842 Phase 2A :** `canonical_pipeline_issue` reste fixé à **#55** avec `LEGACY_EMBEDDED`. L'issue **#851** est supportée pour validation explicite seulement et demeure **NON-CANONICAL**. Le changement de source active vers #851 et `DEDICATED_STRICT` est réservé à Phase 2B après autorisation PO.
+**Post-cutover #842 :** `canonical_pipeline_issue` est fixé à **#851** avec `DEDICATED_STRICT`. Le roadmap humain reste **#55**. Le bloc `COCKPIT_PIPELINE_V1` encore présent physiquement dans #55 est historique/non autoritaire et tous les lecteurs/écrivains machine supportés doivent l'ignorer.
 
-Quand la source machine configurée contient le bloc versionné `COCKPIT_PIPELINE_V1`, ce bloc est autoritaire pour déterminer le focus courant, les horizons Maintenant/Ensuite, les gates, le prompt Developer et la clé utilisée pour rechercher une PR ou une branche. Le texte humain détaillé de #55 reste de la documentation et ne peut jamais remplacer la source machine en mode dédié.
+La source machine #851 est autoritaire pour déterminer le focus courant, les horizons Maintenant/Ensuite, les gates, le prompt Developer et la clé utilisée pour rechercher une PR ou une branche. Le texte humain détaillé de #55 reste de la documentation et ne peut jamais remplacer la source machine.
 
 Format exact :
 
@@ -255,7 +255,7 @@ Si au moins un marqueur `COCKPIT_PIPELINE_V1` est présent mais que le bloc est 
 
 Si le bloc canonique est complètement absent **dans le mode historique où la source machine est encore #55**, le resolver historique reste disponible comme fallback de compatibilité. En revanche, une **source machine dédiée** utilise un resolver strict : bloc absent, version inconnue, marqueurs dupliqués, syntaxe invalide ou parent WorkItem introuvable rendent le pipeline invalide. Il n'existe alors aucun fallback vers le Markdown humain de #55 ni vers son ancien bloc embarqué.
 
-Aucun état local n'enregistre qu'une étape ou une gate est terminée. Toute évolution du produit doit mettre à jour la **source machine configurée**. Pendant Phase 2A cette source reste #55; après un éventuel cutover Phase 2B, #55 restera le roadmap humain et seule l'issue machine dédiée portera ces transitions. Après fusion d'une tranche, son statut passe à `DONE`, la prochaine étape MAIN passe à `READY`, et les suivantes restent `BLOCKED`.
+Aucun état local n'enregistre qu'une étape ou une gate est terminée. Toute évolution machine du produit doit mettre à jour **#851**, source canonique configurée. #55 reste le roadmap humain. Après fusion d'une tranche, son statut machine passe à `DONE`, la prochaine étape MAIN passe à `READY`, et les suivantes restent `BLOCKED`.
 
 Le dashboard principal affiche une projection compacte sous **Maintenant / Parallèle disponible / Ensuite**. Le panneau **Product Owner** conserve la trajectoire détaillée sous **Maintenant / En parallèle / Ensuite / Plus tard**. Une gate READY reste une gate : elle ne devient jamais une tranche DEV et le prompt Developer interdit explicitement de lancer du travail applicatif tant qu'elle n'est pas passée à `DONE`.
 
@@ -285,9 +285,20 @@ Une étape `PARALLEL READY` prouvée livrée peut être proposée `DONE` sans mo
 
 Le bloc proposé reste disponible à la copie manuelle. Lorsque le token local possède **Issues: write**, le cockpit permet aussi un Safe Writeback explicite.
 
+### Opérations de cutover #842
+
+Le changement d'autorité est opérationnellement contrôlé :
+
+1. avant merge, arrêter/quiescer les anciennes instances Dev Cockpit capables de lire/écrire l'état machine et invalider toute preview/confirmation Safe Writeback créée sous l'autorité #55;
+2. effectuer le cutover uniquement par merge manuel du changement de sélecteur repository-owned;
+3. après merge, redémarrer/utiliser uniquement une version compatible et vérifier que la source effective est `#851 / DEDICATED_STRICT`;
+4. ne faire aucune réconciliation `#842 DONE → ASTRA-644 READY` tant que le Product Owner ne l'a pas autorisée séparément.
+
+Aucune automatisation de déploiement ne réalise ces étapes.
+
 ### Safe Writeback de la source machine
 
-Le Safe Writeback ferme la boucle du Reconciler sans créer de second état produit. Il cible **uniquement l'issue machine configurée** et ne peut écrire que lorsque le pipeline canonique est valide, que le Reconciler retourne `stale` et qu'une proposition déterministe existe déjà. Pendant Phase 2A, cette cible active reste #55; #851 n'est utilisée que dans des validations/configurations explicites.
+Le Safe Writeback ferme la boucle du Reconciler sans créer de second état produit. Il cible **uniquement l'issue machine configurée** et ne peut écrire que lorsque le pipeline canonique est valide, que le Reconciler retourne `stale` et qu'une proposition déterministe existe déjà. Après le cutover, cette cible active est #851. Le Safe Writeback ne doit jamais modifier le bloc historique embarqué dans #55.
 
 Le parcours comporte deux étapes obligatoires :
 
