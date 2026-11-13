@@ -1,6 +1,11 @@
 import unittest
 
-from app.config import Settings
+from app.config import (
+    PIPELINE_SOURCE_DEDICATED_STRICT,
+    PIPELINE_SOURCE_LEGACY_EMBEDDED,
+    Settings,
+    canonical_pipeline_is_strict,
+)
 from app.github import GitHubError
 from app.pipeline_source import load_pipeline_source
 from app.roadmap import resolve_canonical_pipeline_source
@@ -101,6 +106,8 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         settings = Settings()
         self.assertEqual(settings.roadmap_issue, 55)
         self.assertEqual(settings.canonical_pipeline_issue, 55)
+        self.assertEqual(settings.canonical_pipeline_source_mode, PIPELINE_SOURCE_LEGACY_EMBEDDED)
+        self.assertFalse(canonical_pipeline_is_strict(settings))
         self.assertEqual(settings.migration_candidate_pipeline_issue, 851)
 
     def test_strict_resolver_refuses_missing_block_and_unknown_version(self):
@@ -113,7 +120,24 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
             "<!-- COCKPIT_PIPELINE_V2 -->\nvalue\n<!-- /COCKPIT_PIPELINE_V2 -->"
         )
         self.assertFalse(unknown.valid)
-        self.assertIn("inconnue", " ".join(unknown.errors))
+        self.assertIn("non supportée", " ".join(unknown.errors))
+
+        valid_v1 = resolve_canonical_pipeline_source(CANDIDATE)
+        self.assertTrue(valid_v1.valid)
+
+        mixed_v1_v2 = resolve_canonical_pipeline_source(
+            CANDIDATE
+            + "\n<!-- COCKPIT_PIPELINE_V2 -->\nvalue\n<!-- /COCKPIT_PIPELINE_V2 -->"
+        )
+        self.assertFalse(mixed_v1_v2.valid)
+        self.assertIn("V2", " ".join(mixed_v1_v2.errors))
+
+        mixed_v2_v1 = resolve_canonical_pipeline_source(
+            "<!-- COCKPIT_PIPELINE_V2 -->\nvalue\n<!-- /COCKPIT_PIPELINE_V2 -->\n"
+            + CANDIDATE
+        )
+        self.assertFalse(mixed_v2_v1.valid)
+        self.assertIn("V2", " ".join(mixed_v2_v1.errors))
 
     async def test_strict_source_validates_referenced_parent_issues(self):
         client = FakeGitHub(missing_parent=644)
@@ -141,6 +165,48 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contract.steps, [])
         self.assertIn("#851 introuvable", " ".join(contract.errors))
 
+    async def test_dedicated_source_collision_with_human_issue_still_fails_closed(self):
+        client = FakeGitHub(candidate_body="# human prose without canonical V1")
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+            roadmap_issue=851,
+            canonical_pipeline_issue=851,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_DEDICATED_STRICT,
+            migration_candidate_pipeline_issue=851,
+        )
+        dashboard = await build_dashboard(
+            client,
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+        self.assertEqual(dashboard["roadmap"]["number"], 851)
+        self.assertEqual(dashboard["pipeline_source"]["number"], 851)
+        self.assertTrue(dashboard["pipeline_source"]["strict"])
+        self.assertEqual(
+            dashboard["pipeline_source"]["mode"],
+            PIPELINE_SOURCE_DEDICATED_STRICT,
+        )
+        self.assertFalse(dashboard["pipeline"]["valid"])
+        self.assertIsNone(dashboard["pipeline"]["now"])
+
+    async def test_incompatible_legacy_source_configuration_fails_closed(self):
+        client = FakeGitHub()
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+            roadmap_issue=55,
+            canonical_pipeline_issue=851,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
+            migration_candidate_pipeline_issue=851,
+        )
+        with self.assertRaises(ValueError):
+            await build_dashboard(
+                client,
+                settings,
+                "GroupeLML/ResourcePlanner",
+            )
+
     async def test_dashboard_explicit_machine_source_ignores_stale_55_pipeline(self):
         client = FakeGitHub()
         settings = Settings(
@@ -148,6 +214,7 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
             repository="GroupeLML/ResourcePlanner",
             roadmap_issue=55,
             canonical_pipeline_issue=851,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_DEDICATED_STRICT,
             migration_candidate_pipeline_issue=851,
         )
         dashboard = await build_dashboard(
