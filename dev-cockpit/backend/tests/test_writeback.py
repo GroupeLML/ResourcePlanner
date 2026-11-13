@@ -1,7 +1,11 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.config import PIPELINE_SOURCE_DEDICATED_STRICT, Settings
+from app.config import (
+    PIPELINE_SOURCE_DEDICATED_STRICT,
+    PIPELINE_SOURCE_LEGACY_EMBEDDED,
+    Settings,
+)
 from app.github import GitHubError
 from app.roadmap import parse_cockpit_pipeline
 from app.writeback import (
@@ -123,6 +127,8 @@ class RoadmapWritebackTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
+            canonical_pipeline_issue=55,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_LEGACY_EMBEDDED,
         )
 
     def test_replace_changes_only_canonical_block(self):
@@ -265,9 +271,11 @@ class RoadmapWritebackTests(unittest.IsolatedAsyncioTestCase):
             github_token="test",
             repository="tchi99/RessourcePlanner",
             roadmap_issue=55,
-            canonical_pipeline_issue=851,
-            canonical_pipeline_source_mode=PIPELINE_SOURCE_DEDICATED_STRICT,
-            migration_candidate_pipeline_issue=851,
+        )
+        self.assertEqual(settings.canonical_pipeline_issue, 851)
+        self.assertEqual(
+            settings.canonical_pipeline_source_mode,
+            PIPELINE_SOURCE_DEDICATED_STRICT,
         )
         strict_dashboard = dashboard()
         strict_dashboard["pipeline"]["steps"] = [
