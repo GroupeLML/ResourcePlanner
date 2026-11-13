@@ -226,6 +226,31 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
             "https://github.test/issues/851",
         )
 
+    async def test_post_cutover_missing_851_never_falls_back_to_embedded_55(self):
+        client = FakeGitHub(missing_candidate=True)
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+        )
+
+        dashboard = await build_dashboard(
+            client,
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+
+        self.assertEqual(dashboard["roadmap"]["number"], 55)
+        self.assertEqual(dashboard["pipeline_source"]["number"], 851)
+        self.assertFalse(dashboard["pipeline"]["valid"])
+        self.assertIsNone(dashboard["pipeline"]["now"])
+        self.assertIsNone(dashboard["active_work"])
+        self.assertEqual(dashboard["execution"]["phase"], "PIPELINE_INVALID")
+        self.assertNotIn("#999", dashboard["dev_prompt"])
+        self.assertEqual(
+            dashboard["execution"]["next_action"],
+            "Corriger COCKPIT_PIPELINE_V1 dans #851.",
+        )
+
     async def test_legacy_pre_cutover_mode_keeps_legacy_fallback(self):
         client = FakeGitHub(human_body=LEGACY_ROADMAP)
         settings = Settings(
