@@ -9,7 +9,7 @@ Le cockpit ne crée aucun roadmap parallèle. Il distingue maintenant :
 - le **roadmap humain** GitHub (`#55`);
 - la **source machine configurée** pour `COCKPIT_PIPELINE_V1`.
 
-Pendant **#842 Phase 2A**, les deux identités configurées pointent encore par défaut vers #55. L'issue **#851** existe uniquement comme **NON-CANONICAL MIGRATION CANDIDATE**; aucun cutover n'a encore eu lieu.
+Le roadmap humain configuré reste **#55**. La source machine active est **#851** avec le mode **DEDICATED_STRICT**. Le bloc machine encore physiquement présent dans #55 est historique/non autoritaire.
 
 Il lit notamment :
 
@@ -319,7 +319,7 @@ Invariants :
 
 GitHub Issues ne fournit pas au cockpit un champ CAS applicatif transactionnel. La protection est donc un verrou optimiste fort basé sur **`updated_at + SHA-256 du body complet`**, vérifié deux fois avant le PATCH, puis vérifié après l'écriture. Le cockpit échoue fermé dès qu'un écart est observé.
 
-Le texte humain de #55 n'est volontairement pas réécrit par ce mécanisme une fois la source machine séparée : le Safe Writeback est limité au contrat machine `COCKPIT_PIPELINE_V1`. Pendant Phase 2A, l'autorité active reste néanmoins le bloc embarqué de #55 jusqu'au cutover explicitement autorisé.
+Le texte humain de #55 n'est volontairement pas réécrit par ce mécanisme : le Safe Writeback est limité au contrat machine `COCKPIT_PIPELINE_V1` de #851. Le bloc embarqué de #55 est historique/non autoritaire et ne doit jamais être une cible de writeback après cutover.
 
 ### Attention Center
 
