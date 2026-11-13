@@ -332,6 +332,20 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("#999", dashboard["dev_prompt"])
         self.assertEqual(dashboard["roadmap"]["declared_active"], "999")
 
+        po_pack = dashboard["handoff"]["packs"]["product-owner"]
+        self.assertIn("Roadmap humain : #851", po_pack["prompt"])
+        self.assertIn("Pipeline canonique : #55", po_pack["prompt"])
+        source_urls = {source["label"]: source["url"] for source in po_pack["sources"]}
+        self.assertEqual(
+            source_urls["Roadmap humain #851"],
+            "https://github.test/issues/851",
+        )
+        self.assertEqual(
+            source_urls["Pipeline canonique #55"],
+            "https://github.test/issues/55",
+        )
+        self.assertEqual(dashboard["execution"]["roadmap_issue"], 55)
+
     async def test_dedicated_source_collision_with_human_issue_still_fails_closed(self):
         client = FakeGitHub(candidate_body="# human prose without canonical V1")
         settings = Settings(
@@ -356,6 +370,50 @@ class PipelineSourceSplitTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(dashboard["pipeline"]["valid"])
         self.assertIsNone(dashboard["pipeline"]["now"])
+        self.assertIsNone(dashboard["active_work"])
+
+        po_pack = dashboard["handoff"]["packs"]["product-owner"]
+        self.assertIn("Roadmap humain : #851", po_pack["prompt"])
+        self.assertIn("Pipeline canonique : #851", po_pack["prompt"])
+
+    async def test_invalid_dedicated_split_keeps_human_and_pipeline_handoff_sources_paired(self):
+        client = FakeGitHub(
+            human_body="# Human roadmap 55",
+            candidate_body="# Dedicated source without V1",
+        )
+        settings = Settings(
+            github_token="test",
+            repository="GroupeLML/ResourcePlanner",
+            roadmap_issue=55,
+            canonical_pipeline_issue=851,
+            canonical_pipeline_source_mode=PIPELINE_SOURCE_DEDICATED_STRICT,
+            migration_candidate_pipeline_issue=851,
+        )
+
+        dashboard = await build_dashboard(
+            client,
+            settings,
+            "GroupeLML/ResourcePlanner",
+        )
+
+        self.assertFalse(dashboard["pipeline"]["valid"])
+        self.assertIsNone(dashboard["active_work"])
+        self.assertEqual(dashboard["execution"]["roadmap_issue"], 851)
+        self.assertIn("#851", dashboard["next_action"])
+
+        po_pack = dashboard["handoff"]["packs"]["product-owner"]
+        self.assertIn("Roadmap humain : #55", po_pack["prompt"])
+        self.assertIn("Pipeline canonique : #851", po_pack["prompt"])
+        self.assertIn("Pipeline canonique COCKPIT_PIPELINE_V1 : #851", po_pack["prompt"])
+        source_urls = {source["label"]: source["url"] for source in po_pack["sources"]}
+        self.assertEqual(
+            source_urls["Roadmap humain #55"],
+            "https://github.test/issues/55",
+        )
+        self.assertEqual(
+            source_urls["Pipeline canonique #851"],
+            "https://github.test/issues/851",
+        )
 
     async def test_incompatible_legacy_source_configuration_fails_closed(self):
         client = FakeGitHub()
