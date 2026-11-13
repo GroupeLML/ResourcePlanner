@@ -30,10 +30,11 @@ def control(
     reconciliation=None,
     pipeline_valid=True,
     pipeline_now=None,
+    pipeline_issue=55,
 ):
     return build_execution_control(
-        roadmap_issue=55,
-        roadmap_url="https://github.test/issues/55",
+        roadmap_issue=pipeline_issue,
+        roadmap_url=f"https://github.test/issues/{pipeline_issue}",
         roadmap_updated_at="2026-09-24T17:00:00Z",
         pipeline_valid=pipeline_valid,
         pipeline_now=pipeline_now
@@ -194,6 +195,64 @@ class ExecutionControllerTests(unittest.TestCase):
         self.assertEqual(result["missions"]["architect"]["state"], "action")
         self.assertEqual(result["missions"]["developer"]["state"], "blocked")
 
+    def test_split_source_operational_guidance_targets_canonical_pipeline(self):
+        architecture = control(
+            work=active_work(
+                key="ASTRA-362",
+                issue_number=362,
+                issue={
+                    "number": 362,
+                    "title": "Delivery architecture",
+                    "url": "https://github.test/issues/362",
+                },
+            ),
+            pipeline_issue=851,
+            pipeline_now={
+                "key": "ASTRA-362",
+                "kind": "ARCHITECTURE_GATE",
+                "issue_number": 362,
+                "title": "analyse architecture Delivery",
+            },
+        )
+        architect_prompt = architecture["missions"]["architect"]["prompt"]
+        self.assertIn("pipeline #851", architect_prompt)
+        self.assertIn("mets le pipeline #851 à jour", architect_prompt)
+        self.assertNotIn("mets #55 à jour", architect_prompt)
+
+        ready_to_merge = control(
+            pipeline_issue=851,
+            work=active_work(
+                states=["IN_PROGRESS", "MERGEABLE"],
+                primary_pr={
+                    "number": 430,
+                    "state": "open",
+                    "url": "https://github.test/pull/430",
+                },
+            ),
+        )
+        self.assertIn(
+            "réconciliation du pipeline #851",
+            ready_to_merge["prompt"],
+        )
+        self.assertNotIn("réconciliation de #55", ready_to_merge["prompt"])
+
+        delivery_unverified = control(
+            pipeline_issue=851,
+            work=active_work(
+                states=["READY"],
+                merged_but_unmarked_pr={
+                    "number": 430,
+                    "url": "https://github.test/pull/430",
+                },
+            ),
+        )
+        self.assertEqual(delivery_unverified["phase"], "DELIVERY_UNVERIFIED")
+        self.assertIn(
+            "réconcilier le pipeline #851",
+            delivery_unverified["next_action"],
+        )
+        self.assertNotIn("réconcilier #55", delivery_unverified["next_action"])
+
     def test_timeline_is_derived_from_gitHub_timestamps(self):
         result = control(
             work=active_work(
@@ -238,7 +297,7 @@ class ExecutionControllerTests(unittest.TestCase):
         self.assertEqual(labels[0], "CI #900 démarrée")
         self.assertIn("Commit abc123", labels)
         self.assertIn("PR #430 ouverte", labels)
-        self.assertIn("Roadmap #55 mis à jour", labels)
+        self.assertIn("Pipeline #55 mis à jour", labels)
 
 
 if __name__ == "__main__":

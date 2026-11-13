@@ -108,6 +108,7 @@ def _fact_lines(
     active_work: dict[str, Any] | None,
     pipeline_now: dict[str, Any] | None,
     roadmap_issue: int,
+    canonical_pipeline_issue: int,
     referenced_adrs: list[dict[str, str]],
     section: dict[str, Any] | None,
 ) -> list[str]:
@@ -117,7 +118,8 @@ def _fact_lines(
     branch = work.get("active_branch") or {}
     commit = work.get("last_commit") or {}
     lines = [
-        f"- Roadmap canonique : #{roadmap_issue}",
+        f"- Roadmap humain : #{roadmap_issue}",
+        f"- Pipeline canonique : #{canonical_pipeline_issue}",
         f"- Étape canonique : {(pipeline_now or {}).get('key') or work.get('key') or 'aucune'}",
         f"- Type/statut : {(pipeline_now or {}).get('kind') or '—'} / {(pipeline_now or {}).get('status') or '—'}",
         f"- Phase d'exécution : {execution.get('phase')}",
@@ -158,7 +160,12 @@ def _fact_lines(
     return lines
 
 
-def _role_guidance(role: str) -> str:
+def _role_guidance(
+    role: str,
+    *,
+    roadmap_issue: int,
+    canonical_pipeline_issue: int,
+) -> str:
     if role == "developer":
         return (
             "Reprends l'état existant. Ne recommence pas l'analyse déjà matérialisée dans GitHub. "
@@ -176,8 +183,10 @@ def _role_guidance(role: str) -> str:
         )
     if role == "product-owner":
         return (
-            "Utilise #55 comme source de vérité produit. Distingue les preuves GitHub de livraison des "
-            "décisions produit; ne réordonne pas le pipeline sans décision explicite."
+            f"Roadmap humain : #{roadmap_issue}. "
+            f"Pipeline canonique COCKPIT_PIPELINE_V1 : #{canonical_pipeline_issue}. "
+            "Utilise le roadmap humain pour le contexte produit et le pipeline canonique pour l'état machine "
+            "et la réconciliation; ne confonds pas les deux autorités et ne réordonne pas le pipeline sans décision explicite."
         )
     return "Utilise le contexte transmis comme point de reprise et évite de refaire l'exploration déjà disponible."
 
@@ -186,6 +195,8 @@ def build_handoff_packs(
     *,
     roadmap_issue: int,
     roadmap_url: str | None,
+    canonical_pipeline_issue: int | None = None,
+    canonical_pipeline_url: str | None = None,
     pipeline_now: dict[str, Any] | None,
     execution: dict[str, Any],
     active_work: dict[str, Any] | None,
@@ -193,13 +204,16 @@ def build_handoff_packs(
     referenced_adrs: list[dict[str, str]],
     agents_text: str,
 ) -> dict[str, Any]:
+    pipeline_issue = canonical_pipeline_issue or roadmap_issue
+    pipeline_url = canonical_pipeline_url or roadmap_url
     active_key = str((active_work or {}).get("key") or (pipeline_now or {}).get("key") or "")
     section = _active_section(issue_body, active_key)
     constraints = _agents_constraints(agents_text)
 
     shared_sources: list[dict[str, str]] = []
     for candidate in [
-        _source(f"Roadmap #{roadmap_issue}", roadmap_url, "roadmap"),
+        _source(f"Roadmap humain #{roadmap_issue}", roadmap_url, "roadmap"),
+        _source(f"Pipeline canonique #{pipeline_issue}", pipeline_url, "roadmap"),
         _source(
             f"Issue #{(active_work or {}).get('issue_number')}",
             ((active_work or {}).get("issue") or {}).get("url"),
@@ -233,6 +247,7 @@ def build_handoff_packs(
         active_work=active_work,
         pipeline_now=pipeline_now,
         roadmap_issue=roadmap_issue,
+        canonical_pipeline_issue=pipeline_issue,
         referenced_adrs=referenced_adrs,
         section=section,
     )
@@ -283,7 +298,11 @@ def build_handoff_packs(
             [
                 "",
                 "## Consigne de reprise",
-                _role_guidance(role),
+                _role_guidance(
+                    role,
+                    roadmap_issue=roadmap_issue,
+                    canonical_pipeline_issue=pipeline_issue,
+                ),
                 "",
                 "## Instruction",
                 str(mission.get("prompt") or execution.get("prompt") or ""),

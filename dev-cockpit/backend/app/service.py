@@ -7,12 +7,13 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
-from .config import Settings
+from .config import Settings, canonical_pipeline_is_strict
 from .attention import build_attention_center
 from .derive import build_next_action_and_prompt, commit_summary, derive_states, matches_work_key
 from .execution import build_execution_control
 from .handoff import build_handoff_packs
 from .github import GitHubClient, GitHubError
+from .pipeline_source import load_pipeline_source
 from .roadmap import (
     active_block,
     agents_allow_chaining,
@@ -32,7 +33,6 @@ from .roadmap import (
     PipelineStep,
     pipeline_window,
     render_cockpit_pipeline,
-    resolve_product_pipeline,
     referenced_adrs,
     referenced_issue_numbers,
     subitems_from_text,
@@ -437,6 +437,7 @@ async def _reconcile_canonical_pipeline(
     repo: str,
     *,
     pipeline_contract: Any,
+    pipeline_issue: int = 55,
     open_raw: list[dict[str, Any]],
     closed_raw: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -491,7 +492,7 @@ async def _reconcile_canonical_pipeline(
                         "severity": "stale",
                         "key": step.key,
                         "message": (
-                            f"{step.key} est encore READY dans #55, mais une PR DEV correspondante "
+                            f"{step.key} est encore READY dans #{pipeline_issue}, mais une PR DEV correspondante "
                             "est fusionnee et ses workflows observes sont verts."
                         ),
                         "evidence": [_pull_evidence(merged_pr, run_state=run_state)],
@@ -533,7 +534,7 @@ async def _reconcile_canonical_pipeline(
                     "severity": "attention",
                     "key": step.key,
                     "message": (
-                        f"{step.key} est BLOCKED dans #55, mais une PR DEV correspondante est deja fusionnee. "
+                        f"{step.key} est BLOCKED dans #{pipeline_issue}, mais une PR DEV correspondante est deja fusionnee. "
                         "Aucune reorganisation automatique du pipeline n'est effectuee."
                     ),
                     "evidence": [_pull_evidence(merged_pr, run_state=run_state)],
@@ -561,7 +562,7 @@ async def _reconcile_canonical_pipeline(
         else "coherent"
     )
     summary = {
-        "stale": "Le contrat #55 semble en retard sur une livraison GitHub verifiee.",
+        "stale": f"Le contrat #{pipeline_issue} semble en retard sur une livraison GitHub verifiee.",
         "attention": "Des ecarts GitHub meritent une verification sans changer automatiquement l'ordre.",
         "coherent": "Aucun ecart actionnable detecte entre le pipeline canonique et GitHub.",
     }[status]
@@ -590,6 +591,7 @@ def _dashboard_without_active_work(
     repo: str,
     settings: Settings,
     roadmap_raw: dict[str, Any],
+    pipeline_raw: dict[str, Any],
     latest_repo_commit: dict[str, Any],
     architecture_raw: list[dict[str, Any]],
     top_items: list[Any],
@@ -602,10 +604,10 @@ def _dashboard_without_active_work(
     errors = list(pipeline_contract.errors)
     if invalid:
         next_action = (
-            f"Pipeline canonique GitHub #{settings.roadmap_issue} invalide — corriger COCKPIT_PIPELINE_V1."
+            f"Pipeline canonique GitHub #{settings.canonical_pipeline_issue} invalide — corriger COCKPIT_PIPELINE_V1."
         )
         dev_prompt = (
-            f"Le bloc COCKPIT_PIPELINE_V1 du roadmap GitHub #{settings.roadmap_issue} est invalide. "
+            f"Le bloc COCKPIT_PIPELINE_V1 de la source machine GitHub #{settings.canonical_pipeline_issue} est invalide. "
             "Ne démarre, ne reprends et n'associe aucune tranche DEV tant que le contrat n'est pas corrigé. "
             + " ".join(errors)
         )
@@ -615,11 +617,11 @@ def _dashboard_without_active_work(
         ]
     else:
         next_action = (
-            f"Le pipeline canonique GitHub #{settings.roadmap_issue} ne contient aucune étape MAIN active."
+            f"Le pipeline canonique GitHub #{settings.canonical_pipeline_issue} ne contient aucune étape MAIN active."
         )
         dev_prompt = (
             f"Aucune tranche DEV active n'est déclarée dans COCKPIT_PIPELINE_V1 de "
-            f"GitHub #{settings.roadmap_issue}. Ne déduis pas une prochaine tranche depuis le texte humain."
+            f"GitHub #{settings.canonical_pipeline_issue}. Ne déduis pas une prochaine tranche depuis le texte humain."
         )
         warnings = []
 
@@ -635,9 +637,9 @@ def _dashboard_without_active_work(
         "proposal": None,
     }
     execution = build_execution_control(
-        roadmap_issue=settings.roadmap_issue,
-        roadmap_url=roadmap_raw.get("html_url"),
-        roadmap_updated_at=roadmap_raw.get("updated_at"),
+        roadmap_issue=settings.canonical_pipeline_issue,
+        roadmap_url=pipeline_raw.get("html_url"),
+        roadmap_updated_at=pipeline_raw.get("updated_at"),
         pipeline_valid=pipeline_contract.valid,
         pipeline_now=pipeline_projection.get("now"),
         reconciliation=reconciliation,
@@ -648,6 +650,8 @@ def _dashboard_without_active_work(
     handoff = build_handoff_packs(
         roadmap_issue=settings.roadmap_issue,
         roadmap_url=roadmap_raw.get("html_url"),
+        canonical_pipeline_issue=settings.canonical_pipeline_issue,
+        canonical_pipeline_url=pipeline_raw.get("html_url"),
         pipeline_now=pipeline_projection.get("now"),
         execution=execution,
         active_work=None,
@@ -661,12 +665,16 @@ def _dashboard_without_active_work(
         handoff=handoff,
         active_work=None,
         pipeline_now=pipeline_projection.get("now"),
+        canonical_pipeline_issue=settings.canonical_pipeline_issue,
     )
     return {
         "repo": repo,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "config": {
             "roadmap_issue": settings.roadmap_issue,
+            "canonical_pipeline_issue": settings.canonical_pipeline_issue,
+            "canonical_pipeline_source_mode": settings.canonical_pipeline_source_mode,
+            "migration_candidate_pipeline_issue": settings.migration_candidate_pipeline_issue,
             "stalled_after_minutes": settings.stalled_after_minutes,
             "token_configured": bool(settings.github_token),
         },
@@ -676,6 +684,14 @@ def _dashboard_without_active_work(
             "source": pipeline_contract.source,
             "errors": errors,
             **pipeline_projection,
+        },
+        "pipeline_source": {
+            "number": pipeline_raw.get("number") or settings.canonical_pipeline_issue,
+            "title": pipeline_raw.get("title"),
+            "url": pipeline_raw.get("html_url"),
+            "updated_at": pipeline_raw.get("updated_at"),
+            "strict": canonical_pipeline_is_strict(settings),
+            "mode": settings.canonical_pipeline_source_mode,
         },
         "reconciliation": reconciliation,
         "execution": execution,
@@ -720,9 +736,19 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
     )
 
     roadmap_body = roadmap_raw.get("body") or ""
-    top_items = top_level_items(roadmap_body)
-    legacy_declared_key = extract_declared_active(roadmap_body)
-    pipeline_contract = resolve_product_pipeline(roadmap_body)
+    human_top_items = top_level_items(roadmap_body)
+    human_declared_key = extract_declared_active(roadmap_body)
+    strict_pipeline_source = canonical_pipeline_is_strict(settings)
+    pipeline_raw, pipeline_contract = await load_pipeline_source(
+        client,
+        repo,
+        settings.canonical_pipeline_issue,
+        strict=strict_pipeline_source,
+        validate_references=strict_pipeline_source,
+    )
+    machine_source_body = pipeline_raw.get("body") or ""
+    machine_top_items = top_level_items(machine_source_body)
+    machine_legacy_declared_key = extract_declared_active(machine_source_body)
     pipeline_steps = pipeline_contract.steps
     pipeline_projection = (
         pipeline_window(pipeline_steps)
@@ -737,17 +763,18 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
     )
     pipeline_now = pipeline_projection.get("now")
 
-    if pipeline_contract.present and (
-        not pipeline_contract.valid or pipeline_now is None
+    if (not pipeline_contract.valid) or (
+        pipeline_contract.present and pipeline_now is None
     ):
         return _dashboard_without_active_work(
             repo=repo,
             settings=settings,
             roadmap_raw=roadmap_raw,
+            pipeline_raw=pipeline_raw,
             latest_repo_commit=latest_repo_commit,
             architecture_raw=architecture_raw,
-            top_items=top_items,
-            legacy_declared_key=legacy_declared_key,
+            top_items=human_top_items,
+            legacy_declared_key=human_declared_key,
             pipeline_contract=pipeline_contract,
             pipeline_projection=pipeline_projection,
             agents_text=agents_text,
@@ -763,23 +790,35 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             if pipeline_now and pipeline_now.get("kind") == "WORK"
             else None
         )
-        declared_key = pipeline_work_key or legacy_declared_key
+        first_machine_top = first_unfinished(machine_top_items)
+        declared_key = (
+            pipeline_work_key
+            or machine_legacy_declared_key
+            or (first_machine_top.key if first_machine_top else None)
+        )
         declared_parent = numeric_issue(declared_key or "")
         if declared_parent is None:
-            first_top = first_unfinished(top_items)
-            declared_parent = (
-                numeric_issue(first_top.key)
-                if first_top
-                else settings.roadmap_issue
+            return _dashboard_without_active_work(
+                repo=repo,
+                settings=settings,
+                roadmap_raw=roadmap_raw,
+                pipeline_raw=pipeline_raw,
+                latest_repo_commit=latest_repo_commit,
+                architecture_raw=architecture_raw,
+                top_items=human_top_items,
+                legacy_declared_key=human_declared_key,
+                pipeline_contract=pipeline_contract,
+                pipeline_projection=pipeline_projection,
+                agents_text=agents_text,
             )
-        parent_issue = declared_parent or settings.roadmap_issue
+        parent_issue = declared_parent
 
     active_issue_raw = await client.get_issue(repo, parent_issue)
     issue_body = active_issue_raw.get("body") or ""
-    roadmap_block = active_block(roadmap_body, parent_issue)
+    machine_block = active_block(machine_source_body, parent_issue)
     issue_subitems = subitems_from_text(issue_body, parent_issue)
-    roadmap_subitems = subitems_from_text(roadmap_block, parent_issue)
-    subitems = merge_subitems(issue_subitems, roadmap_subitems)
+    machine_subitems = subitems_from_text(machine_block, parent_issue)
+    subitems = merge_subitems(issue_subitems, machine_subitems)
     if not canonical_mode:
         pipeline_steps = merge_pipeline_work_status(pipeline_steps, subitems)
         pipeline_projection = pipeline_window(pipeline_steps)
@@ -795,7 +834,10 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         else None
     )
 
-    parent_item = next((item for item in top_items if item.key == str(parent_issue)), None)
+    parent_item = next(
+        (item for item in machine_top_items if item.key == str(parent_issue)),
+        None,
+    )
     if canonical_mode:
         block_done = False
         active_key = str(pipeline_now.get("key"))
@@ -927,7 +969,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         active_runs=active_runs,
         explicit_in_progress=explicit_in_progress,
         issue_updated_at=active_issue_raw.get("updated_at"),
-        roadmap_updated_at=roadmap_raw.get("updated_at"),
+        roadmap_updated_at=pipeline_raw.get("updated_at"),
         blocked_by_roadmap=blocked_by_roadmap,
     )
 
@@ -963,7 +1005,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         remaining_subitems = [item.key for item in subitems if not item.done]
         can_chain_block = bool(
             not block_done
-            and has_explicit_block_order(issue_body, roadmap_block, subitems)
+            and has_explicit_block_order(issue_body, machine_block, subitems)
             and agents_allow_chaining(agents_text)
         )
 
@@ -975,7 +1017,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         primary_pr=primary_pr,
         active_branch=active_branch,
         derived=derived,
-        roadmap_issue=settings.roadmap_issue,
+        roadmap_issue=settings.canonical_pipeline_issue,
         merged_but_unmarked_pr=merged_but_unmarked,
         remaining_subitems=remaining_subitems,
     )
@@ -983,7 +1025,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         pipeline_now=pipeline_projection.get("now"),
         block_done=block_done,
         active_key=active_key,
-        roadmap_issue=settings.roadmap_issue,
+        roadmap_issue=settings.canonical_pipeline_issue,
     )
     if pipeline_prompt:
         next_action, dev_prompt = pipeline_prompt
@@ -1001,7 +1043,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
 
     adr_entries = _architecture_entries(architecture_raw)
     adr_names = [str(entry["name"]) for entry in adr_entries if entry.get("name")]
-    referenced = referenced_adrs(issue_body + "\n" + roadmap_block, adr_names)
+    referenced = referenced_adrs(issue_body + "\n" + machine_block, adr_names)
     referenced_adr_entries = [
         entry
         for entry in adr_entries
@@ -1012,6 +1054,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         client,
         repo,
         pipeline_contract=pipeline_contract,
+        pipeline_issue=settings.canonical_pipeline_issue,
         open_raw=open_raw,
         closed_raw=closed_raw,
     )
@@ -1051,9 +1094,9 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         "merged_but_unmarked_pr": merged_but_unmarked,
     }
     execution = build_execution_control(
-        roadmap_issue=settings.roadmap_issue,
-        roadmap_url=roadmap_raw.get("html_url"),
-        roadmap_updated_at=roadmap_raw.get("updated_at"),
+        roadmap_issue=settings.canonical_pipeline_issue,
+        roadmap_url=pipeline_raw.get("html_url"),
+        roadmap_updated_at=pipeline_raw.get("updated_at"),
         pipeline_valid=pipeline_contract.valid,
         pipeline_now=pipeline_projection.get("now"),
         reconciliation=reconciliation,
@@ -1064,6 +1107,8 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
     handoff = build_handoff_packs(
         roadmap_issue=settings.roadmap_issue,
         roadmap_url=roadmap_raw.get("html_url"),
+        canonical_pipeline_issue=settings.canonical_pipeline_issue,
+        canonical_pipeline_url=pipeline_raw.get("html_url"),
         pipeline_now=pipeline_projection.get("now"),
         execution=execution,
         active_work=active_work_projection,
@@ -1077,6 +1122,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         handoff=handoff,
         active_work=active_work_projection,
         pipeline_now=pipeline_projection.get("now"),
+        canonical_pipeline_issue=settings.canonical_pipeline_issue,
     )
 
     warnings: list[str] = []
@@ -1091,6 +1137,9 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "config": {
             "roadmap_issue": settings.roadmap_issue,
+            "canonical_pipeline_issue": settings.canonical_pipeline_issue,
+            "canonical_pipeline_source_mode": settings.canonical_pipeline_source_mode,
+            "migration_candidate_pipeline_issue": settings.migration_candidate_pipeline_issue,
             "stalled_after_minutes": settings.stalled_after_minutes,
             "token_configured": bool(settings.github_token),
         },
@@ -1101,6 +1150,14 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             "errors": list(pipeline_contract.errors),
             **pipeline_projection,
         },
+        "pipeline_source": {
+            "number": pipeline_raw.get("number") or settings.canonical_pipeline_issue,
+            "title": pipeline_raw.get("title"),
+            "url": pipeline_raw.get("html_url"),
+            "updated_at": pipeline_raw.get("updated_at"),
+            "strict": canonical_pipeline_is_strict(settings),
+            "mode": settings.canonical_pipeline_source_mode,
+        },
         "reconciliation": reconciliation,
         "execution": execution,
         "handoff": handoff,
@@ -1110,10 +1167,13 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             "title": roadmap_raw.get("title"),
             "url": roadmap_raw.get("html_url"),
             "updated_at": roadmap_raw.get("updated_at"),
-            "declared_active": legacy_declared_key,
+            "declared_active": human_declared_key,
             "active_issue": parent_issue,
             "effective_active": active_key,
-            "items": [item.to_dict() for item in focus_items(top_items, subitems, parent_issue)],
+            "items": [
+                item.to_dict()
+                for item in focus_items(human_top_items, subitems, parent_issue)
+            ],
         },
         "active_work": active_work_projection,
         "architecture": {

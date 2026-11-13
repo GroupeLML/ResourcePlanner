@@ -46,10 +46,17 @@ def active_work(**patch):
     return base
 
 
-def execution_for(work, *, reconciliation=None, pipeline_valid=True):
+def execution_for(
+    work,
+    *,
+    reconciliation=None,
+    pipeline_valid=True,
+    canonical_pipeline_issue=55,
+    canonical_pipeline_url=None,
+):
     return build_execution_control(
-        roadmap_issue=55,
-        roadmap_url="https://github.test/issues/55",
+        roadmap_issue=canonical_pipeline_issue,
+        roadmap_url=canonical_pipeline_url or f"https://github.test/issues/{canonical_pipeline_issue}",
         roadmap_updated_at="2026-09-24T18:00:00Z",
         pipeline_valid=pipeline_valid,
         pipeline_now={
@@ -74,15 +81,28 @@ def execution_for(work, *, reconciliation=None, pipeline_valid=True):
     )
 
 
-def packs(work, *, reconciliation=None, pipeline_valid=True, issue_body=None):
+def packs(
+    work,
+    *,
+    reconciliation=None,
+    pipeline_valid=True,
+    issue_body=None,
+    canonical_pipeline_issue=55,
+    canonical_pipeline_url=None,
+):
     execution = execution_for(
         work,
         reconciliation=reconciliation,
         pipeline_valid=pipeline_valid,
+        canonical_pipeline_issue=canonical_pipeline_issue,
+        canonical_pipeline_url=canonical_pipeline_url,
     )
     return build_handoff_packs(
         roadmap_issue=55,
         roadmap_url="https://github.test/issues/55",
+        canonical_pipeline_issue=canonical_pipeline_issue,
+        canonical_pipeline_url=canonical_pipeline_url
+        or f"https://github.test/issues/{canonical_pipeline_issue}",
         pipeline_now={
             "key": "276A",
             "kind": "WORK",
@@ -181,7 +201,39 @@ class HandoffPackTests(unittest.TestCase):
 
         self.assertEqual(result["packs"]["developer"]["confidence"], "BLOCKED")
         self.assertEqual(result["packs"]["product-owner"]["confidence"], "COMPLETE")
-        self.assertIn("Réconcilier #55", result["packs"]["product-owner"]["prompt"])
+        self.assertIn(
+            "Réconcilier le pipeline #55",
+            result["packs"]["product-owner"]["prompt"],
+        )
+
+    def test_split_identity_labels_human_roadmap_and_canonical_pipeline(self):
+        reconciliation = {
+            "status": "stale",
+            "summary": "Pipeline stale.",
+            "findings": [],
+            "proposal": {
+                "changes": [
+                    {"key": "276A", "from": "READY", "to": "DONE"},
+                    {"key": "276B", "from": "BLOCKED", "to": "READY"},
+                ]
+            },
+        }
+        result = packs(
+            active_work(),
+            reconciliation=reconciliation,
+            canonical_pipeline_issue=851,
+            canonical_pipeline_url="https://github.test/issues/851",
+        )
+        prompt = result["packs"]["product-owner"]["prompt"]
+        labels = [source["label"] for source in result["packs"]["product-owner"]["sources"]]
+
+        self.assertIn("- Roadmap humain : #55", prompt)
+        self.assertIn("- Pipeline canonique : #851", prompt)
+        self.assertIn("Réconcilier le pipeline #851", prompt)
+        self.assertIn("Roadmap humain : #55.", prompt)
+        self.assertIn("Pipeline canonique COCKPIT_PIPELINE_V1 : #851.", prompt)
+        self.assertIn("Roadmap humain #55", labels)
+        self.assertIn("Pipeline canonique #851", labels)
 
     def test_invalid_pipeline_blocks_handoff(self):
         execution = build_execution_control(

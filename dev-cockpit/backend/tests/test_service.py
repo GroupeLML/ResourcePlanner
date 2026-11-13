@@ -979,10 +979,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             dashboard["handoff"]["packs"]["developer"]["confidence"],
             "COMPLETE",
         )
-        self.assertIn(
-            "Roadmap canonique : #55",
-            dashboard["handoff"]["packs"]["developer"]["prompt"],
-        )
+        handoff_prompt = dashboard["handoff"]["packs"]["developer"]["prompt"]
+        self.assertIn("Roadmap humain : #55", handoff_prompt)
+        self.assertIn("Pipeline canonique : #55", handoff_prompt)
         self.assertEqual(dashboard["attention"]["status"], "ACTION")
         self.assertEqual(dashboard["attention"]["action_count"], 1)
         self.assertEqual(dashboard["attention"]["items"][0]["role"], "developer")

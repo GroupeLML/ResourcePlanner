@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .chat_status import ChatHeartbeat, ChatStatusStore
-from .config import Settings
+from .config import Settings, canonical_pipeline_is_strict
 from .details import (
     build_architecture_detail,
     build_commit_detail,
@@ -53,6 +53,9 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         return {
             "repository": settings.repository,
             "roadmap_issue": settings.roadmap_issue,
+            "canonical_pipeline_issue": settings.canonical_pipeline_issue,
+            "canonical_pipeline_source_mode": settings.canonical_pipeline_source_mode,
+            "migration_candidate_pipeline_issue": settings.migration_candidate_pipeline_issue,
             "stalled_after_minutes": settings.stalled_after_minutes,
             "token_configured": bool(settings.github_token),
         }
@@ -217,8 +220,9 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
                 return await build_flow_analytics(
                     client,
                     target_repo,
-                    settings.roadmap_issue,
+                    settings.canonical_pipeline_issue,
                     limit,
+                    strict_source=canonical_pipeline_is_strict(settings),
                 )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

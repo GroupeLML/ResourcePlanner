@@ -6,7 +6,8 @@ from statistics import mean, median
 from typing import Any
 
 from .github import GitHubClient, GitHubError
-from .roadmap import PIPELINE_STATUS_DONE, PIPELINE_WORK, resolve_product_pipeline
+from .pipeline_source import load_pipeline_source
+from .roadmap import PIPELINE_STATUS_DONE, PIPELINE_WORK
 from .service import _matches_delivery_key, _pull_is_dev_work
 
 
@@ -539,21 +540,27 @@ def _trend(deliveries: list[dict[str, Any]]) -> dict[str, Any] | None:
 async def build_flow_analytics(
     client: GitHubClient,
     repo: str,
-    roadmap_issue: int,
+    pipeline_issue: int,
     limit: int = 12,
+    *,
+    strict_source: bool = False,
 ) -> dict[str, Any]:
     repo = client.validate_repo(repo)
     limit = max(3, min(int(limit), 20))
 
-    roadmap, closed_pulls = await asyncio.gather(
-        client.get_issue(repo, roadmap_issue),
-        client.list_pulls(repo, "closed", 100),
+    source, contract = await load_pipeline_source(
+        client,
+        repo,
+        pipeline_issue,
+        strict=strict_source,
+        validate_references=strict_source,
     )
-    contract = resolve_product_pipeline(str(roadmap.get("body") or ""))
+    closed_pulls = await client.list_pulls(repo, "closed", 100)
     if contract.source != "canonical_v1":
         return {
             "status": "unavailable",
             "repo": repo,
+            "pipeline_issue": pipeline_issue,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "reason": "Flow Analytics exige COCKPIT_PIPELINE_V1.",
             "summary": None,
@@ -566,8 +573,9 @@ async def build_flow_analytics(
         return {
             "status": "unavailable",
             "repo": repo,
+            "pipeline_issue": pipeline_issue,
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "reason": "Le pipeline canonique #55 est invalide.",
+            "reason": f"Le pipeline canonique #{pipeline_issue} est invalide.",
             "summary": None,
             "deliveries": [],
             "notes": list(contract.errors),
@@ -649,13 +657,14 @@ async def build_flow_analytics(
     return {
         "status": status,
         "repo": repo,
+        "pipeline_issue": pipeline_issue,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "reason": None,
         "summary": summary,
         "deliveries": deliveries,
         "notes": [
             "Les durées utilisent uniquement des timestamps GitHub observables; aucune date de création de branche n'est inventée.",
-            "Le temps historique de stall et le délai exact de réconciliation #55 ne sont pas reconstruits : l'API actuelle ne fournit pas une chronologie fiable de ces états.",
+            f"Le temps historique de stall et le délai exact de réconciliation #{pipeline_issue} ne sont pas reconstruits : l'API actuelle ne fournit pas une chronologie fiable de ces états.",
             "Une tentative de validation correspond à un SHA de PR possédant au moins un workflow GitHub Actions.",
         ],
     }

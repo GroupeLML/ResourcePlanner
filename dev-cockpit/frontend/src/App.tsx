@@ -91,10 +91,12 @@ function PipelineRoadmapRow({
 function RoadmapReconciliationPanel({
   reconciliation,
   repo,
+  pipelineIssue,
   onApplied,
 }: {
   reconciliation: PipelineReconciliation
   repo: string
+  pipelineIssue: number
   onApplied: () => Promise<void>
 }) {
   const [preview, setPreview] = useState<RoadmapWritebackPreview | null>(null)
@@ -229,7 +231,7 @@ function RoadmapReconciliationPanel({
       <div className="reconciliation-header">
         <div>
           <span className="panel-kicker">COHÉRENCE ROADMAP</span>
-          <h2>Contrat #55 ↔ réalité GitHub</h2>
+          <h2>Contrat #{pipelineIssue} ↔ réalité GitHub</h2>
         </div>
         <span className={`reconciliation-status ${tone}`}>{label}</span>
       </div>
@@ -307,7 +309,7 @@ function RoadmapReconciliationPanel({
 
       {applied && (
         <div className="writeback-success">
-          ✓ #55 a été mis à jour et le dashboard a été rechargé.
+          ✓ #{pipelineIssue} a été mis à jour et le dashboard a été rechargé.
         </div>
       )}
 
@@ -331,14 +333,14 @@ function RoadmapReconciliationPanel({
             <span>✓ uniquement COCKPIT_PIPELINE_V1</span>
             <span>✓ preuve Reconciler = stale</span>
             <span>✓ proposition recalculée avant PATCH</span>
-            <span>✓ refus si #55 change</span>
+            <span>✓ refus si #{pipelineIssue} change</span>
           </div>
 
           <div className="writeback-confirm">
             <div>
               <strong>Confirmation explicite requise</strong>
               <small>
-                Le backend relira #55 et recalculera la preuve GitHub avant toute écriture.
+                Le backend relira #{pipelineIssue} et recalculera la preuve GitHub avant toute écriture.
                 Une modification concurrente produit ROADMAP_CHANGED et aucune écriture.
               </small>
             </div>
@@ -348,7 +350,7 @@ function RoadmapReconciliationPanel({
               onClick={() => void applyWriteback()}
               disabled={applyLoading}
             >
-              {applyLoading ? 'Validation GitHub…' : 'Confirmer et appliquer à #55'}
+              {applyLoading ? 'Validation GitHub…' : `Confirmer et appliquer à #${pipelineIssue}`}
             </button>
           </div>
         </div>
@@ -1037,7 +1039,7 @@ export default function App() {
 
       {data && !data.pipeline.valid && (
         <section className="error-panel pipeline-invalid">
-          <strong>Pipeline #55 invalide</strong>
+          <strong>Pipeline #{data.pipeline_source.number} invalide</strong>
           <span>
             Le bloc COCKPIT_PIPELINE_V1 doit être corrigé avant de déterminer
             une étape active.
@@ -1067,6 +1069,7 @@ export default function App() {
           <RoadmapReconciliationPanel
             reconciliation={data.reconciliation}
             repo={repo}
+            pipelineIssue={data.pipeline_source.number}
             onApplied={() => load(repo)}
           />
 
@@ -1142,7 +1145,7 @@ export default function App() {
               <div className="panel-foot">
                 Issue active #{data.roadmap.active_issue}
                 {data.pipeline.steps.length > 0
-                  ? ' · pipeline #55 canonique'
+                  ? ` · pipeline #${data.pipeline_source.number} canonique`
                   : ` · sous-tranche ${data.active_work.subitem_key || '—'}`}
               </div>
             </article>

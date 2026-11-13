@@ -184,6 +184,47 @@ class AttentionCenterTests(unittest.TestCase):
         self.assertEqual(by_key["410"]["role"], "product-owner")
         self.assertEqual(by_key["410"]["code"], "blocked_open_pr")
 
+    def test_split_source_reconciliation_actions_target_canonical_pipeline(self):
+        result = build_attention_center(
+            execution=execution("DEVELOPING"),
+            reconciliation={
+                "status": "attention",
+                "summary": "Écart.",
+                "proposal": None,
+                "findings": [
+                    {
+                        "code": "blocked_open_pr",
+                        "key": "410",
+                        "message": "410 est BLOCKED mais une PR est ouverte.",
+                        "evidence": [],
+                    },
+                    {
+                        "code": "blocked_merged_pr",
+                        "key": "411",
+                        "message": "411 est BLOCKED mais déjà fusionné.",
+                        "evidence": [],
+                    },
+                    {
+                        "code": "ready_merged_unverified",
+                        "key": "412",
+                        "message": "412 est fusionné sans preuve complète.",
+                        "evidence": [],
+                    },
+                ],
+            },
+            handoff=handoff(),
+            active_work={"key": "276A"},
+            pipeline_now={"key": "276A"},
+            canonical_pipeline_issue=851,
+        )
+        by_key = {item["key"]: item for item in result["items"]}
+        self.assertIn("pipeline #851", by_key["410"]["action"])
+        self.assertIn("pipeline #851", by_key["411"]["action"])
+        self.assertIn("pipeline #851", by_key["412"]["action"])
+        self.assertNotIn("#55", by_key["410"]["action"])
+        self.assertNotIn("#55", by_key["411"]["action"])
+        self.assertNotIn("#55", by_key["412"]["action"])
+
     def test_partial_handoff_is_deduplicated_by_role_and_subject(self):
         result = build_attention_center(
             execution=execution("CI_RUNNING"),
