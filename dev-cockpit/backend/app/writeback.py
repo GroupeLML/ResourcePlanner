@@ -116,7 +116,11 @@ def _diff(current_block: str, proposed_block: str) -> str:
     )
 
 
-def _require_writeback_candidate(dashboard: dict[str, Any]) -> dict[str, Any]:
+def _require_writeback_candidate(
+    dashboard: dict[str, Any],
+    *,
+    pipeline_issue: int,
+) -> dict[str, Any]:
     pipeline = dashboard.get("pipeline") or {}
     reconciliation = dashboard.get("reconciliation") or {}
 
@@ -124,7 +128,7 @@ def _require_writeback_candidate(dashboard: dict[str, Any]) -> dict[str, Any]:
         raise RoadmapWritebackError(
             409,
             "LEGACY_PIPELINE",
-            "Le writeback est désactivé tant que #{settings.canonical_pipeline_issue} n'utilise pas COCKPIT_PIPELINE_V1.",
+            f"Le writeback est désactivé tant que #{pipeline_issue} n'utilise pas COCKPIT_PIPELINE_V1.",
         )
     if not pipeline.get("valid"):
         raise RoadmapWritebackError(
@@ -145,6 +149,7 @@ def _require_writeback_candidate(dashboard: dict[str, Any]) -> dict[str, Any]:
 def _verify_snapshot(
     issue: dict[str, Any],
     *,
+    pipeline_issue: int,
     expected_updated_at: str,
     expected_body_sha256: str,
 ) -> str:
@@ -155,7 +160,7 @@ def _verify_snapshot(
         raise RoadmapWritebackError(
             409,
             "ROADMAP_CHANGED",
-            "Le roadmap #{settings.canonical_pipeline_issue} a changé depuis la preview. Recharge avant d'appliquer.",
+            f"La source machine #{pipeline_issue} a changé depuis la preview. Recharge avant d'appliquer.",
             context={
                 "expected_updated_at": expected_updated_at,
                 "actual_updated_at": actual_updated_at,
@@ -173,9 +178,12 @@ async def build_roadmap_writeback_preview(
 ) -> dict[str, Any]:
     repo = client.validate_repo(repo)
     dashboard = await build_dashboard(client, settings, repo)
-    proposal = _require_writeback_candidate(dashboard)
+    proposal = _require_writeback_candidate(
+        dashboard,
+        pipeline_issue=settings.canonical_pipeline_issue,
+    )
 
-    # Re-read #{settings.canonical_pipeline_issue} after the dashboard evidence has been derived. If the source
+    # Re-read the configured machine issue after dashboard evidence has been derived.
     # changed while reconciliation was running, fail closed instead of showing
     # a preview built from mixed versions.
     roadmap = await client.get_issue(repo, settings.canonical_pipeline_issue)
@@ -207,7 +215,7 @@ async def build_roadmap_writeback_preview(
         raise RoadmapWritebackError(
             409,
             "NO_CHANGE",
-            "La proposition ne produit aucun changement sur #{settings.canonical_pipeline_issue}.",
+            f"La proposition ne produit aucun changement sur #{settings.canonical_pipeline_issue}.",
         )
 
     expected_updated_at = str(roadmap.get("updated_at") or "")
@@ -260,6 +268,7 @@ async def apply_roadmap_writeback(
     initial = await client.get_issue(repo, settings.canonical_pipeline_issue)
     _verify_snapshot(
         initial,
+        pipeline_issue=settings.canonical_pipeline_issue,
         expected_updated_at=expected_updated_at,
         expected_body_sha256=expected_body_sha256,
     )
@@ -272,7 +281,7 @@ async def apply_roadmap_writeback(
         raise RoadmapWritebackError(
             409,
             "ROADMAP_CHANGED",
-            "Le roadmap #{settings.canonical_pipeline_issue} a changé depuis la preview. Recharge avant d'appliquer.",
+            f"La source machine #{settings.canonical_pipeline_issue} a changé depuis la preview. Recharge avant d'appliquer.",
         )
     if preview["proposal_sha256"] != expected_proposal_sha256:
         raise RoadmapWritebackError(
@@ -291,6 +300,7 @@ async def apply_roadmap_writeback(
     current = await client.get_issue(repo, settings.canonical_pipeline_issue)
     current_body = _verify_snapshot(
         current,
+        pipeline_issue=settings.canonical_pipeline_issue,
         expected_updated_at=expected_updated_at,
         expected_body_sha256=expected_body_sha256,
     )
