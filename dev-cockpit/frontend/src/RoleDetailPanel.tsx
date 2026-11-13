@@ -47,7 +47,7 @@ function PipelineUnavailable({ dashboard }: { dashboard: Dashboard }) {
   return (
     <section className="role-detail-section">
       <div className="role-detail-section-title">
-        {invalid ? `Pipeline #{dashboard.pipeline_source.number} invalide` : 'Aucune étape active'}
+        {invalid ? `Pipeline #${dashboard.pipeline_source.number} invalide` : 'Aucune étape active'}
       </div>
       <p className="role-detail-muted">{dashboard.next_action}</p>
       {invalid && dashboard.pipeline.errors.length > 0 && (
@@ -947,7 +947,7 @@ function ArchitectDetails({ dashboard }: { dashboard: Dashboard | null }) {
       <section className="role-detail-hero">
         <span>Architecture du bloc actif</span>
         <strong>
-          {dashboard.active_work.subitem_key || `#{dashboard.active_work.issue_number}`}
+          {dashboard.active_work.subitem_key || `#${dashboard.active_work.issue_number}`}
         </strong>
         <p>{dashboard.active_work.title || dashboard.active_work.issue.title}</p>
       </section>
