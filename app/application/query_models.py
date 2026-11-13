@@ -207,6 +207,7 @@ class ShiftAssetActionReadModel:
 @dataclass(frozen=True, slots=True)
 class ShiftAssetActionsReadModel:
     assign: ShiftAssetActionReadModel
+    designate_project: ShiftAssetActionReadModel
     change: ShiftAssetActionReadModel
     release: ShiftAssetActionReadModel
 
