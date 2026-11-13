@@ -648,7 +648,7 @@ def _dashboard_without_active_work(
         fallback_dev_prompt=dev_prompt,
     )
     handoff = build_handoff_packs(
-        roadmap_issue=settings.canonical_pipeline_issue,
+        roadmap_issue=settings.roadmap_issue,
         roadmap_url=roadmap_raw.get("html_url"),
         canonical_pipeline_issue=settings.canonical_pipeline_issue,
         canonical_pipeline_url=pipeline_raw.get("html_url"),
