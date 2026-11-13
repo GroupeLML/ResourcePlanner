@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 from decimal import Decimal
 from email import policy
 from email.parser import BytesParser
@@ -44,6 +45,7 @@ from app.infrastructure.sql import (
     Shift,
     TaskCatalogEntry,
     WorkforceRequest,
+    WorkforceRequestHistory,
     create_session_factory,
     create_sql_engine,
 )
@@ -1917,6 +1919,108 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(stored["messages"][0]["body"], original_body)
                 self.assertNotIn("Pierre Gagnon", stored["messages"][0]["body"])
 
+
+    def test_830_canonical_contact_patch_preserves_populated_approved_plan_and_cas(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+
+            def persisted_state():
+                with factory() as session:
+                    request = session.get(WorkforceRequest, "D1")
+                    assert request is not None
+                    requirements = tuple(sorted(
+                        (
+                            row.id, row.workforce_request_id, row.source_request_line_id,
+                            row.assigned_resource_id, row.planned_hours, row.status,
+                            row.origin, row.approved_request_version,
+                        )
+                        for row in session.scalars(
+                            select(ResourceRequirement).where(
+                                ResourceRequirement.workforce_request_id == "D1"
+                            )
+                        )
+                    ))
+                    shifts = tuple(sorted(
+                        (
+                            row.id, row.resource_requirement_id, row.resource_id,
+                            row.work_date, row.hours, row.allocation_type,
+                            row.outside_standard_hours, row.source, row.locked,
+                        )
+                        for row in session.scalars(select(Shift))
+                    ))
+                    history = tuple(sorted(
+                        (row.id, row.action, row.details)
+                        for row in session.scalars(
+                            select(WorkforceRequestHistory).where(
+                                WorkforceRequestHistory.workforce_request_id == "D1"
+                            )
+                        )
+                    ))
+                    return (
+                        request.aggregate_version, request.status,
+                        request.site_contact_name, request.site_contact_phone,
+                        requirements, shifts, history,
+                    )
+
+            try:
+                with factory.begin() as session:
+                    request = session.get(WorkforceRequest, "D1")
+                    assert request is not None
+                    request.status = "En planification"
+                before = persisted_state()
+                version, status, _, _, requirements, shifts, history = before
+                self.assertTrue(requirements, "approved plan must have real requirements")
+                self.assertTrue(shifts, "approved plan must contain persisted Shifts")
+                self.assertEqual({row[0] for row in shifts}, {"S1", "S2", "S-MISSING"})
+
+                app = create_api_app(
+                    database_url,
+                    auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                )
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    updated = client.patch(
+                        "/api/v1/demands/DMO-290A-1",
+                        json={
+                            "expected_version": version,
+                            "site_contact_name": "Jean Tremblay",
+                            "site_contact_phone": "555-0101",
+                        },
+                    )
+                    self.assertEqual(updated.status_code, 200, updated.text)
+                    detail = client.get("/api/v1/demands/DMO-290A-1/detail")
+                    self.assertEqual(detail.status_code, 200, detail.text)
+                    demand = detail.json().get("demand", detail.json())
+                    self.assertEqual(demand["site_contact_name"], "Jean Tremblay")
+                    self.assertEqual(demand["site_contact_phone"], "555-0101")
+
+                    after = persisted_state()
+                    self.assertEqual(after[0], version + 1)
+                    self.assertEqual(after[1], status)
+                    self.assertEqual(after[2:4], ("Jean Tremblay", "555-0101"))
+                    self.assertEqual(after[4], requirements)
+                    self.assertEqual(after[5], shifts)
+                    self.assertEqual(len(after[6]), len(history) + 1)
+                    new_history = next(row for row in after[6] if row not in history)
+                    audit = json.loads(new_history[2] or "{}")
+                    self.assertEqual(new_history[1], "Modification")
+                    self.assertEqual(audit["aggregate_version"], version + 1)
+                    self.assertIn("SiteContactName", audit["changed_fields"])
+                    self.assertIn("SiteContactPhone", audit["changed_fields"])
+
+                    stale = client.patch(
+                        "/api/v1/demands/DMO-290A-1",
+                        json={
+                            "expected_version": version,
+                            "site_contact_name": "Rejected stale contact",
+                            "site_contact_phone": "555-9999",
+                        },
+                    )
+                    self.assertEqual(stale.status_code, 409, stale.text)
+                    self.assertEqual(persisted_state(), after)
+            finally:
+                engine.dispose()
 
     def test_project_create_drafts_passes_persisted_to_and_cc_to_transport(self) -> None:
         with TemporaryDirectory() as directory:
