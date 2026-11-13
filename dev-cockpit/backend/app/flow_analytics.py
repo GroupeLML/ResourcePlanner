@@ -664,7 +664,7 @@ async def build_flow_analytics(
         "deliveries": deliveries,
         "notes": [
             "Les durées utilisent uniquement des timestamps GitHub observables; aucune date de création de branche n'est inventée.",
-            "Le temps historique de stall et le délai exact de réconciliation #55 ne sont pas reconstruits : l'API actuelle ne fournit pas une chronologie fiable de ces états.",
+            f"Le temps historique de stall et le délai exact de réconciliation #{pipeline_issue} ne sont pas reconstruits : l'API actuelle ne fournit pas une chronologie fiable de ces états.",
             "Une tentative de validation correspond à un SHA de PR possédant au moins un workflow GitHub Actions.",
         ],
     }
