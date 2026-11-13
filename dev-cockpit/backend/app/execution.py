@@ -329,7 +329,7 @@ def _control_copy(
             (
                 f"Vérifie la PR #{pr_number} de {key}. Confirme que les changements correspondent à l'issue, "
                 "que les checks requis sont verts et qu'aucun défaut bloquant ne reste. "
-                "Si tout est conforme, laisse le cycle AGENTS.md aller jusqu'à fusion puis réconciliation de #55."
+                f"Si tout est conforme, laisse le cycle AGENTS.md aller jusqu'à fusion puis réconciliation du pipeline #{roadmap_issue}."
             ),
             _link(f"PR #{pr_number}", primary_pr.get("url")) if pr_number else None,
         )
@@ -351,7 +351,7 @@ def _control_copy(
         return (
             "Livraison à vérifier",
             f"Une PR correspondant à {key} est fusionnée, mais la preuve de livraison complète n'est pas encore vérifiée.",
-            "Vérifier la CI et réconcilier #55 seulement si la livraison est confirmée.",
+            f"Vérifier la CI et réconcilier le pipeline #{roadmap_issue} seulement si la livraison est confirmée.",
             (
                 f"Une PR fusionnée correspond à {key}, mais le Roadmap Reconciler ne dispose pas encore d'une preuve "
                 "CI suffisamment forte pour promouvoir l'étape. Vérifie les checks GitHub et ne démarre pas "
@@ -474,7 +474,7 @@ def _missions(
             str(pipeline_now.get("title") or key),
             (
                 f"Analyse et documente la gate d'architecture {pipeline_now.get('key')} demandée par le pipeline #{roadmap_issue}. "
-                "Ne transforme pas la gate en implémentation applicative; documente la décision et mets #55 à jour quand elle est satisfaite."
+                f"Ne transforme pas la gate en implémentation applicative; documente la décision et mets le pipeline #{roadmap_issue} à jour quand elle est satisfaite."
             ),
             link=_link(f"Issue #{pipeline_now.get('issue_number')}", (active_work or {}).get("issue", {}).get("url")),
         )
