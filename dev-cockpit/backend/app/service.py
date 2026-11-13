@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
-from .config import Settings
+from .config import Settings, canonical_pipeline_is_strict
 from .attention import build_attention_center
 from .derive import build_next_action_and_prompt, commit_summary, derive_states, matches_work_key
 from .execution import build_execution_control
@@ -673,6 +673,7 @@ def _dashboard_without_active_work(
         "config": {
             "roadmap_issue": settings.roadmap_issue,
             "canonical_pipeline_issue": settings.canonical_pipeline_issue,
+            "canonical_pipeline_source_mode": settings.canonical_pipeline_source_mode,
             "migration_candidate_pipeline_issue": settings.migration_candidate_pipeline_issue,
             "stalled_after_minutes": settings.stalled_after_minutes,
             "token_configured": bool(settings.github_token),
@@ -689,7 +690,7 @@ def _dashboard_without_active_work(
             "title": pipeline_raw.get("title"),
             "url": pipeline_raw.get("html_url"),
             "updated_at": pipeline_raw.get("updated_at"),
-            "strict": settings.canonical_pipeline_issue != settings.roadmap_issue,
+            "strict": canonical_pipeline_is_strict(settings),
         },
         "reconciliation": reconciliation,
         "execution": execution,
@@ -736,7 +737,11 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
     roadmap_body = roadmap_raw.get("body") or ""
     top_items = top_level_items(roadmap_body)
     legacy_declared_key = extract_declared_active(roadmap_body)
-    if settings.canonical_pipeline_issue == settings.roadmap_issue:
+    strict_pipeline_source = canonical_pipeline_is_strict(settings)
+    if (
+        not strict_pipeline_source
+        and settings.canonical_pipeline_issue == settings.roadmap_issue
+    ):
         pipeline_raw = roadmap_raw
         pipeline_contract = resolve_product_pipeline(roadmap_body)
     else:
@@ -744,8 +749,8 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             client,
             repo,
             settings.canonical_pipeline_issue,
-            strict=True,
-            validate_references=True,
+            strict=strict_pipeline_source,
+            validate_references=strict_pipeline_source,
         )
     pipeline_steps = pipeline_contract.steps
     pipeline_projection = (
@@ -1120,6 +1125,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
         "config": {
             "roadmap_issue": settings.roadmap_issue,
             "canonical_pipeline_issue": settings.canonical_pipeline_issue,
+            "canonical_pipeline_source_mode": settings.canonical_pipeline_source_mode,
             "migration_candidate_pipeline_issue": settings.migration_candidate_pipeline_issue,
             "stalled_after_minutes": settings.stalled_after_minutes,
             "token_configured": bool(settings.github_token),
@@ -1136,7 +1142,7 @@ async def build_dashboard(client: GitHubClient, settings: Settings, repo: str) -
             "title": pipeline_raw.get("title"),
             "url": pipeline_raw.get("html_url"),
             "updated_at": pipeline_raw.get("updated_at"),
-            "strict": settings.canonical_pipeline_issue != settings.roadmap_issue,
+            "strict": canonical_pipeline_is_strict(settings),
         },
         "reconciliation": reconciliation,
         "execution": execution,
