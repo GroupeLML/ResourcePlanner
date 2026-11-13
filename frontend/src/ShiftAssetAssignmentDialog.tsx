@@ -11,7 +11,7 @@ import {
 } from "./assetApi";
 import SearchableCombobox, { ComboboxOption } from "./SearchableCombobox";
 
-export type ShiftAssetAssignmentMode = "assign" | "change" | "release";
+export type ShiftAssetAssignmentMode = "assign" | "designate_project" | "change" | "release";
 
 const STALE_CODES = new Set([
   "planning_version_conflict",
@@ -87,6 +87,7 @@ function qualificationLabel(state: string | null | undefined) {
 }
 
 function actionTitle(mode: ShiftAssetAssignmentMode) {
+  if (mode === "designate_project") return "Associer une réservation projet";
   if (mode === "change") return "Changer l’actif";
   if (mode === "release") return "Libérer l’actif";
   return "Assigner un actif";
@@ -171,7 +172,12 @@ export default function ShiftAssetAssignmentDialog({
   );
 
   const options = useMemo<ComboboxOption[]>(
-    () => (candidateState?.candidates ?? []).map((candidate) => {
+    () => (candidateState?.candidates ?? [])
+      .filter((candidate) =>
+        mode !== "designate_project"
+        || candidate.selection_mode === "DESIGNATE_PROJECT_OPERATOR"
+      )
+      .map((candidate) => {
       const availability = candidate.selection_mode === "DESIGNATE_PROJECT_OPERATOR"
         ? "Réservation projet à réutiliser"
         : candidate.selection_mode === "ALREADY_INHERITED"
@@ -195,7 +201,7 @@ export default function ShiftAssetAssignmentDialog({
         disabled: !candidate.allowed || !candidate.assignment_authority.can_assign,
       };
     }),
-    [candidateState],
+    [candidateState, mode],
   );
 
   function keyFor(fingerprint: string) {
@@ -223,9 +229,11 @@ export default function ShiftAssetAssignmentDialog({
     if (!expectedVersion) return;
 
     const assetId = mode === "release" ? null : selectedAssetId;
-    const requirementId = shift.asset_assignment?.requirement_id ?? null;
+    const requirementId = mode === "designate_project"
+      ? null
+      : shift.asset_assignment?.requirement_id ?? null;
     const projectReuse = (
-      mode !== "release"
+      (mode === "assign" || mode === "designate_project")
       && selectedCandidate?.selection_mode === "DESIGNATE_PROJECT_OPERATOR"
     );
     const allocationId = projectReuse
@@ -390,7 +398,7 @@ export default function ShiftAssetAssignmentDialog({
                 autoFocus
               />
 
-              {projectReuse && selectedCandidate ? (
+              {(mode === "designate_project" || projectReuse) && selectedCandidate ? (
                 <div className="info-banner" role="status">
                   Réservation projet existante du {selectedCandidate.existing_start_date} au {selectedCandidate.existing_end_date}.
                   En choisissant cet actif, {resourceDisplayName(shift.resource_name)} devient l’opérateur de toute cette période.
@@ -501,7 +509,9 @@ export default function ShiftAssetAssignmentDialog({
                   ? "Libérer l’actif"
                   : mode === "change"
                     ? "Changer l’actif"
-                    : "Assigner l’actif"}
+                    : mode === "designate_project"
+                      ? "Associer la réservation"
+                      : "Assigner l’actif"}
             </button>
           </div>
         </div>
