@@ -320,6 +320,35 @@ def parse_cockpit_pipeline(body: str) -> PipelineContract:
     )
 
 
+def resolve_canonical_pipeline_source(body: str) -> PipelineContract:
+    """Resolve a dedicated machine source without any legacy Markdown fallback."""
+    canonical = parse_cockpit_pipeline(body)
+    if canonical.present:
+        return canonical
+
+    version_markers = sorted(
+        set(re.findall(r"<!--\s*/?COCKPIT_PIPELINE_V(\d+)\s*-->", body))
+    )
+    if version_markers:
+        version_text = ", ".join(f"V{value}" for value in version_markers)
+        error = (
+            "Source canonique invalide: version COCKPIT_PIPELINE inconnue "
+            f"({version_text}); COCKPIT_PIPELINE_V1 est requis."
+        )
+    else:
+        error = (
+            "Source canonique invalide: le bloc COCKPIT_PIPELINE_V1 est absent. "
+            "Aucun fallback Markdown legacy n'est permis."
+        )
+    return PipelineContract(
+        present=False,
+        valid=False,
+        source="canonical_v1",
+        steps=[],
+        errors=[error],
+    )
+
+
 def resolve_product_pipeline(body: str) -> PipelineContract:
     canonical = parse_cockpit_pipeline(body)
     if canonical.present:
