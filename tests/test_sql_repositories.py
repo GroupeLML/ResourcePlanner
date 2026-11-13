@@ -9,6 +9,8 @@ import unittest
 from sqlalchemy import func, select
 
 from app.application.demand_service import DemandService
+from app.application.commands.demand import DemandUpdateCommand
+from app.application.errors import ApplicationConflictError
 from app.application.segment_service import SegmentService
 from app.infrastructure.sql import (
     Asset,
@@ -20,6 +22,7 @@ from app.infrastructure.sql import (
     Resource,
     ResourceClassConfig,
     ResourceRequirement,
+    Shift,
     SqlDemandRepository,
     SqlSegmentRepository,
     WorkforceRequest,
@@ -185,6 +188,78 @@ class SqlRepositoryTests(unittest.TestCase):
             self.assertIsNotNone(persisted)
             assert persisted is not None
             self.assertEqual(persisted.status, "Soumise")
+
+    def test_830_approved_contact_edit_preserves_workflow_with_sql_cas_and_history(self) -> None:
+        planning = _Planning()
+        sync = _ApprovedSync()
+        with transactional_session(self.factory) as session:
+            repository = SqlDemandRepository(session, actor_name="Jean")
+            service = DemandService(repository, planning, sync, current_user="Jean")
+            number = service.create(
+                {
+                    "NumeroProjet": "P-1",
+                    "DateDebutSouhaitee": date(2026, 8, 26),
+                    "DateFinSouhaitee": date(2026, 8, 28),
+                    "Description": "Installation",
+                    "NombreRessources": 1,
+                    "TempsEstimeHeures": 8,
+                },
+                submit=True,
+            )
+            service.approve(number, "OK")
+            before = repository.get(number)
+            assert before is not None
+            self.assertEqual(before.status, "En planification")
+            version = before.version
+            initial_planning_calls = planning.calls
+            initial_sync_calls = tuple(sync.calls)
+            before_shift_ids = tuple(session.scalars(select(Shift.id)).all())
+            self.assertFalse(
+                service.modify_command(
+                    DemandUpdateCommand(
+                        number=number,
+                        expected_version=version,
+                        site_contact_name="François Émond",
+                        site_contact_phone="450-555-0180",
+                    )
+                )
+            )
+            after = repository.get(number)
+            assert after is not None
+            self.assertEqual(after.status, "En planification")
+            self.assertEqual(after.version, version + 1)
+            self.assertEqual(after.site_contact_name, "François Émond")
+            self.assertEqual(after.site_contact_phone, "450-555-0180")
+            self.assertEqual(planning.calls, initial_planning_calls)
+            self.assertEqual(tuple(sync.calls), initial_sync_calls)
+            self.assertEqual(tuple(session.scalars(select(Shift.id)).all()), before_shift_ids)
+            row = session.scalar(
+                select(WorkforceRequest).where(
+                    WorkforceRequest.legacy_demand_number == number
+                )
+            )
+            assert row is not None
+            histories = session.scalars(
+                select(WorkforceRequestHistory)
+                .where(WorkforceRequestHistory.workforce_request_id == row.id)
+            ).all()
+            latest = next(
+                history for history in histories
+                if json.loads(history.details or "{}").get("aggregate_version")
+                == version + 1
+            )
+            changed = json.loads(latest.details or "{}")["changed_fields"]
+            self.assertIn("SiteContactName", changed)
+            self.assertIn("SiteContactPhone", changed)
+            with self.assertRaises(ApplicationConflictError):
+                service.modify_command(
+                    DemandUpdateCommand(
+                        number=number,
+                        expected_version=version,
+                        site_contact_name="Conflit",
+                    )
+                )
+            self.assertEqual(repository.get(number).version, version + 1)
 
     def test_demand_line_projection_resolves_asset_business_labels_for_mixed_request(self) -> None:
         with transactional_session(self.factory) as session:
