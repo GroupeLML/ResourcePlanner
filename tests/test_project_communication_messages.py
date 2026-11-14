@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import replace
+import json
 import unittest
 
 from app.domain.operational_contacts import ContactResolution, STATUS_RESOLVED
@@ -11,6 +13,7 @@ from app.domain.project_communication import (
     ProjectCommunicationProject,
     ProjectCommunicationProjection,
     ProjectCommunicationResource,
+    ProjectCommunicationRequestAssignment,
     ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
 )
@@ -164,12 +167,63 @@ def project(
 
 
 def projection(*projects: ProjectCommunicationProject) -> ProjectCommunicationProjection:
+    # Give each synthetic physical Shift a unique identity. Resource fixtures
+    # are reused across dates and projects, but those are distinct real Shifts.
+    seen_shifts: set[str] = set()
+    complete_projects = []
+    for source in projects:
+        days = []
+        for day in source.days:
+            tasks = []
+            for index, task in enumerate(day.tasks):
+                resources = []
+                provenance = []
+                shift_replacements: dict[str, str] = {}
+                for row in task.resources:
+                    new_shift_ids = []
+                    for original_shift_id in row.shift_ids:
+                        shift_id = original_shift_id
+                        if shift_id in seen_shifts:
+                            shift_id = (
+                                f"{original_shift_id}:{source.project_id}:"
+                                f"{day.day.isoformat()}:{index}"
+                            )
+                        if shift_id in seen_shifts:
+                            raise AssertionError("Synthetic Shift identity is not unique")
+                        seen_shifts.add(shift_id)
+                        shift_replacements[original_shift_id] = shift_id
+                        new_shift_ids.append(shift_id)
+                        provenance.append(ProjectCommunicationRequestAssignment(
+                            shift_id=shift_id,
+                            requirement_id="REQ-1",
+                            workforce_request_id="DEMAND-1",
+                            request_number="DMO-1",
+                            resource_id=row.resource_id,
+                            resource_name=row.resource_name,
+                            hours=row.hours / len(row.shift_ids),
+                            site_contact_name=None,
+                            site_contact_phone=None,
+                        ))
+                    resources.append(replace(row, shift_ids=tuple(new_shift_ids)))
+                responsibility_assignments = tuple(
+                    replace(item, shift_id=shift_replacements.get(item.shift_id, item.shift_id))
+                    for item in task.responsibility_assignments
+                )
+                tasks.append(replace(
+                    task,
+                    resources=tuple(resources),
+                    responsibility_assignments=responsibility_assignments,
+                    request_assignments=tuple(provenance),
+                ))
+            days.append(replace(day, tasks=tuple(tasks)))
+        complete_projects.append(replace(source, days=tuple(days)))
     return ProjectCommunicationProjection(
         week_start=WEEK,
         week_end=date(2026, 9, 27),
-        projects=projects,
+        projects=tuple(complete_projects),
+        request_provenance_version=1,
+        request_provenance_complete=True,
     )
-
 
 class ProjectCommunicationMessageTests(unittest.TestCase):
     def test_resource_line_without_asset_is_unchanged(self) -> None:
@@ -722,6 +776,159 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         self.assertNotIn("Alice", draft.body)
         self.assertIn("Bob", draft.body)
+
+    def test_830_contact_add_change_clear_and_legacy_delta(self) -> None:
+        base = projection(project())
+        old_project = base.projects[0]
+        task = old_project.days[0].tasks[0]
+        def with_contact(name, phone):
+            changed = replace(
+                task,
+                request_assignments=tuple(
+                    replace(row, site_contact_name=name, site_contact_phone=phone)
+                    for row in task.request_assignments
+                ),
+            )
+            day = replace(old_project.days[0], tasks=(changed,))
+            return replace(base, projects=(replace(old_project, days=(day,)),))
+
+        added = with_contact("Jean Tremblay", "555-0101")
+        changed = with_contact("Pierre Gagnon", "555-0202")
+        self.assertEqual(len(compare_project_communication_projections(base, added)), 1)
+        self.assertEqual(len(compare_project_communication_projections(added, changed)), 1)
+        self.assertEqual(len(compare_project_communication_projections(added, base)), 1)
+        self.assertIn("Contact chantier", build_project_confirmation_batch(added).drafts[0].body)
+        self.assertEqual(
+            project_projection_fingerprint(
+                deserialize_project_projection(serialize_project_projection(added))
+            ),
+            project_projection_fingerprint(added),
+        )
+        legacy = replace(
+            base,
+            projects=(replace(old_project, days=(
+                replace(old_project.days[0], tasks=(replace(task, request_assignments=()),)),
+            )),),
+            request_provenance_version=None,
+            request_provenance_complete=False,
+        )
+        self.assertEqual(compare_project_communication_projections(legacy, base), ())
+        self.assertEqual(len(compare_project_communication_projections(legacy, added)), 1)
+
+    def test_830_request_specific_hours_render_2_6_and_6_2_distinctly(self) -> None:
+        base = projection(
+            project(resources=(resource("R1", "Alice", address=email("alice")),))
+        )
+        old_project = base.projects[0]
+        day = old_project.days[0]
+        task = day.tasks[0]
+        original = task.resources[0]
+
+        def allocate(first_hours: float, second_hours: float):
+            a = replace(
+                task.request_assignments[0],
+                shift_id="S-A",
+                requirement_id="REQ-A",
+                workforce_request_id="DEMAND-A",
+                request_number="DM-A",
+                hours=first_hours,
+                site_contact_name="Jean",
+                site_contact_phone="555-0101",
+            )
+            b = replace(
+                task.request_assignments[0],
+                shift_id="S-B",
+                requirement_id="REQ-B",
+                workforce_request_id="DEMAND-B",
+                request_number="DM-B",
+                hours=second_hours,
+                site_contact_name="Pierre",
+                site_contact_phone="555-0202",
+            )
+            adjusted = replace(
+                task,
+                resources=(replace(original, shift_ids=("S-A", "S-B")),),
+                request_assignments=(a, b),
+            )
+            changed_day = replace(day, tasks=(adjusted,))
+            return replace(
+                base,
+                projects=(replace(old_project, days=(changed_day,)),),
+            )
+
+        two_six = allocate(2.0, 6.0)
+        six_two = allocate(6.0, 2.0)
+        drafts = (
+            build_project_confirmation_batch(two_six).drafts,
+            build_project_confirmation_batch(six_two).drafts,
+        )
+        self.assertEqual(len(drafts[0]), 1)
+        self.assertEqual(len(drafts[1]), 1)
+        one = drafts[0][0]
+        two = drafts[1][0]
+        self.assertEqual(one.message_key, "project:P1")
+        self.assertEqual(one.to_recipients, two.to_recipients)
+        self.assertEqual(one.cc_recipients, two.cc_recipients)
+        self.assertIn("Lundi le 21 septembre 2026 — Installation de poteaux", one.body)
+        self.assertIn("Demande DM-A\n  Contact chantier : Jean — 555-0101\n  ↳ Alice — 2 h", one.body)
+        self.assertIn("Demande DM-B\n  Contact chantier : Pierre — 555-0202\n  ↳ Alice — 6 h", one.body)
+        self.assertIn("Demande DM-A\n  Contact chantier : Jean — 555-0101\n  ↳ Alice — 6 h", two.body)
+        self.assertIn("Demande DM-B\n  Contact chantier : Pierre — 555-0202\n  ↳ Alice — 2 h", two.body)
+        self.assertIn("  • Alice — 8 h", one.body)
+        self.assertIn("  • Alice — 8 h", two.body)
+        self.assertNotEqual(one.body, two.body)
+        self.assertNotEqual(project_projection_fingerprint(two_six), project_projection_fingerprint(six_two))
+        self.assertEqual(
+            deserialize_project_projection(
+                serialize_project_projection(two_six)
+            ), two_six,
+        )
+
+    def test_830_different_employees_shared_contacts_and_adhoc_work(self) -> None:
+        alice = resource("R1", "Alice", address=email("alice"), hours=2)
+        bob = resource("R2", "Bob", address=email("bob"), hours=6)
+        carol = resource("R3", "Carol", address=email("carol"), hours=1)
+        base = projection(project(resources=(alice, bob, carol)))
+        task = base.projects[0].days[0].tasks[0]
+        by_id = {row.resource_id: row for row in task.request_assignments}
+        provenance = (
+            replace(by_id["R1"], workforce_request_id="REQ-A", request_number="DM-A",
+                    site_contact_name="Jean", site_contact_phone="555-0101"),
+            replace(by_id["R2"], workforce_request_id="REQ-B", request_number="DM-B",
+                    site_contact_name="Jean", site_contact_phone="555-0101"),
+            replace(by_id["R3"], workforce_request_id=None, request_number=None,
+                    site_contact_name=None, site_contact_phone=None),
+        )
+        updated_task = replace(task, request_assignments=provenance)
+        updated_day = replace(base.projects[0].days[0], tasks=(updated_task,))
+        current = replace(
+            base,
+            projects=(replace(base.projects[0], days=(updated_day,)),),
+        )
+        draft = build_project_confirmation_batch(current).drafts[0]
+        self.assertIn("Demande DM-A\n  Contact chantier : Jean — 555-0101\n  ↳ Alice — 2 h", draft.body)
+        self.assertIn("Demande DM-B\n  Contact chantier : Jean — 555-0101\n  ↳ Bob — 6 h", draft.body)
+        self.assertIn("Sans demande\n  ↳ Carol — 1 h", draft.body)
+        self.assertEqual(draft.body.count("Contact chantier : Jean"), 2)
+        self.assertEqual(len(build_project_confirmation_batch(current).drafts), 1)
+        self.assertEqual({row.email for row in draft.cc_recipients}, {email("alice"), email("bob"), email("carol")})
+        self.assertIn("  • Alice — 2 h", draft.body)
+        self.assertIn("  • Bob — 6 h", draft.body)
+        self.assertIn("  • Carol — 1 h", draft.body)
+
+    def test_830_version_and_completeness_fail_closed(self) -> None:
+        current = projection(project())
+        encoded = json.loads(serialize_project_projection(current))
+        encoded["request_provenance_version"] = 2
+        with self.assertRaises(ValueError):
+            deserialize_project_projection(json.dumps(encoded))
+        encoded["request_provenance_version"] = 1
+        encoded["projects"][0]["days"][0]["tasks"][0]["request_assignments"] = []
+        with self.assertRaises(ValueError):
+            deserialize_project_projection(json.dumps(encoded))
+        encoded.pop("request_provenance_version")
+        with self.assertRaises(ValueError):
+            deserialize_project_projection(json.dumps(encoded))
 
     def test_no_standalone_technician_message_is_generated(self) -> None:
         batch = build_project_confirmation_batch(projection(project()))

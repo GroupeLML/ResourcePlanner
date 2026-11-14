@@ -32,6 +32,7 @@ import {
   setDemandOperationalResponsible,
   updateDemand,
   updateDemandConfirmation,
+  updateDemandSiteContact,
 } from "./api";
 import CompetencyPicker from "./CompetencyPicker";
 import SearchableCombobox from "./SearchableCombobox";
@@ -72,6 +73,8 @@ type FormState = {
   desired_start: string;
   desired_end: string;
   description: string;
+  site_contact_name: string;
+  site_contact_phone: string;
   resource_count: string;
   required_competency_ids: string[];
   required_resource_class: string;
@@ -130,6 +133,8 @@ function emptyForm(projectNumber = "", requesterUserId = ""): FormState {
     desired_start: todayIso(),
     desired_end: "",
     description: "",
+    site_contact_name: "",
+    site_contact_phone: "",
     resource_count: "1",
     required_competency_ids: [],
     required_resource_class: "",
@@ -170,6 +175,8 @@ function formFromDemand(demand: DemandReadModel): FormState {
     desired_start: demand.desired_start ?? "",
     desired_end: demand.desired_end ?? "",
     description: demand.description ?? "",
+    site_contact_name: demand.site_contact_name ?? "",
+    site_contact_phone: demand.site_contact_phone ?? "",
     resource_count: String(demand.resource_count || 1),
     required_competency_ids: demand.required_competency_ids ?? [],
     required_resource_class: demand.line_mode
@@ -738,6 +745,8 @@ export default function DemandsPage({
         request_type: selectedDemand?.request_type || "Projet",
         priority: form.priority,
         description: form.description.trim(),
+        site_contact_name: form.site_contact_name.trim() || null,
+        site_contact_phone: form.site_contact_phone.trim() || null,
         lines: lines.map(demandLineWrite),
         ...(selectedDemand ? { expected_version: selectedDemand.version } : {}),
       };
@@ -798,6 +807,14 @@ export default function DemandsPage({
         desired_start: form.desired_start,
         desired_end: form.desired_end || null,
         description: form.description.trim(),
+        ...((creating
+          || form.site_contact_name.trim() !== (selectedDemand?.site_contact_name ?? "").trim()
+          || form.site_contact_phone.trim() !== (selectedDemand?.site_contact_phone ?? "").trim())
+          ? {
+              site_contact_name: form.site_contact_name.trim() || null,
+              site_contact_phone: form.site_contact_phone.trim() || null,
+            }
+          : {}),
         resource_count: resourceCount,
         required_competencies: null,
         required_competency_ids: form.required_competency_ids,
@@ -830,10 +847,32 @@ export default function DemandsPage({
         await reloadDemand(result.demand_number);
         setNotice(`Demande ${result.demand_number} créée en brouillon.`);
       } else if (selectedDemand) {
-        const result = await updateDemand(
+        const previousForm = formFromDemand(selectedDemand);
+        const onlyContactEdited = (
+          Object.keys(form).every((key) => (
+            key === "site_contact_name" || key === "site_contact_phone"
+            || JSON.stringify(form[key as keyof FormState]) === JSON.stringify(previousForm[key as keyof FormState])
+          ))
+        ) && (
+          form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "")
+          || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "")
+        ) && !contextDirty && lineMode === Boolean(selectedDemand.line_mode);
+        const contactFieldsChanged = (
+          form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "").trim()
+          || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "").trim()
+        );
+        const result = onlyContactEdited
+          ? await updateDemandSiteContact(
+              selectedDemand.number,
+              selectedDemand.version,
+              form.site_contact_name.trim() || null,
+              form.site_contact_phone.trim() || null,
+            )
+          : await updateDemand(
           selectedDemand.number,
           {
             ...payload,
+            ...(contactFieldsChanged ? { expected_version: selectedDemand.version } : {}),
             ...(selectedDetail?.policy.expected_operational_version != null
               ? {
                   expected_operational_version:
@@ -1186,6 +1225,14 @@ export default function DemandsPage({
                 <label className="span-2">
                   <span>Description / contexte de la demande</span>
                   <textarea rows={4} value={form.description} onChange={(event) => setField("description", event.target.value)} disabled={saving} placeholder="Contexte commun, travaux demandés et contraintes…" />
+                </label>
+                <label>
+                  <span>Contact chantier — Nom</span>
+                  <input type="text" maxLength={255} value={form.site_contact_name} onChange={(event) => setField("site_contact_name", event.target.value)} disabled={saving} />
+                </label>
+                <label>
+                  <span>Contact chantier — Téléphone</span>
+                  <input type="tel" maxLength={64} value={form.site_contact_phone} onChange={(event) => setField("site_contact_phone", event.target.value)} disabled={saving} />
                 </label>
               </div>
 

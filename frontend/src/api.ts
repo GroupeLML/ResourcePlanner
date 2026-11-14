@@ -736,6 +736,8 @@ export type DemandReadModel = {
   desired_start: string | null;
   desired_end: string | null;
   description: string | null;
+  site_contact_name: string | null;
+  site_contact_phone: string | null;
   site_client: string | null;
   location: string | null;
   work_package_ref: string | null;
@@ -1528,6 +1530,8 @@ export type DemandWrite = {
   request_type?: string;
   priority: string;
   description: string;
+  site_contact_name?: string | null;
+  site_contact_phone?: string | null;
   work_package_ref?: string | null;
   task_code?: string | null;
   confirmation?: "Tentative" | "Confirmée";
@@ -2503,6 +2507,24 @@ export function updateDemand(number: string, payload: DemandWrite, comment: stri
     `/api/v1/demands/${encodeURIComponent(number)}`,
     "PATCH",
     { ...editablePayload, comment },
+  );
+}
+
+export function updateDemandSiteContact(
+  number: string,
+  expectedVersion: number,
+  siteContactName: string | null,
+  siteContactPhone: string | null,
+) {
+  return sendJson<DemandMutationResult>(
+    `/api/v1/demands/${encodeURIComponent(number)}`,
+    "PATCH",
+    {
+      expected_version: expectedVersion,
+      site_contact_name: siteContactName,
+      site_contact_phone: siteContactPhone,
+      comment: "Contact chantier modifié via React V2",
+    },
   );
 }
 

@@ -90,6 +90,11 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
     "erp_sync_compensation_receipts",
         },
         "missing_columns": {
+            # #830 columns postdate the frozen 0048 source revision.
+            "workforce_requests": {
+                "site_contact_name": None,
+                "site_contact_phone": None,
+            },
             "auth_sessions": {
                 "auth_mode": None,
             },

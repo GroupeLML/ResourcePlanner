@@ -14,6 +14,7 @@ from .project_communication import (
     ProjectCommunicationProject,
     ProjectCommunicationProjection,
     ProjectCommunicationResource,
+    ProjectCommunicationRequestAssignment,
     ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
 )
@@ -229,6 +230,90 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
     )
 
 
+
+def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
+    if projection.request_provenance_version != 1 or not projection.request_provenance_complete:
+        raise ValueError("Provenance chantier courante absente ou non prise en charge")
+    seen: set[str] = set()
+    for project in projection.projects:
+        for day in project.days:
+            for task in day.tasks:
+                expected = {
+                    shift_id
+                    for resource in task.resources
+                    for shift_id in resource.shift_ids
+                }
+                actual: set[str] = set()
+                for assignment in task.request_assignments:
+                    if not assignment.shift_id or assignment.shift_id in seen:
+                        raise ValueError("Shift de provenance manquant ou dupliqué")
+                    if (not assignment.requirement_id or not assignment.resource_id or
+                        assignment.hours <= 0):
+                        raise ValueError("Attribution chantier invalide")
+                    if not assignment.workforce_request_id and (
+                        assignment.request_number or assignment.site_contact_name
+                        or assignment.site_contact_phone
+                    ):
+                        raise ValueError("Contact chantier sans provenance demande")
+                    if not any(
+                        resource.resource_id == assignment.resource_id
+                        and assignment.shift_id in resource.shift_ids
+                        for resource in task.resources
+                    ):
+                        raise ValueError("Ressource de provenance incohérente")
+                    actual.add(assignment.shift_id)
+                    seen.add(assignment.shift_id)
+                if actual != expected:
+                    raise ValueError("Couverture de provenance chantier incomplète")
+
+
+def _contact_semantics(project: ProjectCommunicationProject) -> tuple[object, ...]:
+    """Communication-owned semantics only; exclude replaceable physical identifiers."""
+    days = []
+    for day in project.days:
+        tasks = []
+        for task in day.tasks:
+            grouped: dict[tuple[object, ...], float] = {}
+            for row in task.request_assignments:
+                key = (
+                    row.workforce_request_id,
+                    row.resource_id,
+                    row.site_contact_name,
+                    row.site_contact_phone,
+                )
+                grouped[key] = round(grouped.get(key, 0.0) + row.hours, 2)
+            tasks.append((
+                task.task_description.strip().casefold(),
+                tuple(sorted(
+                    ((key, hours) for key, hours in grouped.items()),
+                    key=repr,
+                )),
+            ))
+        days.append((day.day.isoformat(), tuple(tasks)))
+    return tuple(days)
+
+
+def _has_site_contact(project: ProjectCommunicationProject) -> bool:
+    return any(
+        row.site_contact_name or row.site_contact_phone
+        for day in project.days
+        for task in day.tasks
+        for row in task.request_assignments
+    )
+
+
+def _project_semantic_payload(
+    project: ProjectCommunicationProject,
+    *,
+    include_provenance: bool,
+) -> tuple[object, ...]:
+    original = _project_payload(project)
+    return (
+        original,
+        _contact_semantics(project) if include_provenance else (),
+    )
+
+
 def _fingerprint_payload(payload: object) -> str:
     encoded = json.dumps(
         payload,
@@ -241,11 +326,17 @@ def _fingerprint_payload(payload: object) -> str:
 def project_projection_fingerprint(
     projection: ProjectCommunicationProjection,
 ) -> str:
+    if projection.request_provenance_version is not None:
+        _validate_provenance(projection)
     return _fingerprint_payload(
         (
             projection.week_start.isoformat(),
             projection.week_end.isoformat(),
-            tuple(_project_payload(project) for project in projection.projects),
+            tuple(
+                _project_semantic_payload(project, include_provenance=True)
+                if projection.request_provenance_version == 1 else _project_payload(project)
+                for project in projection.projects
+            ),
             tuple(projection.diagnostics),
         )
     )
@@ -587,6 +678,56 @@ def _project_body(
     for day in project.days:
         for task in day.tasks:
             lines.extend(("", f"{french_long_date(day.day)} — {task.task_description}"))
+            if task.request_assignments:
+                by_request: dict[str | None, list[ProjectCommunicationRequestAssignment]] = {}
+                for item in task.request_assignments:
+                    by_request.setdefault(item.workforce_request_id, []).append(item)
+                # A single contactless request needs no extra detail; preserve
+                # the existing compact aggregated schedule in that case.
+                show_request_work = (
+                    len(by_request) > 1
+                    or any(
+                        item.site_contact_name or item.site_contact_phone
+                        for item in task.request_assignments
+                    )
+                )
+                if show_request_work:
+                    for request_id, group in sorted(
+                        by_request.items(), key=lambda pair: pair[0] or ""
+                    ):
+                        first = group[0]
+                        label = (
+                            first.request_number or request_id
+                            if request_id is not None
+                            else "Sans demande"
+                        )
+                        lines.append(f"Demande {label}" if request_id is not None else label)
+                        if first.site_contact_name or first.site_contact_phone:
+                            contact = " — ".join(
+                                part for part in (
+                                    first.site_contact_name,
+                                    first.site_contact_phone,
+                                ) if part
+                            )
+                            lines.append(f"  Contact chantier : {contact}")
+                        elif request_id is not None:
+                            lines.append("  Aucun contact chantier renseigné")
+                        # These are subdivisions of the canonical resource
+                        # totals below, not additional scheduled hours.
+                        by_resource: dict[str, tuple[str, float]] = {}
+                        for item in group:
+                            name, hours = by_resource.get(
+                                item.resource_id, (item.resource_name, 0.0)
+                            )
+                            by_resource[item.resource_id] = (
+                                name, hours + item.hours
+                            )
+                        for resource_id, (name, hours) in sorted(
+                            by_resource.items(),
+                            key=lambda pair: (pair[1][0].casefold(), pair[0]),
+                        ):
+                            lines.append(f"  ↳ {name} — {hours:g} h (part de la demande)")
+                    lines.append("  Totaux planifiés (toutes demandes) :")
             assignments_by_resource: dict[str, list[ContactResolution]] = {}
             for assignment in task.responsibility_assignments:
                 assignments_by_resource.setdefault(
@@ -788,6 +929,13 @@ def compare_project_communication_projections(
         raise ValueError(
             "Les deltas de communication doivent comparer la même semaine."
         )
+    if current.request_provenance_version != 1 or not current.request_provenance_complete:
+        raise ValueError("Projection courante sans provenance chantier complète")
+    _validate_provenance(current)
+    if previous.request_provenance_version not in (None, 1):
+        raise ValueError("Version historique de provenance chantier non supportée")
+    if previous.request_provenance_version == 1:
+        _validate_provenance(previous)
     before = {project.project_id: project for project in previous.projects}
     after = {project.project_id: project for project in current.projects}
     changes: list[ProjectCommunicationChange] = []
@@ -798,7 +946,11 @@ def compare_project_communication_projections(
             changes.append(ProjectCommunicationChange(project_id, "added", None, new))
         elif new is None:
             changes.append(ProjectCommunicationChange(project_id, "removed", old, None))
-        elif _project_payload(old) != _project_payload(new):
+        elif previous.request_provenance_version is None:
+            if (_project_payload(old) != _project_payload(new)
+                or _has_site_contact(new)):
+                changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
+        elif _project_semantic_payload(old, include_provenance=True) != _project_semantic_payload(new, include_provenance=True):
             changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
     return tuple(changes)
 
@@ -849,8 +1001,18 @@ def serialize_project_projection(
             return [convert(item) for item in value]
         return value
 
+    if projection.request_provenance_version is not None:
+        _validate_provenance(projection)
+    serialized = convert(asdict(projection))
+    if projection.request_provenance_version is None:
+        serialized.pop("request_provenance_version", None)
+        serialized.pop("request_provenance_complete", None)
+        for project in serialized["projects"]:
+            for day in project["days"]:
+                for task in day["tasks"]:
+                    task.pop("request_assignments", None)
     return json.dumps(
-        convert(asdict(projection)),
+        serialized,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -861,6 +1023,18 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
     """Restore a projection snapshot without consulting mutable business tables."""
 
     data = json.loads(payload)
+    provenance_version = data.get("request_provenance_version")
+    provenance_complete = data.get("request_provenance_complete", False)
+    if provenance_version is None:
+        if provenance_complete or any(
+            "request_assignments" in task
+            for project in data.get("projects") or ()
+            for day in project.get("days") or ()
+            for task in day.get("tasks") or ()
+        ):
+            raise ValueError("Snapshot chantier legacy incohérent")
+    elif provenance_version != 1 or provenance_complete is not True:
+        raise ValueError("Version ou couverture de provenance chantier invalide")
 
     def participant(row):
         return ProjectCommunicationParticipant(
@@ -952,6 +1126,20 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                         ),
                         resources=resources,
                         responsibility_assignments=responsibility_assignments,
+                        request_assignments=tuple(
+                            ProjectCommunicationRequestAssignment(
+                                shift_id=str(value["shift_id"]),
+                                requirement_id=str(value["requirement_id"]),
+                                workforce_request_id=value.get("workforce_request_id"),
+                                request_number=value.get("request_number"),
+                                resource_id=str(value["resource_id"]),
+                                resource_name=str(value["resource_name"]),
+                                hours=float(value["hours"]),
+                                site_contact_name=value.get("site_contact_name"),
+                                site_contact_phone=value.get("site_contact_phone"),
+                            )
+                            for value in task_row.get("request_assignments") or ()
+                        ),
                         diagnostics=tuple(task_row.get("diagnostics") or ()),
                     )
                 )
@@ -981,9 +1169,14 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                 diagnostics=tuple(project_row.get("diagnostics") or ()),
             )
         )
-    return ProjectCommunicationProjection(
+    projection = ProjectCommunicationProjection(
         week_start=date.fromisoformat(str(data["week_start"])),
         week_end=date.fromisoformat(str(data["week_end"])),
         projects=tuple(projects),
+        request_provenance_version=provenance_version,
+        request_provenance_complete=provenance_complete,
         diagnostics=tuple(data.get("diagnostics") or ()),
     )
+    if provenance_version is not None:
+        _validate_provenance(projection)
+    return projection

@@ -787,6 +787,11 @@ def _reshape_as_0048(path: Path) -> None:
             SET version_num = '0048_identity_admin_audit';
             """
         )
+        # The 0048 fixture is built from current ORM metadata for its other
+        # unchanged tables. Remove only the two post-0048 #830 columns before
+        # marking it as the frozen source revision; migration 0035 owns them.
+        raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_contact_phone")
+        raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_contact_name")
         raw.commit()
     finally:
         raw.close()
@@ -972,6 +977,27 @@ class Sqlite0048RuntimeBridgeTests(unittest.TestCase):
                 "communication_contacts",
                 str(raised.exception),
             )
+
+    def test_exact_0048_shape_rejects_unapproved_missing_historical_column(self) -> None:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "resourceplanner.db"
+            _create_current_database(source)
+            _reshape_as_0048(source)
+            raw = sqlite3.connect(source)
+            try:
+                # site_client is an actual historical request column and is
+                # deliberately not in SOURCE_MISSING_COLUMNS. The bridge must
+                # reject its absence even though the two later #830 columns
+                # are allowed to be absent from frozen 0048.
+                raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_client")
+                raw.commit()
+            finally:
+                raw.close()
+
+            with self.assertRaises(BridgeBlocked) as raised:
+                bridge_sqlite_0048(source)
+            self.assertIn("workforce_requests", str(raised.exception))
+            self.assertIn("site_client", str(raised.exception))
 
     def test_exact_0048_shape_rejects_unapproved_extra_table(self) -> None:
         with TemporaryDirectory() as directory:

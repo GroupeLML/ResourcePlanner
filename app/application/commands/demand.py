@@ -92,6 +92,8 @@ class DemandCreateCommand:
     desired_end: date | None = None
     description: str = ""
     site_client: str = ""
+    site_contact_name: str | None = None
+    site_contact_phone: str | None = None
     location: str = ""
     resource_count: int = 1
     required_competencies: str | None = None
@@ -221,6 +223,8 @@ class DemandCreateCommand:
             ),
             description=text(values.get("Description")),
             site_client=text(values.get("SiteClient")),
+            site_contact_name=optional_text(values.get("SiteContactName")),
+            site_contact_phone=optional_text(values.get("SiteContactPhone")),
             location=text(values.get("Lieu")),
             resource_count=int_value(
                 values.get("NombreRessources"),
@@ -275,6 +279,8 @@ class DemandCreateCommand:
             "DateFinSouhaitee": self.desired_end,
             "Description": text(self.description),
             "SiteClient": text(self.site_client),
+            "SiteContactName": optional_text(self.site_contact_name),
+            "SiteContactPhone": optional_text(self.site_contact_phone),
             "Lieu": text(self.location),
             "NombreRessources": int(self.resource_count),
             "CompetencesRequises": self.required_competencies,
@@ -311,6 +317,8 @@ class DemandUpdateCommand:
     desired_end: date | None | UnsetType = UNSET
     description: str | None | UnsetType = UNSET
     site_client: str | None | UnsetType = UNSET
+    site_contact_name: str | None | UnsetType = UNSET
+    site_contact_phone: str | None | UnsetType = UNSET
     location: str | None | UnsetType = UNSET
     resource_count: int | None | UnsetType = UNSET
     required_competencies: str | None | UnsetType = UNSET
@@ -410,6 +418,8 @@ class DemandUpdateCommand:
             "DateFinSouhaitee",
             "Description",
             "SiteClient",
+            "SiteContactName",
+            "SiteContactPhone",
             "Lieu",
             "NombreRessources",
             "CompetencesRequises",
@@ -458,6 +468,8 @@ class DemandUpdateCommand:
             ),
             description=present("Description", optional_text),
             site_client=present("SiteClient", optional_text),
+            site_contact_name=present("SiteContactName", optional_text),
+            site_contact_phone=present("SiteContactPhone", optional_text),
             location=present("Lieu", optional_text),
             resource_count=(
                 int_value(
@@ -508,6 +520,8 @@ class DemandUpdateCommand:
             "DateFinSouhaitee": self.desired_end,
             "Description": self.description,
             "SiteClient": self.site_client,
+            "SiteContactName": self.site_contact_name,
+            "SiteContactPhone": self.site_contact_phone,
             "Lieu": self.location,
             "NombreRessources": self.resource_count,
             "CompetencesRequises": self.required_competencies,

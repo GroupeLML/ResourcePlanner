@@ -143,6 +143,43 @@ class DemandServiceTests(unittest.TestCase):
         with self.assertRaises(ApplicationValidationError):
             service.create({"NumeroProjet": "5094"})
 
+    def test_830_contact_only_approved_edit_does_not_require_reapproval(self) -> None:
+        service, _demands, events = self._service(
+            record=DemandReadModel(
+                number="DMO-830",
+                status="En planification",
+                desired_start=date(2026, 8, 25),
+                desired_end=date(2026, 8, 29),
+                version=3,
+            )
+        )
+        required = service.modify_command(
+            DemandUpdateCommand(
+                number="DMO-830",
+                expected_version=3,
+                site_contact_name="Jean Tremblay",
+                site_contact_phone="555-0101",
+            )
+        )
+        self.assertFalse(required)
+        writes = [event for event in events if event[0] == "update"]
+        self.assertEqual(len(writes), 1)
+        data = writes[0][2]
+        self.assertEqual(data["SiteContactName"], "Jean Tremblay")
+        self.assertEqual(data["SiteContactPhone"], "555-0101")
+        self.assertEqual(data["ExpectedVersion"], 3)
+        self.assertNotIn("Statut", data)
+        self.assertFalse(any(event[0] in {"sync", "rebuild"} for event in events))
+
+    def test_830_contact_edit_requires_version(self) -> None:
+        service, _demands, _events = self._service(
+            record=DemandReadModel(number="DMO-830", status="Brouillon", version=1)
+        )
+        with self.assertRaises(ApplicationValidationError):
+            service.modify_command(
+                DemandUpdateCommand(number="DMO-830", site_contact_name="Jean")
+            )
+
     def test_modify_approved_business_demand_requires_reapproval_without_touching_plan(self) -> None:
         events: list[object] = []
 

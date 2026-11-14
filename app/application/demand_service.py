@@ -926,7 +926,14 @@ class DemandService:
             ACTION_MODIFY,
             expected_version=expected_version,
         )
-        if "RequestLines" in data:
+        contact_edit = bool({"SiteContactName", "SiteContactPhone"}.intersection(data))
+        if contact_edit and expected_version is None:
+            raise ApplicationValidationError(
+                "expected_version est requis pour modifier le contact chantier.",
+                code="demand_version_required",
+                context={"demand_number": number},
+            )
+        if "RequestLines" in data or contact_edit:
             if expected_version is None:
                 raise ApplicationValidationError(
                     "expected_version est requis pour modifier les lignes d'une demande.",
