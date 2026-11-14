@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        RESOURCEPLANNER_GIT_REVISION: "${RESOURCEPLANNER_GIT_REVISION:-unavailable}"
     image: ${RESOURCEPLANNER_BACKEND_IMAGE:-resourceplanner-backend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
     command: ["python", "-m", "alembic", "upgrade", "head"]
     environment:
@@ -51,6 +53,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        RESOURCEPLANNER_GIT_REVISION: "${RESOURCEPLANNER_GIT_REVISION:-unavailable}"
     image: ${RESOURCEPLANNER_BACKEND_IMAGE:-resourceplanner-backend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
     command: ["python", "tools/seed_demo_data.py", "--confirm-dev-only"]
     depends_on:
@@ -67,6 +71,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        RESOURCEPLANNER_GIT_REVISION: "${RESOURCEPLANNER_GIT_REVISION:-unavailable}"
     image: ${RESOURCEPLANNER_BACKEND_IMAGE:-resourceplanner-backend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
     command: ["python", "tools/bootstrap_production_admin.py"]
     depends_on:
@@ -84,6 +90,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        RESOURCEPLANNER_GIT_REVISION: "${RESOURCEPLANNER_GIT_REVISION:-unavailable}"
     image: ${RESOURCEPLANNER_BACKEND_IMAGE:-resourceplanner-backend}:${RESOURCEPLANNER_IMAGE_TAG:-local}
     depends_on:
       migrate:
