@@ -27,6 +27,54 @@ class FrontendRevisionContractTests(unittest.TestCase):
         self.assertIn("org.opencontainers.image.revision", dockerfile)
         self.assertRegex(dockerfile, r"\[0-9a-fA-F\]\{40\}")
 
+    def test_backend_and_migrate_revision_build_contract(self) -> None:
+        backend = (ROOT / "Dockerfile.backend").read_text(encoding="utf-8")
+        frontend = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("ARG RESOURCEPLANNER_GIT_REVISION=unavailable", backend)
+        self.assertIn(
+            'LABEL org.opencontainers.image.revision="$RESOURCEPLANNER_GIT_REVISION"',
+            backend,
+        )
+        self.assertLess(
+            backend.index("FROM python:3.12-slim AS runtime"),
+            backend.index("LABEL org.opencontainers.image.revision"),
+        )
+        self.assertIn(
+            'LABEL org.opencontainers.image.revision="$RESOURCEPLANNER_GIT_REVISION"',
+            frontend,
+        )
+        self.assertEqual(compose.count("dockerfile: Dockerfile.backend"), 4)
+        self.assertEqual(
+            compose.count(
+                'RESOURCEPLANNER_GIT_REVISION: "${RESOURCEPLANNER_GIT_REVISION:-unavailable}"'
+            ),
+            5,
+        )
+        self.assertIn("image: ${RESOURCEPLANNER_BACKEND_IMAGE:-resourceplanner-backend}:", compose)
+
+    def test_deployable_revision_is_derived_from_git_and_not_a_tag(self) -> None:
+        helper = (ROOT / "tools" / "build_resourceplanner_images.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("git rev-parse --verify HEAD", helper)
+        self.assertIn("git status --porcelain --untracked-files=normal", helper)
+        self.assertIn("grep -Eq '^[0-9a-fA-F]{40}$'", helper)
+        self.assertIn("export RESOURCEPLANNER_GIT_REVISION", helper)
+        self.assertIn('exec docker compose build "$@"', helper)
+
+    def test_smoke_checks_backend_and_migrate_image_pair(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "syntax-check.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Validate backend/frontend OCI source revision pair", workflow)
+        self.assertIn("docker compose images -q backend", workflow)
+        self.assertIn("docker compose images -q migrate", workflow)
+        self.assertIn("docker image inspect --format", workflow)
+        self.assertIn('test "$backend_revision" = "$RESOURCEPLANNER_GIT_REVISION"', workflow)
+        self.assertIn('test "$frontend_revision" = "$RESOURCEPLANNER_GIT_REVISION"', workflow)
+        self.assertIn('test "$migrate_image" = "$backend_image"', workflow)
+
     def test_build_helper_derives_revision_from_clean_checkout(self) -> None:
         helper = (ROOT / "tools" / "build_resourceplanner_images.sh").read_text(
             encoding="utf-8"

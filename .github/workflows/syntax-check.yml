@@ -224,6 +224,20 @@ jobs:
           test "$image_revision" = "$RESOURCEPLANNER_GIT_REVISION"
           docker run --rm --entrypoint cat "$frontend_image" /usr/share/nginx/html/build-meta.js \
             | grep -F "$RESOURCEPLANNER_GIT_REVISION"
+      - name: Validate backend/frontend OCI source revision pair
+        run: |
+          backend_image="$(docker compose images -q backend)"
+          migrate_image="$(docker compose images -q migrate)"
+          frontend_image="$(docker compose images -q frontend)"
+          test -n "$backend_image"
+          test -n "$migrate_image"
+          test -n "$frontend_image"
+          test "$migrate_image" = "$backend_image"
+          backend_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$backend_image")"
+          frontend_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$frontend_image")"
+          test "$backend_revision" = "$RESOURCEPLANNER_GIT_REVISION"
+          test "$frontend_revision" = "$RESOURCEPLANNER_GIT_REVISION"
+          test "$backend_revision" = "$frontend_revision"
       - name: Validate packaged SQL Server driver
         run: |
           docker compose exec -T backend python - <<'PY'
