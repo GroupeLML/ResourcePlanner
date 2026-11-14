@@ -95,9 +95,12 @@ Ce helper :
 
 - dérive le SHA Git complet de `HEAD` depuis le checkout réellement construit;
 - refuse une construction déployable depuis un checkout sale;
-- injecte ce SHA uniquement au build de l'image frontend;
-- laisse le frontend afficher explicitement `indisponible` lorsqu'une image est
-  construite en dehors de ce chemin sans métadonnée valide.
+- injecte ce SHA au build des images backend et frontend (incluant le service `migrate` qui partage l'image backend);
+- laisse les images construites hors de ce chemin porter `unavailable` comme label OCI plutôt qu'une fausse preuve de provenance; le frontend affiche aussi `indisponible`.
+
+La vérification PROD doit inspecter les labels OCI **des deux images finales** et exiger
+le SHA complet attendu. Un label absent, `unavailable`, malformé ou discordant
+interdit de conclure à la provenance, même si le tag court correspond.
 
 Après la construction et les tests DEV, une promotion PROD doit continuer à
 réutiliser exactement la même image, sans rebuild. La révision compilée dans
