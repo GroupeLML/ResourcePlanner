@@ -470,6 +470,35 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             project_id: projection.co_managers
             for project_id, projection in project_manager_projections.items()
         }
+        # ADR-017 identifies the canonical principal through ERP EmployeID.
+        # Resource is only an ERP-phone read model here, never manager authority:
+        # do not require local planning activation or use names/contact emails.
+        employee_ids = {
+            _text(manager.employee_external_id)
+            for manager in project_managers.values()
+            if manager is not None and _text(manager.employee_external_id)
+        }
+        phones_by_employee: dict[str, list[str | None]] = {}
+        # Bound the IN-list for SQL Server parameter limits.
+        ordered_employee_ids = sorted(employee_ids)
+        for offset in range(0, len(ordered_employee_ids), 900):
+            subset = ordered_employee_ids[offset:offset + 900]
+            for external_id, erp_phone in self._session.execute(
+                select(Resource.external_id, Resource.erp_phone)
+                .where(Resource.external_id.in_(subset))
+            ).all():
+                key = _text(external_id)
+                if key in employee_ids:
+                    phones_by_employee.setdefault(key, []).append(
+                        _text(erp_phone) or None
+                    )
+        # Duplicate Resource identities are ambiguous, even when their phone
+        # values happen to agree: never choose an arbitrary row.
+        canonical_erp_phones = {
+            employee_id: phones[0]
+            for employee_id, phones in phones_by_employee.items()
+            if len(phones) == 1 and phones[0] is not None
+        }
         relevant_contact_ids = {
             _text(manager.business_contact_id)
             for manager in project_managers.values()
@@ -602,6 +631,9 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     resource_name=resource.name,
                     resource_contact=resource_contact,
                     project_manager=manager,
+                    project_manager_erp_phone=canonical_erp_phones.get(
+                        _text(project_managers[project.id].employee_external_id)
+                    ) if project_managers.get(project.id) is not None else None,
                     operational_responsible=resolution.operational_responsible,
                     project_co_managers=co_managers,
                     requester=requester,

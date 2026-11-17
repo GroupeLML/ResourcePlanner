@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.application.communications import CommunicationTransportResult
 from app.application.security import AuthPrincipal, ROLE_ADMIN
@@ -64,6 +65,10 @@ from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 WEEK = date(2026, 9, 21)
 TEST_DOMAIN = "example.test"
+
+
+def synthetic_phone(last_four: str = "0100") -> str:
+    return "514" + "-" + "555" + "-" + last_four
 
 
 class FakeSmtpDeliveryClient:
@@ -661,6 +666,269 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 "co" + chr(64) + TEST_DOMAIN,
             ],
         )
+
+    def test_831_sql_phone_uses_canonical_employee_identity_not_contact(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    pm_contact = session.get(BusinessContact, "C-PM")
+                    assert pm_contact is not None
+                    pm_contact.phone = "WRONG-CONTACT-PHONE"
+                    project_row = session.get(Project, "P1")
+                    assert project_row is not None
+                    # ERP sync normally trims these; the canonical resolver must
+                    # also normalize an older padded project identity.
+                    project_row.project_manager_external_id = " PM-1 "
+                    session.add_all((
+                        Resource(
+                            id="R-MANAGER-831", external_id="PM-1",
+                            name="Unrelated ERP label", email="wrong" + chr(64) + TEST_DOMAIN,
+                            active=False, erp_active=False, erp_phone=synthetic_phone("0100"),
+                        ),
+                        Resource(
+                            id="R-NAME-831", external_id="NOT-PM-1",
+                            name="Chargé de projet Démo", email="pm" + chr(64) + TEST_DOMAIN,
+                            active=True, erp_active=True, erp_phone="WRONG-NAME-PHONE",
+                        ),
+                    ))
+                def current():
+                    with factory() as session:
+                        service = self._service(session)
+                        return service.project_projection(week_start=WEEK)
+                result = current()
+                self.assertEqual(result.projects[0].project_manager_erp_phone, synthetic_phone("0100"))
+                self.assertEqual(result.projects[0].project_manager.phone,
+                                 "WRONG-CONTACT-PHONE")
+                self.assertEqual(result.projects[0].project_manager.display_name,
+                                 "Chargé de projet Démo")
+
+                with factory.begin() as session:
+                    row = session.get(Resource, "R-MANAGER-831")
+                    assert row is not None
+                    row.erp_phone = None
+                self.assertIsNone(current().projects[0].project_manager_erp_phone)
+
+                with factory() as session:
+                    session.add(Resource(
+                        id="R-DUPLICATE-831", external_id="PM-1",
+                        name="Duplicate ERP identity", active=False,
+                        erp_active=False, erp_phone=synthetic_phone("0900"),
+                    ))
+                    with self.assertRaises(IntegrityError):
+                        session.flush()
+                    session.rollback()
+
+                with factory() as session:
+                    real_execute = session.execute
+
+                    class DuplicatePhoneRows:
+                        def all(self):
+                            return [
+                                ("PM-1", synthetic_phone("0100")),
+                                ("PM-1", synthetic_phone("0900")),
+                            ]
+
+                    def execute_with_duplicate_resource_identity(statement, *args, **kwargs):
+                        selected_columns = tuple(
+                            getattr(statement, "selected_columns", ())
+                        )
+                        if (
+                            len(selected_columns) == 2
+                            and [column.name for column in selected_columns]
+                            == ["external_id", "erp_phone"]
+                            and all(
+                                getattr(column.table, "name", None) == "resources"
+                                for column in selected_columns
+                            )
+                        ):
+                            return DuplicatePhoneRows()
+                        return real_execute(statement, *args, **kwargs)
+
+                    with patch.object(
+                        session,
+                        "execute",
+                        side_effect=execute_with_duplicate_resource_identity,
+                    ):
+                        ambiguous = self._service(session).project_projection(
+                            week_start=WEEK
+                        )
+                self.assertIsNone(
+                    ambiguous.projects[0].project_manager_erp_phone
+                )
+
+                with factory.begin() as session:
+                    pm = session.get(Resource, "R-MANAGER-831")
+                    assert pm is not None
+                    session.delete(pm)
+                self.assertIsNone(current().projects[0].project_manager_erp_phone)
+            finally:
+                engine.dispose()
+
+    def test_831_missing_local_manager_contact_does_not_invent_recipient(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(Resource(
+                        id="R-MANAGER-831", external_id="PM-1",
+                        name="ERP source", active=False, erp_active=False,
+                        erp_phone=synthetic_phone("0100"),
+                    ))
+                    user = session.get(AppUser, "U-PM")
+                    assert user is not None
+                    user.business_contact_id = None
+                with factory() as session:
+                    projection = self._service(session).project_preview(week_start=WEEK)
+                self.assertEqual(len(projection.drafts), 1)
+                draft = projection.drafts[0]
+                self.assertIn("Téléphone : " + synthetic_phone("0100"), draft.body)
+                self.assertFalse(draft.approvable)
+                self.assertIsNone(draft.to_recipient.email)
+                self.assertNotIn("pm" + chr(64) + TEST_DOMAIN,
+                                 [row.email for row in draft.to_recipients])
+                self.assertTrue(any(
+                    "PROJECT_MANAGER_CONTACT_MISSING" in row.code
+                    or "PROJECT_TO_EMAIL_MISSING" in row.code
+                    for row in draft.diagnostics
+                ))
+            finally:
+                engine.dispose()
+
+    def test_831_preview_prepared_stale_and_graph_smtp_use_persisted_body(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(Resource(
+                        id="R-MANAGER-831", external_id="PM-1",
+                        name="Source ERP différente", active=False,
+                        erp_active=False, erp_phone=synthetic_phone("0100"),
+                    ))
+                    contact = session.get(BusinessContact, "C-PM")
+                    assert contact is not None
+                    contact.phone = "WRONG-CONTACT-PHONE"
+            finally:
+                engine.dispose()
+
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                old_fingerprint = preview.json()["snapshot_fingerprint"]
+                first_body = preview.json()["drafts"][0]["body"]
+                self.assertIn("Chargé de projet : Chargé de projet Démo", first_body)
+                self.assertIn("Téléphone : " + synthetic_phone("0100"), first_body)
+                self.assertNotIn("WRONG-CONTACT-PHONE", first_body)
+                self.assertEqual(len(preview.json()["drafts"]), 1)
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": old_fingerprint,
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                old_id = prepared.json()["id"]
+                self.assertEqual(prepared.json()["messages"][0]["body"], first_body)
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        manager = session.get(Resource, "R-MANAGER-831")
+                        assert manager is not None
+                        manager.erp_phone = synthetic_phone("0200")
+                finally:
+                    engine.dispose()
+
+                updated = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(updated.status_code, 200, updated.text)
+                self.assertNotEqual(updated.json()["snapshot_fingerprint"], old_fingerprint)
+                current_body = updated.json()["drafts"][0]["body"]
+                self.assertIn("Téléphone : " + synthetic_phone("0200"), current_body)
+                self.assertNotIn(synthetic_phone("0100"), current_body)
+                self.assertEqual(updated.json()["drafts"][0]["to_recipients"],
+                                 preview.json()["drafts"][0]["to_recipients"])
+                self.assertEqual(updated.json()["drafts"][0]["cc_recipients"],
+                                 preview.json()["drafts"][0]["cc_recipients"])
+
+                stale = client.post(
+                    f"/api/v1/communications/project-batches/{old_id}/approve"
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(stale.json()["error"]["code"],
+                                 "project_communication_batch_stale")
+                stored = client.get(
+                    "/api/v1/communications/project-batches?week_start=2026-09-23"
+                )
+                self.assertEqual(stored.status_code, 200, stored.text)
+                old = next(row for row in stored.json() if row["id"] == old_id)
+                self.assertEqual(old["messages"][0]["body"], first_body)
+
+                replacement = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": updated.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(replacement.status_code, 201, replacement.text)
+                new_id = replacement.json()["id"]
+                self.assertEqual(replacement.json()["messages"][0]["body"], current_body)
+                approved = client.post(
+                    f"/api/v1/communications/project-batches/{new_id}/approve"
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                drafts = client.post(
+                    f"/api/v1/communications/project-batches/{new_id}/create-drafts"
+                )
+                self.assertEqual(drafts.status_code, 200, drafts.text)
+                self.assertEqual(len(transport.messages), 1)
+                self.assertEqual(transport.messages[0].body, current_body)
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{new_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+                self.assertEqual(smtp.attempt_bodies, [current_body])
 
     def test_projection_uses_approved_context_and_resource_recipients(self) -> None:
         with TemporaryDirectory() as directory:

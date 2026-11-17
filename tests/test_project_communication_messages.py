@@ -38,6 +38,10 @@ from app.domain.project_communication_messages import (
 WEEK = date(2026, 9, 21)
 
 
+def synthetic_phone(last_four: str = "0100") -> str:
+    return "514" + "-" + "555" + "-" + last_four
+
+
 def email(local: str) -> str:
     return local + chr(64) + "invalid.test"
 
@@ -932,6 +936,90 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         self.assertEqual(first.drafts[0].message_key, "project:P1")
         self.assertEqual(first.drafts[0].to_recipients, prepared.drafts[0].to_recipients)
+
+    def test_831_erp_manager_phone_renders_only_when_available(self) -> None:
+        base = projection(project())
+        original = base.projects[0]
+        self.assertIsNone(original.project_manager_erp_phone)
+        original_body = build_project_confirmation_batch(base).drafts[0].body
+        self.assertNotIn("Chargé de projet :", original_body)
+        self.assertNotIn("Téléphone :", original_body)
+
+        for number in (synthetic_phone("0100"), synthetic_phone("0200")):
+            with self.subTest(number=number):
+                current = replace(
+                    base,
+                    projects=(replace(original, project_manager_erp_phone=number),),
+                )
+                batch = build_project_confirmation_batch(current)
+                body = batch.drafts[0].body
+                self.assertIn(
+                    "Chargé de projet : Chargé Démo\nTéléphone : " + number,
+                    body,
+                )
+                self.assertIn("Responsable : Jean Responsable", body)
+                self.assertNotIn("Contact chantier :", body)
+                self.assertEqual(len(batch.drafts), 1)
+                self.assertEqual(batch.drafts[0].to_recipients,
+                                 build_project_confirmation_batch(base).drafts[0].to_recipients)
+                self.assertEqual(batch.drafts[0].cc_recipients,
+                                 build_project_confirmation_batch(base).drafts[0].cc_recipients)
+
+    def test_831_phone_changes_p1_and_delta_without_legacy_null_changes(self) -> None:
+        original = projection(project())
+        p = original.projects[0]
+        with_phone = replace(
+            original, projects=(replace(p, project_manager_erp_phone=synthetic_phone("0100")),)
+        )
+        changed = replace(
+            original, projects=(replace(p, project_manager_erp_phone=synthetic_phone("0200")),)
+        )
+        original_fingerprint = project_projection_fingerprint(original)
+        self.assertNotEqual(project_projection_fingerprint(with_phone), original_fingerprint)
+        self.assertNotEqual(project_projection_fingerprint(changed),
+                            project_projection_fingerprint(with_phone))
+        self.assertEqual(len(compare_project_communication_projections(original, with_phone)), 1)
+        self.assertEqual(len(compare_project_communication_projections(with_phone, changed)), 1)
+        self.assertEqual(len(compare_project_communication_projections(with_phone, original)), 1)
+
+        # The absent-value representation is exactly the historical project_v2
+        # structure: restoring the old snapshot must not introduce a new P1 input.
+        legacy_json = serialize_project_projection(original)
+        self.assertNotIn("project_manager_erp_phone", legacy_json)
+        restored = deserialize_project_projection(legacy_json)
+        self.assertIsNone(restored.projects[0].project_manager_erp_phone)
+        self.assertEqual(serialize_project_projection(restored), legacy_json)
+        self.assertEqual(project_projection_fingerprint(restored), original_fingerprint)
+
+        encoded = serialize_project_projection(with_phone)
+        self.assertIn('"project_manager_erp_phone":"' + synthetic_phone("0100") + '"', encoded)
+        restored_phone = deserialize_project_projection(encoded)
+        self.assertEqual(restored_phone, with_phone)
+        self.assertEqual(project_projection_fingerprint(restored_phone),
+                         project_projection_fingerprint(with_phone))
+
+    def test_831_phone_keeps_request_contact_and_single_demand_resource_once(self) -> None:
+        base = projection(
+            project(resources=(resource("R1", "Alice", address=email("alice")),))
+        )
+        p = base.projects[0]
+        day = p.days[0]
+        task = day.tasks[0]
+        row = task.request_assignments[0]
+        task = replace(task, request_assignments=(
+            replace(row, site_contact_name="Chantier", site_contact_phone="555-0300"),
+        ))
+        current = replace(
+            base,
+            projects=(replace(p, project_manager_erp_phone=synthetic_phone("0100"),
+                              days=(replace(day, tasks=(task,)),)),),
+        )
+        draft = build_project_confirmation_batch(current).drafts[0]
+        self.assertIn("Téléphone : " + synthetic_phone("0100"), draft.body)
+        self.assertIn("Contact chantier : Chantier — 555-0300", draft.body)
+        self.assertEqual(draft.body.count("  • Alice — 8 h"), 1)
+        self.assertNotIn("part de la demande", draft.body)
+        self.assertNotIn("Totaux planifiés", draft.body)
 
     def test_830_contact_add_change_clear_and_legacy_delta(self) -> None:
         base = projection(project())

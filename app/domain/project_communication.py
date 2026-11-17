@@ -57,6 +57,7 @@ class ProjectCommunicationAssignment:
     site_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     diagnostics: tuple[str, ...] = ()
+    project_manager_erp_phone: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +125,7 @@ class ProjectCommunicationProject:
     project_co_managers: tuple[ProjectCommunicationParticipant, ...] = ()
     requesters: tuple[ProjectCommunicationParticipant, ...] = ()
     diagnostics: tuple[str, ...] = ()
+    project_manager_erp_phone: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +188,7 @@ def build_project_communication_projection(
                 "number": row.project_number,
                 "name": row.project_name,
                 "manager": row.project_manager,
+                "manager_erp_phone": row.project_manager_erp_phone,
                 "co_managers": row.project_co_managers,
                 "requesters": {},
                 "days": {},
@@ -362,6 +365,7 @@ def build_project_communication_projection(
                 project_name=str(project["name"]),
                 project_manager=project["manager"],
                 days=tuple(projected_days),
+                project_manager_erp_phone=project["manager_erp_phone"],
                 project_co_managers=tuple(project["co_managers"]),
                 requesters=tuple(
                     project["requesters"][key]
