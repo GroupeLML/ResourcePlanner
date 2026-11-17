@@ -779,7 +779,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     projection = self._service(session).project_preview(week_start=WEEK)
                 self.assertEqual(len(projection.drafts), 1)
                 draft = projection.drafts[0]
-                self.assertIn("Téléphone : 514-555-0100", draft.body)
+                self.assertIn("Téléphone : " + synthetic_phone("0100"), draft.body)
                 self.assertFalse(draft.approvable)
                 self.assertIsNone(draft.to_recipient.email)
                 self.assertNotIn("pm" + chr(64) + TEST_DOMAIN,
@@ -826,7 +826,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 old_fingerprint = preview.json()["snapshot_fingerprint"]
                 first_body = preview.json()["drafts"][0]["body"]
                 self.assertIn("Chargé de projet : Chargé de projet Démo", first_body)
-                self.assertIn("Téléphone : 514-555-0100", first_body)
+                self.assertIn("Téléphone : " + synthetic_phone("0100"), first_body)
                 self.assertNotIn("WRONG-CONTACT-PHONE", first_body)
                 self.assertEqual(len(preview.json()["drafts"]), 1)
 
@@ -858,7 +858,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(updated.status_code, 200, updated.text)
                 self.assertNotEqual(updated.json()["snapshot_fingerprint"], old_fingerprint)
                 current_body = updated.json()["drafts"][0]["body"]
-                self.assertIn("Téléphone : 514-555-0200", current_body)
+                self.assertIn("Téléphone : " + synthetic_phone("0200"), current_body)
                 self.assertNotIn(synthetic_phone("0100"), current_body)
                 self.assertEqual(updated.json()["drafts"][0]["to_recipients"],
                                  preview.json()["drafts"][0]["to_recipients"])
