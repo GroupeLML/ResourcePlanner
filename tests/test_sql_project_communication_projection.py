@@ -58,6 +58,7 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.communication_models import CommunicationMessageRow
 from app.infrastructure.sql.operational_contact_repository import (
     SqlOperationalContactRepository,
 )
@@ -965,7 +966,13 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                 legacy_projection
                             )
                         )
-                        stored_body = batch.messages[0].body
+                        message = session.scalar(
+                            select(CommunicationMessageRow).where(
+                                CommunicationMessageRow.batch_id == batch_id
+                            )
+                        )
+                        assert message is not None
+                        stored_body = message.body
 
                     stale = client.post(
                         f"/api/v1/communications/project-batches/{batch_id}/approve"
@@ -983,10 +990,13 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                             batch.project_snapshot_json,
                             legacy_json,
                         )
-                        self.assertEqual(
-                            batch.messages[0].body,
-                            stored_body,
+                        message = session.scalar(
+                            select(CommunicationMessageRow).where(
+                                CommunicationMessageRow.batch_id == batch_id
+                            )
                         )
+                        assert message is not None
+                        self.assertEqual(message.body, stored_body)
                 finally:
                     engine.dispose()
 
