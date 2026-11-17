@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 import json
 from decimal import Decimal
 from email import policy
@@ -20,6 +20,7 @@ from app.application.communications import CommunicationTransportResult
 from app.application.security import AuthPrincipal, ROLE_ADMIN
 from app.server.security import static_auth_resolver
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
+from app.domain.project_communication_messages import project_projection_fingerprint
 from app.application.operational_contacts import OperationalContactService
 from app.application.project_communications import ProjectCommunicationService
 from app.domain.operational_contacts import (
@@ -30,6 +31,7 @@ from app.domain.operational_contacts import (
 )
 from app.infrastructure.sql import (
     AppUser,
+    AvailabilityRuleResourceClass,
     Asset,
     AssetAllocation,
     AssetRequirement,
@@ -42,6 +44,8 @@ from app.infrastructure.sql import (
     ProjectCoManager,
     RequestLine,
     Resource,
+    ResourceAvailabilityRule,
+    ResourceClassConfig,
     ResourceRequirement,
     Shift,
     TaskCatalogEntry,
@@ -510,6 +514,106 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 operational_contacts=operational,
             )
         )
+
+    def test_855_v2_standard_hours_use_canonical_availability_and_class_holiday(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add_all(
+                        [
+                            ResourceClassConfig(
+                                code="INSTALL",
+                                label="Installation",
+                                active=True,
+                            ),
+                            ResourceClassConfig(
+                                code="OTHER",
+                                label="Autre",
+                                active=True,
+                            ),
+                        ]
+                    )
+                    r1 = session.get(Resource, "R1")
+                    r2 = session.get(Resource, "R2")
+                    assert r1 is not None and r2 is not None
+                    r1.resource_class = "INSTALL"
+                    r2.resource_class = "OTHER"
+                    session.add_all(
+                        [
+                            ResourceAvailabilityRule(
+                                id="STD-R1-855",
+                                resource_id="R1",
+                                availability_type="Horaire standard",
+                                weekdays="Lun,Mar,Mer,Jeu,Ven",
+                                start_time=time(7, 0),
+                                end_time=time(14, 30),
+                                active=True,
+                            ),
+                            ResourceAvailabilityRule(
+                                id="STD-R2-855",
+                                resource_id="R2",
+                                availability_type="Horaire standard",
+                                weekdays="Lun,Mar,Mer,Jeu,Ven",
+                                start_time=time(8, 0),
+                                end_time=time(16, 0),
+                                active=True,
+                            ),
+                        ]
+                    )
+
+                with factory() as session:
+                    before = self._service(session).project_projection(
+                        week_start=WEEK
+                    )
+                self.assertEqual(before.request_provenance_version, 2)
+                before_rows = {
+                    row.resource_id: row
+                    for task in before.projects[0].days[0].tasks
+                    for row in task.request_assignments
+                }
+                self.assertEqual(before_rows["R1"].standard_hours, 7.5)
+                self.assertEqual(before_rows["R2"].standard_hours, 8.0)
+                before_fingerprint = project_projection_fingerprint(before)
+
+                with factory.begin() as session:
+                    session.add(
+                        ResourceAvailabilityRule(
+                            id="HOLIDAY-INSTALL-855",
+                            resource_id=None,
+                            availability_type="Jour férié",
+                            start_date=WEEK,
+                            end_date=WEEK,
+                            active=True,
+                        )
+                    )
+                    session.flush()
+                    session.add(
+                        AvailabilityRuleResourceClass(
+                            availability_rule_id="HOLIDAY-INSTALL-855",
+                            resource_class_code="INSTALL",
+                        )
+                    )
+
+                with factory() as session:
+                    after = self._service(session).project_projection(
+                        week_start=WEEK
+                    )
+                after_rows = {
+                    row.resource_id: row
+                    for task in after.projects[0].days[0].tasks
+                    for row in task.request_assignments
+                }
+                self.assertEqual(after_rows["R1"].standard_hours, 0.0)
+                self.assertEqual(after_rows["R2"].standard_hours, 8.0)
+                self.assertNotEqual(
+                    project_projection_fingerprint(after),
+                    before_fingerprint,
+                )
+            finally:
+                engine.dispose()
 
     def test_missing_allocation_proposals_are_not_project_assignments(self) -> None:
         with TemporaryDirectory() as directory:
