@@ -738,6 +738,52 @@ def _asset_display(value: ProjectCommunicationAsset) -> str:
     return (value.asset_code or "").strip()
 
 
+def _responsible_display(value: ContactResolution) -> str:
+    if value.status != STATUS_RESOLVED or not (value.display_name or "").strip():
+        return "Non résolu"
+    parts = [value.display_name.strip()]
+    if (value.phone or "").strip():
+        parts.append(value.phone.strip())
+    return " — ".join(parts)
+
+
+def _unique_responsibles(
+    project: ProjectCommunicationProject,
+) -> tuple[ContactResolution, ...]:
+    values: dict[tuple[object, ...], ContactResolution] = {}
+    for day in project.days:
+        for task in day.tasks:
+            for responsible in task.operational_responsibles:
+                values.setdefault(_responsible_payload(responsible), responsible)
+    return tuple(
+        values[key]
+        for key in sorted(
+            values,
+            key=lambda key: tuple("" if part is None else str(part) for part in key),
+        )
+    )
+
+
+def _distinct_resolved_responsibles(
+    project: ProjectCommunicationProject,
+) -> tuple[ContactResolution, ...]:
+    by_identity: dict[tuple[str, str], ContactResolution] = {}
+    for value in _unique_responsibles(project):
+        if value.status != STATUS_RESOLVED or not (value.display_name or "").strip():
+            continue
+        key = (value.contact_id or "", value.display_name.strip().casefold())
+        by_identity.setdefault(key, value)
+    return tuple(
+        sorted(
+            by_identity.values(),
+            key=lambda value: (
+                (value.display_name or "").casefold(),
+                value.contact_id or "",
+            ),
+        )
+    )
+
+
 def _display_resource_name(value: str) -> str:
     cleaned = str(value or "").strip()
     matched = _EMPLOYEE_NUMBER_PREFIX.match(cleaned)
@@ -839,6 +885,8 @@ def _contact_lines(project: ProjectCommunicationProject) -> tuple[str, ...]:
 
 def _shift_resource_line(
     assignment: ProjectCommunicationRequestAssignment,
+    *,
+    responsible: ContactResolution | None = None,
 ) -> str:
     text = _display_resource_name(assignment.resource_name)
     if (
@@ -859,6 +907,8 @@ def _shift_resource_line(
     )
     if asset_codes:
         text += f" ({' / '.join(asset_codes)})"
+    if responsible is not None:
+        text += f" — Responsable : {_responsible_display(responsible)}"
     return text
 
 
@@ -866,13 +916,19 @@ def _day_schedule_lines(
     day: ProjectCommunicationDay,
     *,
     show_request_groups: bool,
+    show_assignment_responsible: bool,
 ) -> tuple[ProjectMessageLine, ...]:
     grouped: dict[
         tuple[str | None, str | None],
         list[tuple[ProjectCommunicationTask, ProjectCommunicationRequestAssignment]],
     ] = {}
+    responsible_by_shift: dict[str, ContactResolution] = {}
     legacy_resources: list[ProjectCommunicationResource] = []
     for task in day.tasks:
+        for responsibility in task.responsibility_assignments:
+            responsible_by_shift[responsibility.shift_id] = (
+                responsibility.operational_responsible
+            )
         if task.request_assignments:
             for assignment in task.request_assignments:
                 grouped.setdefault(_request_key(assignment), []).append(
@@ -905,7 +961,19 @@ def _day_schedule_lines(
                 value[1].shift_id,
             ),
         ):
-            lines.append(_line("bullet", _shift_resource_line(assignment)))
+            lines.append(
+                _line(
+                    "bullet",
+                    _shift_resource_line(
+                        assignment,
+                        responsible=(
+                            responsible_by_shift.get(assignment.shift_id)
+                            if show_assignment_responsible
+                            else None
+                        ),
+                    ),
+                )
+            )
 
     # Historical snapshots without Shift provenance stay renderable without
     # inventing standard hours or Shift assets that were never persisted.
@@ -946,6 +1014,20 @@ def _project_semantic_message(
     if project.project_manager_erp_phone:
         lines.append(_line("text", project.project_manager_erp_phone))
 
+    resolved_responsibles = _distinct_resolved_responsibles(project)
+    if len(resolved_responsibles) == 1:
+        responsible = resolved_responsibles[0]
+        if (
+            (responsible.display_name or "").strip().casefold()
+            != project.project_manager.display_name.strip().casefold()
+        ):
+            lines.append(
+                _line(
+                    "text",
+                    f"Responsable opérationnel : {_responsible_display(responsible)}",
+                )
+            )
+
     lines.extend((_line("blank"), _line("section", "Description")))
     for value in _description_lines(project):
         lines.append(_line("text", value))
@@ -956,12 +1038,14 @@ def _project_semantic_message(
 
     lines.extend((_line("blank"), _line("section", "Horaire")))
     show_request_groups = len(_project_request_groups(project)) > 1
+    show_assignment_responsible = len(resolved_responsibles) > 1
     for day in project.days:
         lines.append(_line("blank"))
         lines.extend(
             _day_schedule_lines(
                 day,
                 show_request_groups=show_request_groups,
+                show_assignment_responsible=show_assignment_responsible,
             )
         )
 
