@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, true
 from sqlalchemy.orm import Session
 
 from ...application.operational_contacts import OperationalContactService
@@ -433,7 +433,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
 
         availability_rules = self._session.scalars(
             select(ResourceAvailabilityRule).where(
-                ResourceAvailabilityRule.active.is_(True)
+                ResourceAvailabilityRule.active == true()
             )
         ).all()
         availability_class_codes = availability_class_codes_by_rule(
