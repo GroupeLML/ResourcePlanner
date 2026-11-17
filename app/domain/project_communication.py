@@ -56,6 +56,7 @@ class ProjectCommunicationAssignment:
     site_contact_name: str | None = None
     site_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
+    standard_hours: float | None = None
     diagnostics: tuple[str, ...] = ()
     project_manager_erp_phone: str | None = None
 
@@ -93,6 +94,31 @@ class ProjectCommunicationRequestAssignment:
     hours: float
     site_contact_name: str | None
     site_contact_phone: str | None
+    assets: tuple[ProjectCommunicationAsset, ...] = ()
+    standard_hours: float | None = None
+
+
+_EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS = frozenset(
+    {
+        "OWNED_SHIFT",
+        "INHERITED_REQUEST",
+        "INHERITED_RESOURCE_PERIOD",
+        "INHERITED_PROJECT_DIRECT",
+        "INHERITED_SEGMENT",
+    }
+)
+
+
+def employee_assigned_assets(
+    assignment: ProjectCommunicationRequestAssignment,
+) -> tuple[ProjectCommunicationAsset, ...]:
+    """Return only asset associations that canonically assign an operator to this Shift."""
+
+    return tuple(
+        asset
+        for asset in assignment.assets
+        if asset.association_kind in _EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,8 +185,16 @@ def build_project_communication_projection(
     week_start: date,
     week_end: date,
     assignments: Sequence[ProjectCommunicationAssignment],
+    request_provenance_version: int = 1,
 ) -> ProjectCommunicationProjection:
     """Group authoritative shifts as Project -> Date -> Task -> assigned resources."""
+
+    if request_provenance_version not in (1, 2):
+        raise ValueError("Version de provenance chantier non prise en charge")
+    if request_provenance_version == 2:
+        for row in assignments:
+            if row.standard_hours is None:
+                raise ValueError("Heures standard manquantes pour la provenance v2")
 
     projects: dict[str, dict[str, object]] = {}
     global_diagnostics: list[str] = []
@@ -245,6 +279,8 @@ def build_project_communication_projection(
                 hours=row.hours,
                 site_contact_name=row.site_contact_name,
                 site_contact_phone=row.site_contact_phone,
+                assets=tuple(row.assets),
+                standard_hours=row.standard_hours,
             )
         )
         task["responsibility_assignments"].append(
@@ -382,7 +418,7 @@ def build_project_communication_projection(
         week_start=week_start,
         week_end=week_end,
         projects=tuple(projected_projects),
-        request_provenance_version=1,
+        request_provenance_version=request_provenance_version,
         request_provenance_complete=True,
         diagnostics=_unique(global_diagnostics),
     )
