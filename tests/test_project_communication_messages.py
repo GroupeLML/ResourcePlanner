@@ -6,7 +6,11 @@ import json
 import unittest
 from unittest.mock import patch
 
-from app.domain.operational_contacts import ContactResolution, STATUS_RESOLVED
+from app.domain.operational_contacts import (
+    ContactResolution,
+    SOURCE_PROJECT_MANAGER,
+    STATUS_RESOLVED,
+)
 from app.domain.project_communication import (
     ProjectCommunicationAsset,
     ProjectCommunicationDay,
@@ -939,6 +943,193 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             },
             {("S-R1", "R1", "C-A"), ("S-R2", "R2", "C-B")},
         )
+
+    def test_855_p2_binds_shift_hours_to_responsibility_semantics(self) -> None:
+        employee = replace(
+            resource("R1", "Alice", address=email("alice"), hours=8.0),
+            shift_ids=("S-A", "S-B"),
+        )
+        responsible_a = responsible("Responsable A", contact_id="C-A")
+        responsible_b = responsible("Responsable B", contact_id="C-B")
+        base_project = project(resources=(employee,))
+        base_task = base_project.days[0].tasks[0]
+
+        def snapshot(
+            *,
+            first_hours: float,
+            second_hours: float,
+            shift_ids: tuple[str, str] = ("S-A", "S-B"),
+            version: int = 2,
+        ) -> ProjectCommunicationProjection:
+            first_shift, second_shift = shift_ids
+            task = replace(
+                base_task,
+                resources=(replace(employee, shift_ids=shift_ids),),
+                operational_responsibles=(responsible_a, responsible_b),
+                responsibility_assignments=(
+                    ProjectCommunicationResponsibilityAssignment(
+                        shift_id=first_shift,
+                        resource_id="R1",
+                        resource_name="Alice",
+                        operational_responsible=responsible_a,
+                    ),
+                    ProjectCommunicationResponsibilityAssignment(
+                        shift_id=second_shift,
+                        resource_id="R1",
+                        resource_name="Alice",
+                        operational_responsible=responsible_b,
+                    ),
+                ),
+                request_assignments=(
+                    ProjectCommunicationRequestAssignment(
+                        shift_id=first_shift,
+                        requirement_id="REQ-A",
+                        workforce_request_id="D1",
+                        request_number="DMO-1",
+                        resource_id="R1",
+                        resource_name="Alice",
+                        hours=first_hours,
+                        site_contact_name=None,
+                        site_contact_phone=None,
+                        assets=(),
+                        standard_hours=8.0 if version == 2 else None,
+                    ),
+                    ProjectCommunicationRequestAssignment(
+                        shift_id=second_shift,
+                        requirement_id="REQ-B",
+                        workforce_request_id="D1",
+                        request_number="DMO-1",
+                        resource_id="R1",
+                        resource_name="Alice",
+                        hours=second_hours,
+                        site_contact_name=None,
+                        site_contact_phone=None,
+                        assets=(),
+                        standard_hours=8.0 if version == 2 else None,
+                    ),
+                ),
+            )
+            return ProjectCommunicationProjection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                projects=(
+                    replace(
+                        base_project,
+                        days=(
+                            ProjectCommunicationDay(
+                                day=WEEK,
+                                tasks=(task,),
+                            ),
+                        ),
+                    ),
+                ),
+                request_provenance_version=version,
+                request_provenance_complete=True,
+            )
+
+        before = snapshot(first_hours=3.0, second_hours=5.0)
+        after = snapshot(first_hours=5.0, second_hours=3.0)
+
+        self.assertNotEqual(
+            project_projection_fingerprint(before),
+            project_projection_fingerprint(after),
+        )
+        changes = compare_project_communication_projections(before, after)
+        self.assertEqual(
+            [(row.project_id, row.kind) for row in changes],
+            [("P1", "modified")],
+        )
+        before_batch = build_project_confirmation_batch(before)
+        after_batch = build_project_confirmation_batch(after)
+        self.assertNotEqual(
+            before_batch.drafts[0].body,
+            after_batch.drafts[0].body,
+        )
+        self.assertNotEqual(
+            before_batch.drafts[0].body_html,
+            after_batch.drafts[0].body_html,
+        )
+        self.assertEqual(
+            before_batch.drafts[0].to_recipients,
+            after_batch.drafts[0].to_recipients,
+        )
+        self.assertEqual(
+            before_batch.drafts[0].cc_recipients,
+            after_batch.drafts[0].cc_recipients,
+        )
+
+        rebuilt = snapshot(
+            first_hours=3.0,
+            second_hours=5.0,
+            shift_ids=("S-REBUILT-A", "S-REBUILT-B"),
+        )
+        self.assertEqual(
+            project_projection_fingerprint(before),
+            project_projection_fingerprint(rebuilt),
+        )
+        self.assertEqual(
+            compare_project_communication_projections(before, rebuilt),
+            (),
+        )
+
+        before_v1 = snapshot(
+            first_hours=3.0,
+            second_hours=5.0,
+            version=1,
+        )
+        after_v1 = snapshot(
+            first_hours=5.0,
+            second_hours=3.0,
+            version=1,
+        )
+        self.assertEqual(
+            project_projection_fingerprint(before_v1),
+            project_projection_fingerprint(after_v1),
+        )
+        self.assertEqual(
+            compare_project_communication_projections(before_v1, after_v1),
+            (),
+        )
+
+    def test_855_responsibility_redundancy_requires_canonical_manager_provenance(self) -> None:
+        manager_fallback = ContactResolution(
+            status=STATUS_RESOLVED,
+            contact_id="C-PM",
+            display_name="Chargé Démo",
+            email=None,
+            phone=None,
+            source_type=SOURCE_PROJECT_MANAGER,
+            source_entity_id="P1",
+        )
+        fallback = build_project_confirmation_batch(
+            projection(
+                project(
+                    responsible_contact=manager_fallback,
+                )
+            )
+        ).drafts[0]
+        self.assertNotIn("Responsable opérationnel :", fallback.body)
+
+        same_name_distinct_identity = ContactResolution(
+            status=STATUS_RESOLVED,
+            contact_id="C-DISTINCT",
+            display_name="Chargé Démo",
+            email=None,
+            phone=None,
+            source_type="TASK_RESPONSIBLE",
+            source_entity_id="TASK-1",
+        )
+        distinct = build_project_confirmation_batch(
+            projection(
+                project(
+                    responsible_contact=same_name_distinct_identity,
+                )
+            )
+        ).drafts[0]
+        expected = "Responsable opérationnel : Chargé Démo"
+        self.assertIn(expected, distinct.body)
+        self.assertIsNotNone(distinct.body_html)
+        self.assertIn(expected, distinct.body_html or "")
 
     def test_responsibility_reassignment_changes_fingerprint_without_recipient_change(self) -> None:
         alice = resource("R1", "Alice", address=email("alice"))
