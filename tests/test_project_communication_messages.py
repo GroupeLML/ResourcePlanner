@@ -31,6 +31,7 @@ from app.domain.project_communication_messages import (
     deserialize_project_projection,
     french_long_date,
     project_projection_fingerprint,
+    render_project_review_html,
     serialize_project_projection,
 )
 
@@ -230,6 +231,25 @@ def projection(*projects: ProjectCommunicationProject) -> ProjectCommunicationPr
     )
 
 class ProjectCommunicationMessageTests(unittest.TestCase):
+    def test_855_semantic_renderer_emits_corresponding_escaped_html(self) -> None:
+        source = replace(
+            project(resources=(resource("R1", "Alice <Tech>", address=email("alice")),)),
+            project_name="Projet <Alpha> & Beta",
+        )
+        draft = build_project_confirmation_batch(projection(source)).drafts[0]
+
+        self.assertIn("Projet <Alpha> & Beta", draft.body)
+        self.assertIn("Alice <Tech>", draft.body)
+        self.assertIsNotNone(draft.body_html)
+        assert draft.body_html is not None
+        self.assertIn("Projet &lt;Alpha&gt; &amp; Beta", draft.body_html)
+        self.assertIn("Alice &lt;Tech&gt;", draft.body_html)
+        self.assertNotIn("Projet <Alpha>", draft.body_html)
+        self.assertEqual(
+            render_project_review_html("Texte <édité> & sûr"),
+            "<div><div>Texte &lt;édité&gt; &amp; sûr</div></div>",
+        )
+
     def test_resource_line_without_asset_is_unchanged(self) -> None:
         batch = build_project_confirmation_batch(
             projection(
