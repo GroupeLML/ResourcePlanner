@@ -20,6 +20,7 @@ from app.application.communications import CommunicationTransportResult
 from app.application.security import AuthPrincipal, ROLE_ADMIN
 from app.server.security import static_auth_resolver
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
+from app.domain.project_communication import employee_assigned_assets
 from app.domain.project_communication_messages import project_projection_fingerprint
 from app.application.operational_contacts import OperationalContactService
 from app.application.project_communications import ProjectCommunicationService
@@ -1979,6 +1980,44 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                             for row in r1_rows
                             for asset in row.assets
                         },
+                    )
+
+                    immutable = ProjectCommunicationService(
+                        repository
+                    ).project_projection(week_start=WEEK)
+                    self.assertEqual(immutable.request_provenance_version, 2)
+                    shift_rows = {
+                        item.shift_id: item
+                        for day in immutable.projects[0].days
+                        for task in day.tasks
+                        for item in task.request_assignments
+                    }
+                    self.assertEqual(
+                        {
+                            asset.asset_label
+                            for asset in shift_rows["S1"].assets
+                        },
+                        {"Nacelle 708B", "Camion 708B", "Actif demande 843"},
+                    )
+                    self.assertEqual(
+                        {
+                            asset.association_kind
+                            for asset in shift_rows["S1"].assets
+                        },
+                        {
+                            "OWNED_SHIFT",
+                            "INHERITED_RESOURCE_PERIOD",
+                            "INHERITED_REQUEST",
+                        },
+                    )
+                    self.assertEqual(
+                        {
+                            asset.asset_code
+                            for asset in employee_assigned_assets(
+                                shift_rows["S1"]
+                            )
+                        },
+                        {"EQ-708B", "V-708B", "REQ-843"},
                     )
 
                     projection = ProjectCommunicationService(
