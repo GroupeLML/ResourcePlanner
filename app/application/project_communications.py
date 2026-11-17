@@ -362,11 +362,17 @@ class ProjectCommunicationService:
             return draft, True
         subject = draft.subject if review.subject is None else review.subject.strip()
         body = draft.body if review.body is None else review.body.strip()
-        body_html = (
-            draft.body_html
-            if body == draft.body
-            else render_project_review_html(body)
-        )
+        try:
+            body_html = (
+                draft.body_html
+                if body == draft.body
+                else render_project_review_html(body)
+            )
+        except ValueError as exc:
+            raise ApplicationValidationError(
+                str(exc),
+                code="project_communication_review_template_invalid",
+            ) from exc
         if (
             subject == draft.subject
             and body == draft.body
