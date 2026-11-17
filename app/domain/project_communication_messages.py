@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 import hashlib
 import json
+import math
 from typing import Sequence
 
 from .operational_contacts import ContactResolution, STATUS_RESOLVED
@@ -234,8 +235,10 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
 
 
 def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
-    if projection.request_provenance_version != 1 or not projection.request_provenance_complete:
-        raise ValueError("Provenance chantier courante absente ou non prise en charge")
+    version = projection.request_provenance_version
+    if version not in (1, 2) or not projection.request_provenance_complete:
+        raise ValueError("Version ou couverture de provenance chantier invalide")
+
     seen: set[str] = set()
     for project in projection.projects:
         for day in project.days:
@@ -246,14 +249,20 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                     for shift_id in resource.shift_ids
                 }
                 actual: set[str] = set()
+                hours_by_resource: dict[str, float] = {}
                 for assignment in task.request_assignments:
                     if not assignment.shift_id or assignment.shift_id in seen:
                         raise ValueError("Shift de provenance manquant ou dupliqué")
-                    if (not assignment.requirement_id or not assignment.resource_id or
-                        assignment.hours <= 0):
+                    if (
+                        not assignment.requirement_id
+                        or not assignment.resource_id
+                        or not math.isfinite(float(assignment.hours))
+                        or assignment.hours <= 0
+                    ):
                         raise ValueError("Attribution chantier invalide")
                     if not assignment.workforce_request_id and (
-                        assignment.request_number or assignment.site_contact_name
+                        assignment.request_number
+                        or assignment.site_contact_name
                         or assignment.site_contact_phone
                     ):
                         raise ValueError("Contact chantier sans provenance demande")
@@ -263,10 +272,43 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                         for resource in task.resources
                     ):
                         raise ValueError("Ressource de provenance incohérente")
+                    if version == 2:
+                        standard_hours = assignment.standard_hours
+                        if (
+                            standard_hours is None
+                            or not math.isfinite(float(standard_hours))
+                            or float(standard_hours) < 0
+                        ):
+                            raise ValueError(
+                                "Heures standard v2 manquantes ou invalides"
+                            )
+                        if not isinstance(assignment.assets, tuple):
+                            raise ValueError("Actifs Shift v2 non explicites")
+                        if any(
+                            not asset.association_kind
+                            for asset in assignment.assets
+                        ):
+                            raise ValueError(
+                                "Provenance d'association d'actif v2 manquante"
+                            )
+                        hours_by_resource[assignment.resource_id] = round(
+                            hours_by_resource.get(assignment.resource_id, 0.0)
+                            + float(assignment.hours),
+                            2,
+                        )
                     actual.add(assignment.shift_id)
                     seen.add(assignment.shift_id)
                 if actual != expected:
                     raise ValueError("Couverture de provenance chantier incomplète")
+                if version == 2:
+                    for resource in task.resources:
+                        if round(float(resource.hours), 2) != hours_by_resource.get(
+                            resource.resource_id,
+                            0.0,
+                        ):
+                            raise ValueError(
+                                "Heures Shift v2 incohérentes avec le total ressource"
+                            )
 
 
 def _contact_semantics(project: ProjectCommunicationProject) -> tuple[object, ...]:
@@ -295,6 +337,47 @@ def _contact_semantics(project: ProjectCommunicationProject) -> tuple[object, ..
     return tuple(days)
 
 
+def _shift_v2_semantics(
+    project: ProjectCommunicationProject,
+) -> tuple[object, ...]:
+    """Capture complete Shift communication facts without physical Shift/requirement IDs."""
+
+    days: list[object] = []
+    for day in project.days:
+        tasks: list[object] = []
+        for task in day.tasks:
+            assignments = tuple(
+                sorted(
+                    (
+                        (
+                            row.workforce_request_id,
+                            row.request_number,
+                            row.resource_id,
+                            row.resource_name,
+                            round(float(row.hours), 2),
+                            round(float(row.standard_hours or 0.0), 2),
+                            tuple(
+                                sorted(
+                                    (_asset_payload(asset) for asset in row.assets),
+                                    key=repr,
+                                )
+                            ),
+                        )
+                        for row in task.request_assignments
+                    ),
+                    key=repr,
+                )
+            )
+            tasks.append(
+                (
+                    task.task_description.strip().casefold(),
+                    assignments,
+                )
+            )
+        days.append((day.day.isoformat(), tuple(tasks)))
+    return tuple(days)
+
+
 def _has_site_contact(project: ProjectCommunicationProject) -> bool:
     return any(
         row.site_contact_name or row.site_contact_phone
@@ -316,6 +399,15 @@ def _project_semantic_payload(
     )
 
 
+def _project_v2_semantic_payload(
+    project: ProjectCommunicationProject,
+) -> tuple[object, ...]:
+    return (
+        _project_semantic_payload(project, include_provenance=True),
+        ("shift_provenance_v2", _shift_v2_semantics(project)),
+    )
+
+
 def _fingerprint_payload(payload: object) -> str:
     encoded = json.dumps(
         payload,
@@ -328,20 +420,35 @@ def _fingerprint_payload(payload: object) -> str:
 def project_projection_fingerprint(
     projection: ProjectCommunicationProjection,
 ) -> str:
-    if projection.request_provenance_version is not None:
+    version = projection.request_provenance_version
+    if version is not None:
         _validate_provenance(projection)
-    return _fingerprint_payload(
-        (
+
+    if version == 2:
+        payload = (
+            "project_provenance_v2",
             projection.week_start.isoformat(),
             projection.week_end.isoformat(),
             tuple(
-                _project_semantic_payload(project, include_provenance=True)
-                if projection.request_provenance_version == 1 else _project_payload(project)
+                _project_v2_semantic_payload(project)
                 for project in projection.projects
             ),
             tuple(projection.diagnostics),
         )
-    )
+    else:
+        # Preserve the historical P0/P1 algorithms exactly.
+        payload = (
+            projection.week_start.isoformat(),
+            projection.week_end.isoformat(),
+            tuple(
+                _project_semantic_payload(project, include_provenance=True)
+                if version == 1
+                else _project_payload(project)
+                for project in projection.projects
+            ),
+            tuple(projection.diagnostics),
+        )
+    return _fingerprint_payload(payload)
 
 
 def _diagnostic(
