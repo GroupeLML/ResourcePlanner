@@ -9,7 +9,11 @@ import math
 import re
 from typing import Sequence
 
-from .operational_contacts import ContactResolution, STATUS_RESOLVED
+from .operational_contacts import (
+    ContactResolution,
+    SOURCE_PROJECT_MANAGER,
+    STATUS_RESOLVED,
+)
 from .project_communication import (
     ProjectCommunicationAsset,
     ProjectCommunicationDay,
@@ -361,6 +365,10 @@ def _shift_v2_semantics(
     for day in project.days:
         tasks: list[object] = []
         for task in day.tasks:
+            responsibility_by_shift = {
+                assignment.shift_id: assignment.operational_responsible
+                for assignment in task.responsibility_assignments
+            }
             assignments = tuple(
                 sorted(
                     (
@@ -379,6 +387,13 @@ def _shift_v2_semantics(
                                     ),
                                     key=repr,
                                 )
+                            ),
+                            (
+                                _responsible_payload(
+                                    responsibility_by_shift[row.shift_id]
+                                )
+                                if row.shift_id in responsibility_by_shift
+                                else None
                             ),
                         )
                         for row in task.request_assignments
@@ -1017,10 +1032,14 @@ def _project_semantic_message(
     resolved_responsibles = _distinct_resolved_responsibles(project)
     if len(resolved_responsibles) == 1:
         responsible = resolved_responsibles[0]
-        if (
-            (responsible.display_name or "").strip().casefold()
-            != project.project_manager.display_name.strip().casefold()
-        ):
+        manager_contact_id = project.project_manager.contact_id
+        is_manager_fallback = (
+            responsible.source_type == SOURCE_PROJECT_MANAGER
+            and responsible.source_entity_id == project.project_id
+            and manager_contact_id is not None
+            and responsible.contact_id == manager_contact_id
+        )
+        if not is_manager_fallback:
             lines.append(
                 _line(
                     "text",
