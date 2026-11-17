@@ -84,6 +84,7 @@ class FakeSmtpDeliveryClient:
     def __init__(self) -> None:
         self.attempt_subjects: list[str] = []
         self.attempt_bodies: list[str] = []
+        self.attempt_html: list[str | None] = []
         self.attempt_cc: list[tuple[str, ...]] = []
         self._failed_once = False
 
@@ -93,6 +94,7 @@ class FakeSmtpDeliveryClient:
     def send_message(self, configuration, message, *, message_id: str) -> str:
         self.attempt_subjects.append(message.subject)
         self.attempt_bodies.append(message.body)
+        self.attempt_html.append(message.body_html)
         self.attempt_cc.append(tuple(message.cc_emails))
         if "2000" in message.subject and not self._failed_once:
             self._failed_once = True
@@ -2383,6 +2385,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(preview.status_code, 200, preview.text)
                 original_fingerprint = preview.json()["snapshot_fingerprint"]
                 original_body = preview.json()["drafts"][0]["body"]
+                original_html = preview.json()["drafts"][0]["body_html"]
+                self.assertIsNotNone(original_html)
                 self.assertIn("Demande DMO-290A-1", original_body)
                 self.assertIn("Contact chantier : Jean Tremblay — 555-0101", original_body)
 
@@ -2397,6 +2401,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(prepared.status_code, 201, prepared.text)
                 batch_id = prepared.json()["id"]
                 self.assertEqual(prepared.json()["messages"][0]["body"], original_body)
+                self.assertEqual(prepared.json()["messages"][0]["body_html"], original_html)
 
                 engine = create_sql_engine(database_url)
                 factory = create_session_factory(engine)
@@ -2440,7 +2445,9 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(reloaded.status_code, 200, reloaded.text)
                 stored = next(row for row in reloaded.json() if row["id"] == batch_id)
                 self.assertEqual(stored["messages"][0]["body"], original_body)
+                self.assertEqual(stored["messages"][0]["body_html"], original_html)
                 self.assertNotIn("Pierre Gagnon", stored["messages"][0]["body"])
+                self.assertNotIn("Pierre Gagnon", stored["messages"][0]["body_html"])
 
 
     def test_830_canonical_contact_patch_preserves_populated_approved_plan_and_cas(self) -> None:
@@ -2686,11 +2693,79 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             mime["Cc"],
             ", ".join(transport.messages[0].cc_emails),
         )
+        self.assertTrue(mime.is_multipart())
+        parts = list(mime.iter_parts())
         self.assertEqual(
-            mime.get_content().replace("\r\n", "\n").rstrip("\n"),
+            [part.get_content_type() for part in parts],
+            ["text/plain", "text/html"],
+        )
+        self.assertEqual(
+            parts[0].get_content().replace("\r\n", "\n").rstrip("\n"),
             transport.messages[0].body.replace("\r\n", "\n").rstrip("\n"),
         )
+        self.assertEqual(
+            parts[1].get_content().strip(),
+            transport.messages[0].body_html,
+        )
 
+
+    def test_855_manual_review_regenerates_html_and_rejects_client_html_authority(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                draft = preview.json()["drafts"][0]
+                original_fingerprint = draft["content_fingerprint"]
+
+                edited = "Texte révisé <sécurisé> & conservé"
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "subject": draft["subject"],
+                                "body": edited,
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = prepared.json()["messages"][0]
+                self.assertEqual(message["body"], edited)
+                self.assertIn(
+                    "Texte révisé &lt;sécurisé&gt; &amp; conservé",
+                    message["body_html"],
+                )
+                self.assertNotIn("<sécurisé>", message["body_html"])
+                self.assertNotEqual(message["content_fingerprint"], original_fingerprint)
+
+                rejected = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "body": draft["body"],
+                                "body_html": "<script>client authority</script>",
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(rejected.status_code, 422, rejected.text)
 
     def test_project_batch_subset_excludes_unchecked_messages_from_graph_and_smtp(self) -> None:
         with TemporaryDirectory() as directory:
