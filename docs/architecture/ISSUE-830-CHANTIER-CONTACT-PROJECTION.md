@@ -15,3 +15,20 @@ Accepted Architect review: B — ACCEPT WITH CONDITIONS (2026-11-13).
 - SQL Server is the authoritative validation environment under ADR-011; a skipped live SQL Server test is not a pass.
 - Frozen SQLite 0048 bridge/cutover schema needs explicit compatibility validation and may not have the new contact columns. Do not relax unrelated schema checks.
 - Final typography, mobile layout, hour/asset redesign and exact emphasis are owned by #855; ERP manager telephone is owned by #831.
+
+
+## #855 cumulative provenance v2
+
+#855 extends, but does not replace, the #830 request/contact contract.
+
+- `request_provenance_version=1` continues to mean complete request/contact provenance as originally accepted for #830.
+- `request_provenance_version=2` is cumulative: v1 request/contact provenance plus explicit per-Shift asset associations and canonical applicable standard hours.
+- `request_provenance_complete=True` remains a separate completeness proof.
+- Historical no-version/v1 snapshots are restored only from their stored JSON and are never enriched from current demands, assets, schedules, or other live tables.
+- P0/P1 serialization and fingerprint semantics remain historical compatibility contracts.
+- Comparing a no-version/v1 communicated baseline to a current v2 projection conservatively marks each continuing project modified once; removals use only stored historical facts.
+- Unknown, malformed, incomplete, or downgraded capability combinations fail closed.
+- Prepared/approved pre-v2 batches are incompatible with current v2 semantics and must be cancelled/re-prepared; stored bodies and historical fingerprints are never upgraded in place.
+- #830 remains the sole authority for chantier-contact ownership and request→Shift/resource correspondence. #855 adds no chantier-contact storage or alternate grouping authority.
+
+See ADR-036 for the complete v2 asset/standard-hours and staleness contract.
