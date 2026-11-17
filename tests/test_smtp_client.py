@@ -117,6 +117,8 @@ class SmtpClientTests(unittest.TestCase):
             sent["Message-ID"],
             "<fixture-message" + chr(64) + "local.invalid>",
         )
+        self.assertFalse(sent.is_multipart())
+        self.assertEqual(sent.get_content_type(), "text/plain")
 
     def test_html_send_builds_multipart_alternative_with_text_first(self) -> None:
         connection = FakeSmtpConnection()
