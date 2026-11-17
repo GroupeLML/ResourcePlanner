@@ -2858,10 +2858,9 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
     await expect(body).toHaveValue(/Travaux planifiés/);
     await expect(body).toHaveValue(/Alice/);
     await expect(body).toHaveValue(/1 h/);
-    await expect(body).toHaveValue(/Actif :/);
     const previewText = await body.inputValue();
-    expect(previewText).toContain("Actif :");
-    expect(previewText).toContain(refreshedCommunicationAsset!.code);
+    expect(previewText).not.toContain("Actif :");
+    expect(previewText).toContain("(" + refreshedCommunicationAsset!.code + ")");
   } finally {
     if (allocationId) {
       const cleanup = await page.request.delete(
