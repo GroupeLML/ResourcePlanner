@@ -1087,6 +1087,12 @@ def _semantic_from_review_body(body: str) -> ProjectMessageSemantic:
     return ProjectMessageSemantic(lines=tuple(semantic))
 
 
+def project_review_structure_signature(body: str) -> tuple[str, ...]:
+    """Return the template structure that a manual review is allowed to preserve."""
+
+    return tuple(line.kind for line in _semantic_from_review_body(body).lines)
+
+
 def render_project_review_html(body: str) -> str:
     """Regenerate safe HTML while preserving the mandatory project template."""
 
