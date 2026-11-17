@@ -21,7 +21,10 @@ from app.application.security import AuthPrincipal, ROLE_ADMIN
 from app.server.security import static_auth_resolver
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.domain.project_communication import employee_assigned_assets
-from app.domain.project_communication_messages import project_projection_fingerprint
+from app.domain.project_communication_messages import (
+    deserialize_project_projection,
+    project_projection_fingerprint,
+)
 from app.application.operational_contacts import OperationalContactService
 from app.application.project_communications import ProjectCommunicationService
 from app.domain.operational_contacts import (
@@ -903,6 +906,89 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 ))
             finally:
                 engine.dispose()
+
+    def test_855_pre_v2_prepared_batch_is_stale_and_not_upgraded_in_place(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()[
+                            "snapshot_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                batch_id = prepared.json()["id"]
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        batch = session.get(CommunicationBatchRow, batch_id)
+                        assert batch is not None
+                        assert batch.project_snapshot_json is not None
+                        legacy = json.loads(batch.project_snapshot_json)
+                        legacy["request_provenance_version"] = 1
+                        for project in legacy["projects"]:
+                            for day in project["days"]:
+                                for task in day["tasks"]:
+                                    for assignment in (
+                                        task.get("request_assignments") or ()
+                                    ):
+                                        assignment.pop("assets", None)
+                                        assignment.pop("standard_hours", None)
+                        legacy_json = json.dumps(
+                            legacy,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                        legacy_projection = deserialize_project_projection(
+                            legacy_json
+                        )
+                        batch.project_snapshot_json = legacy_json
+                        batch.snapshot_fingerprint = (
+                            project_projection_fingerprint(
+                                legacy_projection
+                            )
+                        )
+                        stored_body = batch.messages[0].body
+
+                    stale = client.post(
+                        f"/api/v1/communications/project-batches/{batch_id}/approve"
+                    )
+                    self.assertEqual(stale.status_code, 409, stale.text)
+                    self.assertEqual(
+                        stale.json()["error"]["code"],
+                        "project_communication_batch_stale",
+                    )
+
+                    with factory() as session:
+                        batch = session.get(CommunicationBatchRow, batch_id)
+                        assert batch is not None
+                        self.assertEqual(
+                            batch.project_snapshot_json,
+                            legacy_json,
+                        )
+                        self.assertEqual(
+                            batch.messages[0].body,
+                            stored_body,
+                        )
+                finally:
+                    engine.dispose()
 
     def test_831_preview_prepared_stale_and_graph_smtp_use_persisted_body(self) -> None:
         with TemporaryDirectory() as directory:
