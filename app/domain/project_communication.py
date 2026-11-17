@@ -109,16 +109,18 @@ _EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS = frozenset(
 )
 
 
+def is_employee_assigned_asset(asset: ProjectCommunicationAsset) -> bool:
+    """Return whether a canonical association establishes an operator for a Shift."""
+
+    return asset.association_kind in _EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS
+
+
 def employee_assigned_assets(
     assignment: ProjectCommunicationRequestAssignment,
 ) -> tuple[ProjectCommunicationAsset, ...]:
     """Return only asset associations that canonically assign an operator to this Shift."""
 
-    return tuple(
-        asset
-        for asset in assignment.assets
-        if asset.association_kind in _EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS
-    )
+    return tuple(asset for asset in assignment.assets if is_employee_assigned_asset(asset))
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,7 +317,8 @@ def build_project_communication_projection(
         resource["confirmations"].append(row.confirmation)
         resource["outside_schedule"] = bool(resource["outside_schedule"]) or bool(row.outside_schedule)
         for asset in row.assets:
-            resource["assets"].setdefault(asset.allocation_id, asset)
+            if is_employee_assigned_asset(asset):
+                resource["assets"].setdefault(asset.allocation_id, asset)
         resource["diagnostics"].extend(row.resource_contact.diagnostics)
         resource["diagnostics"].extend(row.diagnostics)
 
