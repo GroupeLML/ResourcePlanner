@@ -735,7 +735,7 @@ def _line(kind: str, text: str = "") -> ProjectMessageLine:
 
 
 def _asset_display(value: ProjectCommunicationAsset) -> str:
-    return (value.asset_code or value.asset_id).strip()
+    return (value.asset_code or "").strip()
 
 
 def _display_resource_name(value: str) -> str:
