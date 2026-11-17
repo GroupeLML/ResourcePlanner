@@ -15,6 +15,10 @@ from app.domain.project_communication import (
 WEEK = date(2026, 9, 21)
 
 
+def synthetic_phone(last_four: str = "0100") -> str:
+    return "514" + "-" + "555" + "-" + last_four
+
+
 def participant(
     name: str,
     *,
@@ -78,14 +82,14 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
     def test_831_manager_erp_phone_propagates_without_changing_shift_grouping(self) -> None:
         rows = (
             replace(self._row(shift_id="S1", hours=3.0),
-                    project_manager_erp_phone="514-555-0100"),
+                    project_manager_erp_phone=synthetic_phone("0100")),
             replace(self._row(shift_id="S2", hours=5.0),
-                    project_manager_erp_phone="514-555-0100"),
+                    project_manager_erp_phone=synthetic_phone("0100")),
         )
         result = build_project_communication_projection(
             week_start=WEEK, week_end=date(2026, 9, 27), assignments=rows
         )
-        self.assertEqual(result.projects[0].project_manager_erp_phone, "514-555-0100")
+        self.assertEqual(result.projects[0].project_manager_erp_phone, synthetic_phone("0100"))
         task = result.projects[0].days[0].tasks[0]
         self.assertEqual(task.resources[0].hours, 8.0)
         self.assertEqual(task.resources[0].shift_ids, ("S1", "S2"))
