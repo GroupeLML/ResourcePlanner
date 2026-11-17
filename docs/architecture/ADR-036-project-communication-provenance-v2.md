@@ -73,7 +73,7 @@ P0 and P1 fingerprint algorithms remain unchanged.
 
 P2/v2 adds an explicit semantic extension that captures the deterministic per-Shift mapping between date/work/request, resource, Shift hours, applicable standard hours, Shift-specific employee asset associations, and the resolved operational-responsibility semantics for that same Shift. The physical Shift ID is used only internally to correlate already-projected facts before semantic tuple construction; physical Shift and requirement IDs remain traceability identifiers and are excluded from the fingerprint inputs themselves.
 
-Consequently a change to chantier contact, ERP manager phone, applicable standard hours, or Shift asset mapping changes the current fingerprint. Swapping two assets between Shifts changes P2 even when the aggregate asset union is unchanged.
+Consequently a change to chantier contact, ERP manager phone, applicable standard hours, Shift asset mapping, or the responsibility correlated with a Shift changes the current fingerprint. Reassociating hours/assets/responsibility between Shifts changes P2 even when the aggregate hours, asset union, and set of responsible identities are unchanged.
 
 Prepared bodies remain immutable. Old prepared/approved P0/P1 batches become incompatible/stale once the current projection is v2 and must be cancelled/re-prepared through the existing workflow; they are never upgraded in place.
 
