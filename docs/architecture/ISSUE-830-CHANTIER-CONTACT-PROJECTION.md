@@ -32,3 +32,7 @@ Accepted Architect review: B — ACCEPT WITH CONDITIONS (2026-11-13).
 - #830 remains the sole authority for chantier-contact ownership and request→Shift/resource correspondence. #855 adds no chantier-contact storage or alternate grouping authority.
 
 See ADR-036 for the complete v2 asset/standard-hours and staleness contract.
+
+## #855 Phase 3 representation note
+
+The earlier #830 statement that its own delivery required no communication-table migration remains historically correct for #830. #855 Phase 3 later adds the unrelated widening-only migration `0036_communication_message_body_html` for nullable persisted HTML. It does not change chantier-contact authority, request provenance, or historical contact data.
