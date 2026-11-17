@@ -6,6 +6,7 @@ import hashlib
 from html import escape
 import json
 import math
+import re
 from typing import Sequence
 
 from .operational_contacts import ContactResolution, STATUS_RESOLVED
@@ -95,8 +96,14 @@ class ProjectCommunicationDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectMessageLine:
+    kind: str
+    text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectMessageSemantic:
-    lines: tuple[str, ...]
+    lines: tuple[ProjectMessageLine, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -705,74 +712,209 @@ def _cc_recipients(
     )
 
 
-def _unique_responsibles(
-    project: ProjectCommunicationProject,
-) -> tuple[ContactResolution, ...]:
-    result: dict[tuple[object, ...], ContactResolution] = {}
-    for day in project.days:
-        for task in day.tasks:
-            for responsible in task.operational_responsibles:
-                key = (
-                    responsible.status,
-                    responsible.contact_id,
-                    responsible.display_name,
-                    responsible.phone,
-                    responsible.source_type,
-                )
-                result.setdefault(key, responsible)
-    return tuple(
-        result[key]
-        for key in sorted(
-            result,
-            key=lambda value: tuple("" if part is None else str(part) for part in value),
-        )
-    )
+PROJECT_RESPONSIBILITY_FOOTER = (
+    "Il est de votre responsabilité de communiquer avec les ressources déployées "
+    "sur votre projet pour assurer une bonne coordination de chantier et les "
+    "informer de tout détail supplémentaire nécessaire."
+)
+_SECTION_LABELS = (
+    "Responsable projet",
+    "Description",
+    "Contact chantier",
+    "Horaire",
+)
+_DATE_LINE_PATTERN = re.compile(
+    r"^(Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche) le "
+    r"\\d{1,2} [A-Za-zÀ-ÿ]+ \\d{4}$"
+)
+_EMPLOYEE_NUMBER_PREFIX = re.compile(r"^\\s*\\d+\\s*[-–—]\\s*(.+)$")
 
 
-def _format_responsible(value: ContactResolution) -> str:
-    if value.status != STATUS_RESOLVED or not (value.display_name or "").strip():
-        return "Non résolu"
-    parts = [value.display_name.strip()]
-    if (value.phone or "").strip():
-        parts.append(value.phone.strip())
-    return " — ".join(parts)
-
-
-def _project_header(project: ProjectCommunicationProject) -> list[str]:
-    lines = [f"{project.project_number} — {project.project_name}".strip(" —")]
-    if project.project_manager_erp_phone:
-        lines.append(f"Chargé de projet : {project.project_manager.display_name}")
-        lines.append(f"Téléphone : {project.project_manager_erp_phone}")
-    responsibles = _unique_responsibles(project)
-    resolved = tuple(
-        value
-        for value in responsibles
-        if value.status == STATUS_RESOLVED and (value.display_name or "").strip()
-    )
-    if len(resolved) == 1:
-        lines.append(f"Responsable : {_format_responsible(resolved[0])}")
-    elif len(resolved) > 1:
-        lines.append(
-            "Responsables opérationnels : voir chaque affectation ci-dessous"
-        )
-    else:
-        lines.append("Responsable : Non résolu")
-    return lines
+def _line(kind: str, text: str = "") -> ProjectMessageLine:
+    return ProjectMessageLine(kind=kind, text=text)
 
 
 def _asset_display(value: ProjectCommunicationAsset) -> str:
     return (value.asset_code or value.asset_id).strip()
 
 
-def _resource_suffix(resource) -> str:
-    signals: list[str] = []
-    if any(value == "Tentative" for value in resource.confirmations):
-        signals.append("Tentative")
-    if resource.outside_schedule:
-        signals.append("hors horaire")
-    if not signals:
-        return ""
-    return f" ({', '.join(signals)})"
+def _display_resource_name(value: str) -> str:
+    cleaned = str(value or "").strip()
+    matched = _EMPLOYEE_NUMBER_PREFIX.match(cleaned)
+    return matched.group(1).strip() if matched else cleaned
+
+
+def _task_display(task: ProjectCommunicationTask) -> str:
+    codes = " / ".join(dict.fromkeys(code for code in task.task_codes if code))
+    description = task.task_description.strip()
+    if codes and description:
+        return f"{codes} {description}"
+    return codes or description
+
+
+def _request_key(
+    assignment: ProjectCommunicationRequestAssignment,
+) -> tuple[str | None, str | None]:
+    return assignment.workforce_request_id, assignment.request_number
+
+
+def _request_label(key: tuple[str | None, str | None]) -> str:
+    request_id, request_number = key
+    if request_id is None:
+        return "Sans demande"
+    return f"Demande {request_number or request_id}"
+
+
+def _contact_display(
+    name: str | None,
+    phone: str | None,
+) -> str:
+    contact_name = (name or "").strip()
+    contact_phone = (phone or "").strip()
+    if contact_name and contact_phone:
+        return f"{contact_name} : {contact_phone}"
+    return contact_name or contact_phone or "Aucun contact chantier renseigné"
+
+
+def _project_request_groups(
+    project: ProjectCommunicationProject,
+) -> dict[
+    tuple[str | None, str | None],
+    list[tuple[ProjectCommunicationDay, ProjectCommunicationTask, ProjectCommunicationRequestAssignment]],
+]:
+    groups: dict[
+        tuple[str | None, str | None],
+        list[tuple[ProjectCommunicationDay, ProjectCommunicationTask, ProjectCommunicationRequestAssignment]],
+    ] = {}
+    for day in project.days:
+        for task in day.tasks:
+            for assignment in task.request_assignments:
+                groups.setdefault(_request_key(assignment), []).append(
+                    (day, task, assignment)
+                )
+    return groups
+
+
+def _description_lines(project: ProjectCommunicationProject) -> tuple[str, ...]:
+    values: list[str] = []
+    for day in project.days:
+        for task in day.tasks:
+            value = _task_display(task)
+            if value and value not in values:
+                values.append(value)
+    return tuple(values)
+
+
+def _contact_lines(project: ProjectCommunicationProject) -> tuple[str, ...]:
+    groups = _project_request_groups(project)
+    if not groups:
+        return ("Aucun contact chantier renseigné",)
+
+    if len(groups) == 1:
+        key, rows = next(iter(groups.items()))
+        first = rows[0][2]
+        if key[0] is None:
+            return ("Aucun contact chantier renseigné",)
+        return (_contact_display(first.site_contact_name, first.site_contact_phone),)
+
+    values: list[str] = []
+    for key, rows in sorted(
+        groups.items(),
+        key=lambda pair: (
+            pair[0][1] or "",
+            pair[0][0] or "",
+        ),
+    ):
+        contacts: list[str] = []
+        for _day, _task, assignment in rows:
+            contact = _contact_display(
+                assignment.site_contact_name,
+                assignment.site_contact_phone,
+            )
+            if contact not in contacts:
+                contacts.append(contact)
+        values.append(f"{_request_label(key)} — {' / '.join(contacts)}")
+    return tuple(values)
+
+
+def _shift_resource_line(
+    assignment: ProjectCommunicationRequestAssignment,
+) -> str:
+    text = _display_resource_name(assignment.resource_name)
+    if (
+        assignment.standard_hours is not None
+        and float(assignment.hours) < float(assignment.standard_hours)
+    ):
+        text += f" — {float(assignment.hours):g} h"
+
+    asset_codes = tuple(
+        dict.fromkeys(
+            code
+            for code in (
+                _asset_display(asset)
+                for asset in employee_assigned_assets(assignment)
+            )
+            if code
+        )
+    )
+    if asset_codes:
+        text += f" ({' / '.join(asset_codes)})"
+    return text
+
+
+def _day_schedule_lines(
+    day: ProjectCommunicationDay,
+    *,
+    show_request_groups: bool,
+) -> tuple[ProjectMessageLine, ...]:
+    grouped: dict[
+        tuple[str | None, str | None],
+        list[tuple[ProjectCommunicationTask, ProjectCommunicationRequestAssignment]],
+    ] = {}
+    legacy_resources: list[ProjectCommunicationResource] = []
+    for task in day.tasks:
+        if task.request_assignments:
+            for assignment in task.request_assignments:
+                grouped.setdefault(_request_key(assignment), []).append(
+                    (task, assignment)
+                )
+        else:
+            legacy_resources.extend(task.resources)
+
+    lines: list[ProjectMessageLine] = [_line("date", french_long_date(day.day))]
+    for key, rows in sorted(
+        grouped.items(),
+        key=lambda pair: (pair[0][1] or "", pair[0][0] or ""),
+    ):
+        if show_request_groups:
+            works = tuple(
+                dict.fromkeys(
+                    value
+                    for value in (_task_display(task) for task, _row in rows)
+                    if value
+                )
+            )
+            label = _request_label(key)
+            if works:
+                label += " — " + " / ".join(works)
+            lines.append(_line("group", label))
+        for _task, assignment in sorted(
+            rows,
+            key=lambda value: (
+                _display_resource_name(value[1].resource_name).casefold(),
+                value[1].shift_id,
+            ),
+        ):
+            lines.append(_line("bullet", _shift_resource_line(assignment)))
+
+    # Historical snapshots without Shift provenance stay renderable without
+    # inventing standard hours or Shift assets that were never persisted.
+    for resource in sorted(
+        legacy_resources,
+        key=lambda value: (value.resource_name.casefold(), value.resource_id),
+    ):
+        lines.append(_line("bullet", _display_resource_name(resource.resource_name)))
+    return tuple(lines)
 
 
 def _project_semantic_message(
@@ -780,154 +922,175 @@ def _project_semantic_message(
     *,
     change_kind: str | None = None,
 ) -> ProjectMessageSemantic:
-    lines = _project_header(project)
+    lines: list[ProjectMessageLine] = [
+        _line(
+            "project_header",
+            f"{project.project_number} - {project.project_name}".strip(" -"),
+        )
+    ]
     if change_kind is not None:
         labels = {
             "added": "Projet ajouté au planning communiqué.",
             "removed": "Projet retiré du planning communiqué.",
             "modified": "Mise à jour du planning communiqué.",
         }
-        lines.extend(("", labels[change_kind]))
+        lines.extend((_line("blank"), _line("text", labels[change_kind])))
 
-    all_responsibles = _unique_responsibles(project)
-    multiple_responsibles = len(
-        {
-            value.contact_id or (value.display_name or "")
-            for value in all_responsibles
-            if value.status == STATUS_RESOLVED
-        }
-    ) > 1
+    lines.extend(
+        (
+            _line("blank"),
+            _line("section", "Responsable projet"),
+            _line("text", project.project_manager.display_name),
+        )
+    )
+    if project.project_manager_erp_phone:
+        lines.append(_line("text", project.project_manager_erp_phone))
 
+    lines.extend((_line("blank"), _line("section", "Description")))
+    for value in _description_lines(project):
+        lines.append(_line("text", value))
+
+    lines.extend((_line("blank"), _line("section", "Contact chantier")))
+    for value in _contact_lines(project):
+        lines.append(_line("text", value))
+
+    lines.extend((_line("blank"), _line("section", "Horaire")))
+    show_request_groups = len(_project_request_groups(project)) > 1
     for day in project.days:
-        for task in day.tasks:
-            lines.extend(("", f"{french_long_date(day.day)} — {task.task_description}"))
-            if task.request_assignments:
-                by_request: dict[str | None, list[ProjectCommunicationRequestAssignment]] = {}
-                for item in task.request_assignments:
-                    by_request.setdefault(item.workforce_request_id, []).append(item)
-                # Render contribution lines only when distinct provenance
-                # groups explain the canonical total. Multiple physical Shifts
-                # for the same demand do not create separate groups; None is
-                # a genuine ad-hoc provenance group when mixed with a demand.
-                show_request_work = len(by_request) > 1
-                if not show_request_work and len(by_request) == 1:
-                    request_id, group = next(iter(by_request.items()))
-                    if request_id is not None:
-                        first = group[0]
-                        if first.site_contact_name or first.site_contact_phone:
-                            lines.append(
-                                f"Demande {first.request_number or request_id}"
-                            )
-                            contact = " — ".join(
-                                part for part in (
-                                    first.site_contact_name,
-                                    first.site_contact_phone,
-                                ) if part
-                            )
-                            lines.append(f"  Contact chantier : {contact}")
-                if show_request_work:
-                    for request_id, group in sorted(
-                        by_request.items(), key=lambda pair: pair[0] or ""
-                    ):
-                        first = group[0]
-                        label = (
-                            first.request_number or request_id
-                            if request_id is not None
-                            else "Sans demande"
-                        )
-                        lines.append(f"Demande {label}" if request_id is not None else label)
-                        if first.site_contact_name or first.site_contact_phone:
-                            contact = " — ".join(
-                                part for part in (
-                                    first.site_contact_name,
-                                    first.site_contact_phone,
-                                ) if part
-                            )
-                            lines.append(f"  Contact chantier : {contact}")
-                        elif request_id is not None:
-                            lines.append("  Aucun contact chantier renseigné")
-                        # These are subdivisions of the canonical resource
-                        # totals below, not additional scheduled hours.
-                        by_resource: dict[str, tuple[str, float]] = {}
-                        for item in group:
-                            name, hours = by_resource.get(
-                                item.resource_id, (item.resource_name, 0.0)
-                            )
-                            by_resource[item.resource_id] = (
-                                name, hours + item.hours
-                            )
-                        for resource_id, (name, hours) in sorted(
-                            by_resource.items(),
-                            key=lambda pair: (pair[1][0].casefold(), pair[0]),
-                        ):
-                            lines.append(f"  ↳ {name} — {hours:g} h (part de la demande)")
-                    lines.append("  Totaux planifiés (toutes demandes) :")
-            assignments_by_resource: dict[str, list[ContactResolution]] = {}
-            for assignment in task.responsibility_assignments:
-                assignments_by_resource.setdefault(
-                    assignment.resource_id,
-                    [],
-                ).append(assignment.operational_responsible)
-            for resource in task.resources:
-                responsible_suffix = ""
-                if multiple_responsibles:
-                    associated: dict[tuple[object, ...], ContactResolution] = {}
-                    for value in assignments_by_resource.get(resource.resource_id, ()):
-                        associated.setdefault(_responsible_payload(value), value)
-                    resolved = tuple(
-                        value
-                        for value in associated.values()
-                        if value.status == STATUS_RESOLVED
-                    )
-                    if resolved:
-                        responsible_suffix = (
-                            " · Responsable : "
-                            + " / ".join(
-                                _format_responsible(value)
-                                for value in sorted(
-                                    resolved,
-                                    key=lambda value: (
-                                        (value.display_name or "").casefold(),
-                                        value.contact_id or "",
-                                    ),
-                                )
-                            )
-                        )
-                    elif assignments_by_resource.get(resource.resource_id):
-                        responsible_suffix = " · Responsable : Non résolu"
-                asset_suffix = (
-                    " · Actif : "
-                    + " / ".join(_asset_display(asset) for asset in resource.assets)
-                    if resource.assets
-                    else ""
-                )
-                lines.append(
-                    f"  • {resource.resource_name} — {resource.hours:g} h"
-                    f"{_resource_suffix(resource)}{asset_suffix}{responsible_suffix}"
-                )
+        lines.append(_line("blank"))
+        lines.extend(
+            _day_schedule_lines(
+                day,
+                show_request_groups=show_request_groups,
+            )
+        )
+
+    lines.extend(
+        (
+            _line("blank"),
+            _line("footer", PROJECT_RESPONSIBILITY_FOOTER),
+        )
+    )
     return ProjectMessageSemantic(lines=tuple(lines))
 
 
 def _render_project_text(message: ProjectMessageSemantic) -> str:
-    return "\n".join(message.lines)
+    values: list[str] = []
+    for line in message.lines:
+        if line.kind == "blank":
+            values.append("")
+        elif line.kind == "bullet":
+            values.append(f"• {line.text}")
+        else:
+            values.append(line.text)
+    return "\n".join(values)
 
 
 def _render_project_html(message: ProjectMessageSemantic) -> str:
-    rendered: list[str] = []
+    rendered: list[str] = [
+        '<div style="font-family:Arial,Helvetica,sans-serif;line-height:1.25;max-width:640px;">'
+    ]
+    in_list = False
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            rendered.append("</ul>")
+            in_list = False
+
     for line in message.lines:
-        if line:
-            rendered.append(f"<div>{escape(line)}</div>")
+        value = escape(line.text)
+        if line.kind == "bullet":
+            if not in_list:
+                rendered.append(
+                    '<ul style="margin:0 0 0 20px;padding:0;">'
+                )
+                in_list = True
+            rendered.append(
+                f'<li style="margin:0;padding:0;">{value}</li>'
+            )
+            continue
+
+        close_list()
+        if line.kind == "blank":
+            rendered.append(
+                '<div style="height:12px;line-height:12px;">&nbsp;</div>'
+            )
+        elif line.kind == "project_header":
+            rendered.append(
+                f'<div style="margin:0;"><strong>{value}</strong></div>'
+            )
+        elif line.kind == "section":
+            rendered.append(
+                f'<div style="margin:0 0 2px 0;"><strong><u>{value}</u></strong></div>'
+            )
+        elif line.kind == "date":
+            rendered.append(
+                f'<div style="margin:0 0 2px 0;"><strong>{value}</strong></div>'
+            )
+        elif line.kind == "group":
+            rendered.append(f'<div style="margin:4px 0 2px 0;">{value}</div>')
+        elif line.kind == "footer":
+            rendered.append(f'<div style="margin-top:12px;">{value}</div>')
         else:
-            rendered.append("<br>")
-    return "<div>" + "".join(rendered) + "</div>"
+            rendered.append(f'<div style="margin:0;">{value}</div>')
+    close_list()
+    rendered.append("</div>")
+    return "".join(rendered)
+
+
+def _semantic_from_review_body(body: str) -> ProjectMessageSemantic:
+    raw_lines = str(body).splitlines()
+    nonempty = [(index, value) for index, value in enumerate(raw_lines) if value.strip()]
+    if not nonempty:
+        raise ValueError("Le corps révisé du courriel projet ne peut pas être vide.")
+    if nonempty[-1][1].strip() != PROJECT_RESPONSIBILITY_FOOTER:
+        raise ValueError(
+            "Le message obligatoire de responsabilité doit rester intact à la fin du courriel."
+        )
+
+    section_positions: list[int] = []
+    for label in _SECTION_LABELS:
+        positions = [
+            index
+            for index, value in enumerate(raw_lines)
+            if value.strip() == label
+        ]
+        if len(positions) != 1:
+            raise ValueError(
+                f"La section obligatoire « {label} » doit apparaître exactement une fois."
+            )
+        section_positions.append(positions[0])
+    if section_positions != sorted(section_positions):
+        raise ValueError("L'ordre obligatoire des sections du courriel projet a été modifié.")
+    if nonempty[0][0] >= section_positions[0]:
+        raise ValueError("L'en-tête projet obligatoire est manquant.")
+
+    semantic: list[ProjectMessageLine] = []
+    first_nonempty = nonempty[0][0]
+    for index, value in enumerate(raw_lines):
+        stripped = value.strip()
+        if not stripped:
+            semantic.append(_line("blank"))
+        elif index == first_nonempty:
+            semantic.append(_line("project_header", stripped))
+        elif stripped in _SECTION_LABELS:
+            semantic.append(_line("section", stripped))
+        elif stripped == PROJECT_RESPONSIBILITY_FOOTER:
+            semantic.append(_line("footer", stripped))
+        elif _DATE_LINE_PATTERN.match(stripped):
+            semantic.append(_line("date", stripped))
+        elif stripped.startswith("• "):
+            semantic.append(_line("bullet", stripped[2:].strip()))
+        else:
+            semantic.append(_line("text", stripped))
+    return ProjectMessageSemantic(lines=tuple(semantic))
 
 
 def render_project_review_html(body: str) -> str:
-    """Render reviewed plain text as escaped HTML without accepting client markup."""
+    """Regenerate safe HTML while preserving the mandatory project template."""
 
-    return _render_project_html(
-        ProjectMessageSemantic(lines=tuple(str(body).splitlines()))
-    )
+    return _render_project_html(_semantic_from_review_body(body))
 
 
 def _subject(
