@@ -1043,8 +1043,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 first_body = preview.json()["drafts"][0]["body"]
                 first_html = preview.json()["drafts"][0]["body_html"]
                 self.assertIsNotNone(first_html)
-                self.assertIn("Chargé de projet : Chargé de projet Démo", first_body)
-                self.assertIn("Téléphone : " + synthetic_phone("0100"), first_body)
+                self.assertIn(
+                    "Responsable projet\nChargé de projet Démo\n"
+                    + synthetic_phone("0100"),
+                    first_body,
+                )
                 self.assertNotIn("WRONG-CONTACT-PHONE", first_body)
                 self.assertEqual(len(preview.json()["drafts"]), 1)
 
@@ -2182,7 +2185,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         for row in projection.drafts
                         if row.project_id == "P1"
                     )
-                    self.assertIn("Actif : V-708B / REQ-843 / EQ-708B", draft.body)
+                    self.assertIn("(V-708B / REQ-843 / EQ-708B)", draft.body)
+                    self.assertNotIn("Actif", draft.body)
                     self.assertNotIn("Camion 708B", draft.body)
                     self.assertNotIn("Nacelle 708B", draft.body)
 
@@ -2207,7 +2211,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     draft = next(
                         row for row in changed.drafts if row.project_id == "P1"
                     )
-                    self.assertIn("Actif : V-NEW-708B", draft.body)
+                    self.assertIn("(V-NEW-708B)", draft.body)
+                    self.assertNotIn("Actif", draft.body)
                     self.assertNotIn("Camion remplacement 708B", draft.body)
                     self.assertNotIn("Camion 708B", draft.body)
                     self.assertNotIn("Nacelle 708B", draft.body)
@@ -2310,7 +2315,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertIn("Technicien ressource", preview_body)
                 self.assertIn("2 h", preview_body)
                 self.assertIn("1 h", preview_body)
-                self.assertIn("Actif : NAC-MAIL-708B", preview_body)
+                self.assertIn("(NAC-MAIL-708B)", preview_body)
+                self.assertNotIn("Actif", preview_body)
                 self.assertNotIn("Nacelle courriel 708B", preview_body)
 
                 prepared = client.post(
@@ -2428,8 +2434,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 original_body = preview.json()["drafts"][0]["body"]
                 original_html = preview.json()["drafts"][0]["body_html"]
                 self.assertIsNotNone(original_html)
-                self.assertIn("Demande DMO-290A-1", original_body)
-                self.assertIn("Contact chantier : Jean Tremblay — 555-0101", original_body)
+                self.assertIn("Contact chantier\nJean Tremblay : 555-0101", original_body)
+                self.assertNotIn("Demande DMO-290A-1", original_body)
 
                 prepared = client.post(
                     "/api/v1/communications/project-batches",
@@ -2466,7 +2472,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     original_fingerprint,
                 )
                 self.assertIn(
-                    "Contact chantier : Pierre Gagnon — 555-0202",
+                    "Contact chantier\nPierre Gagnon : 555-0202",
                     current_preview.json()["drafts"][0]["body"],
                 )
                 self.assertNotIn("Jean Tremblay", current_preview.json()["drafts"][0]["body"])
@@ -2642,11 +2648,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(preview_response.status_code, 200, preview_response.text)
                 preview = preview_response.json()
                 self.assertIn(
-                    "Demande DMO-290A-1",
-                    preview["drafts"][0]["body"],
-                )
-                self.assertIn(
-                    "Contact chantier : Jean Tremblay — 555-0101",
+                    "Contact chantier\nJean Tremblay : 555-0101",
                     preview["drafts"][0]["body"],
                 )
 
@@ -2662,7 +2664,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 prepared_payload = prepared.json()
                 batch_id = prepared_payload["id"]
                 self.assertIn(
-                    "Contact chantier : Jean Tremblay — 555-0101",
+                    "Contact chantier\nJean Tremblay : 555-0101",
                     prepared_payload["messages"][0]["body"],
                 )
 
@@ -2745,7 +2747,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             ),
         )
         self.assertIn(
-            "Contact chantier : Jean Tremblay — 555-0101",
+            "Contact chantier\nJean Tremblay : 555-0101",
             transport.messages[0].body,
         )
         self.assertNotIn("Pierre Gagnon", transport.messages[0].body)
@@ -2791,7 +2793,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 draft = preview.json()["drafts"][0]
                 original_fingerprint = draft["content_fingerprint"]
 
-                edited = "Texte révisé <sécurisé> & conservé"
+                edited = draft["body"].replace(
+                    "Chargé de projet Démo",
+                    "Chargé de projet <sécurisé> & conservé",
+                )
                 prepared = client.post(
                     "/api/v1/communications/project-batches",
                     json={
@@ -2811,11 +2816,35 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 message = prepared.json()["messages"][0]
                 self.assertEqual(message["body"], edited)
                 self.assertIn(
-                    "Texte révisé &lt;sécurisé&gt; &amp; conservé",
+                    "Chargé de projet &lt;sécurisé&gt; &amp; conservé",
                     message["body_html"],
                 )
                 self.assertNotIn("<sécurisé>", message["body_html"])
+                self.assertIn(
+                    "<strong><u>Responsable projet</u></strong>",
+                    message["body_html"],
+                )
                 self.assertNotEqual(message["content_fingerprint"], original_fingerprint)
+
+                missing_footer = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "body": draft["body"].rsplit("\n", 2)[0],
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(missing_footer.status_code, 422, missing_footer.text)
+                self.assertEqual(
+                    missing_footer.json()["error"]["code"],
+                    "project_communication_review_template_invalid",
+                )
 
                 rejected = client.post(
                     "/api/v1/communications/project-batches",
