@@ -18,6 +18,7 @@ from .project_communication import (
     ProjectCommunicationRequestAssignment,
     ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
+    employee_assigned_assets,
 )
 
 
@@ -358,7 +359,10 @@ def _shift_v2_semantics(
                             round(float(row.standard_hours or 0.0), 2),
                             tuple(
                                 sorted(
-                                    (_asset_payload(asset) for asset in row.assets),
+                                    (
+                                        _asset_payload(asset)
+                                        for asset in employee_assigned_assets(row)
+                                    ),
                                     key=repr,
                                 )
                             ),
