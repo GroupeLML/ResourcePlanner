@@ -662,6 +662,198 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             ],
         )
 
+    def test_831_sql_phone_uses_canonical_employee_identity_not_contact(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    pm_contact = session.get(BusinessContact, "C-PM")
+                    assert pm_contact is not None
+                    pm_contact.phone = "WRONG-CONTACT-PHONE"
+                    session.add_all((
+                        Resource(
+                            id="R-MANAGER-831", external_id="PM-1",
+                            name="Unrelated ERP label", email="wrong" + chr(64) + TEST_DOMAIN,
+                            active=False, erp_active=False, erp_phone="514-555-0100",
+                        ),
+                        Resource(
+                            id="R-NAME-831", external_id="NOT-PM-1",
+                            name="Chargé de projet Démo", email="pm" + chr(64) + TEST_DOMAIN,
+                            active=True, erp_active=True, erp_phone="WRONG-NAME-PHONE",
+                        ),
+                    ))
+                def current():
+                    with factory() as session:
+                        service = self._service(session)
+                        return service.project_projection(week_start=WEEK)
+                result = current()
+                self.assertEqual(result.projects[0].project_manager_erp_phone, "514-555-0100")
+                self.assertEqual(result.projects[0].project_manager.phone,
+                                 "WRONG-CONTACT-PHONE")
+                self.assertEqual(result.projects[0].project_manager.display_name,
+                                 "Chargé de projet Démo")
+
+                with factory.begin() as session:
+                    row = session.get(Resource, "R-MANAGER-831")
+                    assert row is not None
+                    row.erp_phone = None
+                self.assertIsNone(current().projects[0].project_manager_erp_phone)
+
+                with factory.begin() as session:
+                    row = session.get(Resource, "R-MANAGER-831")
+                    assert row is not None
+                    row.erp_phone = "514-555-0100"
+                    session.add(Resource(
+                        id="R-DUPLICATE-831", external_id="PM-1",
+                        name="Duplicate ERP identity", active=False,
+                        erp_active=False, erp_phone="514-555-0900",
+                    ))
+                self.assertIsNone(current().projects[0].project_manager_erp_phone)
+
+                with factory.begin() as session:
+                    duplicate = session.get(Resource, "R-DUPLICATE-831")
+                    assert duplicate is not None
+                    session.delete(duplicate)
+                    pm = session.get(Resource, "R-MANAGER-831")
+                    assert pm is not None
+                    session.delete(pm)
+                self.assertIsNone(current().projects[0].project_manager_erp_phone)
+            finally:
+                engine.dispose()
+
+    def test_831_preview_prepared_stale_and_graph_smtp_use_persisted_body(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(Resource(
+                        id="R-MANAGER-831", external_id="PM-1",
+                        name="Source ERP différente", active=False,
+                        erp_active=False, erp_phone="514-555-0100",
+                    ))
+                    contact = session.get(BusinessContact, "C-PM")
+                    assert contact is not None
+                    contact.phone = "WRONG-CONTACT-PHONE"
+            finally:
+                engine.dispose()
+
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                old_fingerprint = preview.json()["snapshot_fingerprint"]
+                first_body = preview.json()["drafts"][0]["body"]
+                self.assertIn("Chargé de projet : Chargé de projet Démo", first_body)
+                self.assertIn("Téléphone : 514-555-0100", first_body)
+                self.assertNotIn("WRONG-CONTACT-PHONE", first_body)
+                self.assertEqual(len(preview.json()["drafts"]), 1)
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": old_fingerprint,
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                old_id = prepared.json()["id"]
+                self.assertEqual(prepared.json()["messages"][0]["body"], first_body)
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        manager = session.get(Resource, "R-MANAGER-831")
+                        assert manager is not None
+                        manager.erp_phone = "514-555-0200"
+                finally:
+                    engine.dispose()
+
+                updated = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(updated.status_code, 200, updated.text)
+                self.assertNotEqual(updated.json()["snapshot_fingerprint"], old_fingerprint)
+                current_body = updated.json()["drafts"][0]["body"]
+                self.assertIn("Téléphone : 514-555-0200", current_body)
+                self.assertNotIn("514-555-0100", current_body)
+                self.assertEqual(updated.json()["drafts"][0]["to_recipients"],
+                                 preview.json()["drafts"][0]["to_recipients"])
+                self.assertEqual(updated.json()["drafts"][0]["cc_recipients"],
+                                 preview.json()["drafts"][0]["cc_recipients"])
+
+                stale = client.post(
+                    f"/api/v1/communications/project-batches/{old_id}/approve"
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(stale.json()["error"]["code"],
+                                 "project_communication_batch_stale")
+                stored = client.get(
+                    "/api/v1/communications/project-batches?week_start=2026-09-23"
+                )
+                self.assertEqual(stored.status_code, 200, stored.text)
+                old = next(row for row in stored.json() if row["id"] == old_id)
+                self.assertEqual(old["messages"][0]["body"], first_body)
+
+                replacement = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": updated.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(replacement.status_code, 201, replacement.text)
+                new_id = replacement.json()["id"]
+                self.assertEqual(replacement.json()["messages"][0]["body"], current_body)
+                approved = client.post(
+                    f"/api/v1/communications/project-batches/{new_id}/approve"
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                drafts = client.post(
+                    f"/api/v1/communications/project-batches/{new_id}/create-drafts"
+                )
+                self.assertEqual(drafts.status_code, 200, drafts.text)
+                self.assertEqual(len(transport.messages), 1)
+                self.assertEqual(transport.messages[0].body, current_body)
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{new_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+                self.assertEqual(smtp.attempt_bodies, [current_body])
+
     def test_projection_uses_approved_context_and_resource_recipients(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
