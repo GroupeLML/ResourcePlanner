@@ -672,6 +672,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     pm_contact = session.get(BusinessContact, "C-PM")
                     assert pm_contact is not None
                     pm_contact.phone = "WRONG-CONTACT-PHONE"
+                    project_row = session.get(Project, "P1")
+                    assert project_row is not None
+                    # ERP sync normally trims these; the canonical resolver must
+                    # also normalize an older padded project identity.
+                    project_row.project_manager_external_id = " PM-1 "
                     session.add_all((
                         Resource(
                             id="R-MANAGER-831", external_id="PM-1",
@@ -720,6 +725,38 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     assert pm is not None
                     session.delete(pm)
                 self.assertIsNone(current().projects[0].project_manager_erp_phone)
+            finally:
+                engine.dispose()
+
+    def test_831_missing_local_manager_contact_does_not_invent_recipient(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(Resource(
+                        id="R-MANAGER-831", external_id="PM-1",
+                        name="ERP source", active=False, erp_active=False,
+                        erp_phone="514-555-0100",
+                    ))
+                    user = session.get(AppUser, "U-PM")
+                    assert user is not None
+                    user.business_contact_id = None
+                with factory() as session:
+                    projection = self._service(session).project_preview(week_start=WEEK)
+                self.assertEqual(len(projection.drafts), 1)
+                draft = projection.drafts[0]
+                self.assertIn("Téléphone : 514-555-0100", draft.body)
+                self.assertFalse(draft.approvable)
+                self.assertIsNone(draft.to_recipient.email)
+                self.assertNotIn("pm" + chr(64) + TEST_DOMAIN,
+                                 [row.email for row in draft.to_recipients])
+                self.assertTrue(any(
+                    "PROJECT_MANAGER_CONTACT_MISSING" in row.code
+                    or "PROJECT_TO_EMAIL_MISSING" in row.code
+                    for row in draft.diagnostics
+                ))
             finally:
                 engine.dispose()
 
