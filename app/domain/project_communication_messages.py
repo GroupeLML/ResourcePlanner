@@ -208,6 +208,8 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
         project.project_number,
         project.project_name,
         _participant_payload(project.project_manager),
+        *((("project_manager_erp_phone", project.project_manager_erp_phone),)
+          if project.project_manager_erp_phone else ()),
         tuple(
             _participant_payload(manager)
             for manager in project.project_co_managers
@@ -620,6 +622,9 @@ def _format_responsible(value: ContactResolution) -> str:
 
 def _project_header(project: ProjectCommunicationProject) -> list[str]:
     lines = [f"{project.project_number} — {project.project_name}".strip(" —")]
+    if project.project_manager_erp_phone:
+        lines.append(f"Chargé de projet : {project.project_manager.display_name}")
+        lines.append(f"Téléphone : {project.project_manager_erp_phone}")
     responsibles = _unique_responsibles(project)
     resolved = tuple(
         value
@@ -1015,6 +1020,11 @@ def serialize_project_projection(
     if projection.request_provenance_version is not None:
         _validate_provenance(projection)
     serialized = convert(asdict(projection))
+    # Absent #831 data must remain byte-for-byte compatible with previous
+    # project_v2 JSON and previous P1 fingerprint inputs.
+    for project in serialized["projects"]:
+        if not project.get("project_manager_erp_phone"):
+            project.pop("project_manager_erp_phone", None)
     if projection.request_provenance_version is None:
         serialized.pop("request_provenance_version", None)
         serialized.pop("request_provenance_complete", None)
@@ -1169,6 +1179,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                     project_row.get("project_manager") or {}
                 ),
                 days=tuple(days),
+                project_manager_erp_phone=project_row.get("project_manager_erp_phone") or None,
                 project_co_managers=tuple(
                     participant(value)
                     for value in project_row.get("project_co_managers") or ()
