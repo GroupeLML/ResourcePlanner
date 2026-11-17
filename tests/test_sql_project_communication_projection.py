@@ -3059,6 +3059,13 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["week_start"], "2026-09-21")
         self.assertEqual(payload["week_end"], "2026-09-27")
+        self.assertEqual(payload["request_provenance_version"], 2)
+        self.assertTrue(payload["request_provenance_complete"])
+        assignment = payload["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]
+        self.assertIn("assets", assignment)
+        self.assertIn("standard_hours", assignment)
         self.assertEqual(payload["projects"][0]["project_number"], "1000")
         self.assertEqual(
             payload["projects"][0]["days"][0]["tasks"][0]["task_description"],
