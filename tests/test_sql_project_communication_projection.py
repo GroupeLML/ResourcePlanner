@@ -1012,6 +1012,99 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 finally:
                     engine.dispose()
 
+    def test_855_prepared_p2_batch_is_stale_when_shift_hours_reassociate_responsibility(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    requirement = session.get(ResourceRequirement, "REQ2")
+                    shift = session.get(Shift, "S2")
+                    assert requirement is not None and shift is not None
+                    requirement.assigned_resource_id = "R1"
+                    requirement.captured_operational_responsible_contact_id = "C-CURRENT"
+                    requirement.captured_operational_responsible_source_type = (
+                        SOURCE_TASK_RESPONSIBLE
+                    )
+                    requirement.captured_operational_responsible_source_entity_id = (
+                        "T-CURRENT"
+                    )
+                    requirement.captured_operational_responsible_status = STATUS_RESOLVED
+                    shift.resource_id = "R1"
+            finally:
+                engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                before = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(before.status_code, 200, before.text)
+                before_payload = before.json()
+                before_draft = before_payload["drafts"][0]
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": before_payload[
+                            "snapshot_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                batch_id = prepared.json()["id"]
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        first = session.get(Shift, "S1")
+                        second = session.get(Shift, "S2")
+                        assert first is not None and second is not None
+                        first.hours = Decimal("4")
+                        second.hours = Decimal("8")
+                finally:
+                    engine.dispose()
+
+                after = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(after.status_code, 200, after.text)
+                after_payload = after.json()
+                after_draft = after_payload["drafts"][0]
+                self.assertNotEqual(
+                    before_payload["snapshot_fingerprint"],
+                    after_payload["snapshot_fingerprint"],
+                )
+                self.assertNotEqual(before_draft["body"], after_draft["body"])
+                self.assertNotEqual(
+                    before_draft["body_html"],
+                    after_draft["body_html"],
+                )
+                self.assertEqual(
+                    before_draft["to_recipients"],
+                    after_draft["to_recipients"],
+                )
+                self.assertEqual(
+                    before_draft["cc_recipients"],
+                    after_draft["cc_recipients"],
+                )
+
+                stale = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(
+                    stale.json()["error"]["code"],
+                    "project_communication_batch_stale",
+                )
+
     def test_831_preview_prepared_stale_and_graph_smtp_use_persisted_body(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
