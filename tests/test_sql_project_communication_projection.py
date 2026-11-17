@@ -904,9 +904,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(len(projection.drafts), 1)
                 draft = projection.drafts[0]
                 self.assertIn(
-                    "Responsable projet\nERP source\n" + synthetic_phone("0100"),
+                    "Responsable projet\nAncien nom\n" + synthetic_phone("0100"),
                     draft.body,
                 )
+                self.assertNotIn("ERP source", draft.body)
                 self.assertFalse(draft.approvable)
                 self.assertIsNone(draft.to_recipient.email)
                 self.assertNotIn("pm" + chr(64) + TEST_DOMAIN,
@@ -1723,7 +1724,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "project_planning_change",
                 )
                 self.assertEqual(len(delta_payload["drafts"]), 1)
-                self.assertIn("6 h", delta_payload["drafts"][0]["body"])
+                self.assertNotIn("6 h", delta_payload["drafts"][0]["body"])
                 self.assertNotEqual(
                     delta_payload["snapshot_fingerprint"],
                     delta_payload["baseline_fingerprint"],
@@ -2218,8 +2219,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     draft = next(
                         row for row in changed.drafts if row.project_id == "P1"
                     )
-                    self.assertIn("(V-NEW-708B)", draft.body)
+                    self.assertIn("V-NEW-708B", draft.body)
+                    self.assertIn("REQ-843", draft.body)
+                    self.assertIn("(V-NEW-708B / REQ-843)", draft.body)
                     self.assertNotIn("Actif", draft.body)
+                    self.assertNotIn("()", draft.body)
                     self.assertNotIn("Camion remplacement 708B", draft.body)
                     self.assertNotIn("Camion 708B", draft.body)
                     self.assertNotIn("Nacelle 708B", draft.body)
@@ -2320,8 +2324,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertIn("Inspection urgente", preview_body)
                 self.assertIn("Installation approuvée", preview_body)
                 self.assertIn("Technicien ressource", preview_body)
-                self.assertIn("2 h", preview_body)
-                self.assertIn("1 h", preview_body)
+                self.assertNotIn("2 h", preview_body)
+                self.assertNotIn("1 h", preview_body)
                 self.assertIn("(NAC-MAIL-708B)", preview_body)
                 self.assertNotIn("Actif", preview_body)
                 self.assertNotIn("Nacelle courriel 708B", preview_body)
