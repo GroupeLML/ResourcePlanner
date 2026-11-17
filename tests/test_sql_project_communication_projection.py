@@ -1940,11 +1940,20 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     by_shift = {row.shift_id: row for row in r1_rows}
                     self.assertEqual(
                         {asset.asset_label for asset in by_shift["S1"].assets},
-                        {"Nacelle 708B", "Camion 708B", "Actif demande 843"},
+                        {
+                            "Nacelle 708B",
+                            "Camion 708B",
+                            "Actif demande 843",
+                            "Actif segment sans opérateur",
+                        },
                     )
                     self.assertEqual(
                         {asset.asset_label for asset in by_shift["S1-SECOND-708B"].assets},
-                        {"Camion 708B", "Actif demande 843"},
+                        {
+                            "Camion 708B",
+                            "Actif demande 843",
+                            "Actif segment sans opérateur",
+                        },
                     )
                     s2 = next(row for row in assignments if row.shift_id == "S2")
                     self.assertNotIn(
@@ -1973,7 +1982,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                             for asset in row.assets
                         },
                     )
-                    self.assertNotIn(
+                    self.assertIn(
                         "Actif segment sans opérateur",
                         {
                             asset.asset_label
@@ -1997,7 +2006,12 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                             asset.asset_label
                             for asset in shift_rows["S1"].assets
                         },
-                        {"Nacelle 708B", "Camion 708B", "Actif demande 843"},
+                        {
+                            "Nacelle 708B",
+                            "Camion 708B",
+                            "Actif demande 843",
+                            "Actif segment sans opérateur",
+                        },
                     )
                     self.assertEqual(
                         {
@@ -2008,6 +2022,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                             "OWNED_SHIFT",
                             "INHERITED_RESOURCE_PERIOD",
                             "INHERITED_REQUEST",
+                            "SEGMENT_CONTEXT",
                         },
                     )
                     self.assertEqual(
