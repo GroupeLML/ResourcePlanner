@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import math
 from typing import Sequence
 
 from .operational_contacts import ContactResolution
@@ -195,8 +196,16 @@ def build_project_communication_projection(
         raise ValueError("Version de provenance chantier non prise en charge")
     if request_provenance_version == 2:
         for row in assignments:
-            if row.standard_hours is None:
-                raise ValueError("Heures standard manquantes pour la provenance v2")
+            if (
+                row.standard_hours is None
+                or not math.isfinite(float(row.standard_hours))
+                or float(row.standard_hours) < 0
+            ):
+                raise ValueError(
+                    "Heures standard manquantes ou invalides pour la provenance v2"
+                )
+            if not isinstance(row.assets, tuple):
+                raise ValueError("Actifs Shift v2 non explicites")
 
     projects: dict[str, dict[str, object]] = {}
     global_diagnostics: list[str] = []
