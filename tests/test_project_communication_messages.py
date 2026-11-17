@@ -370,11 +370,153 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             self.assertIn(f"<strong><u>{label}</u></strong>", html)
         self.assertIn("<strong>Jeudi le 19 novembre 2026</strong>", html)
         self.assertIn("<strong>Vendredi le 20 novembre 2026</strong>", html)
+        self.assertIn('max-width:640px', html)
+        self.assertNotIn("<table", html)
         self.assertIn("<ul ", html)
         self.assertIn("<li ", html)
         self.assertNotIn("<u>Jeudi le 19 novembre 2026</u>", html)
         self.assertNotIn(f"<strong>{PROJECT_RESPONSIBILITY_FOOTER}</strong>", html)
         self.assertIn(PROJECT_RESPONSIBILITY_FOOTER, html)
+
+    def test_855_duration_rule_uses_snapshotted_standard_hours(self) -> None:
+        base = self._830_single_demand_projection(name=None, phone=None)
+        project_row = base.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        original = task.request_assignments[0]
+
+        for actual, standard, expected in (
+            (5.0, 7.5, "— 5 h"),
+            (7.5, 7.5, None),
+            (9.0, 7.5, None),
+            (1.0, 0.0, None),
+        ):
+            with self.subTest(actual=actual, standard=standard):
+                changed = replace(
+                    original,
+                    hours=actual,
+                    standard_hours=standard,
+                )
+                source = replace(
+                    base,
+                    projects=(
+                        replace(
+                            project_row,
+                            days=(
+                                replace(
+                                    day,
+                                    tasks=(
+                                        replace(
+                                            task,
+                                            request_assignments=(changed,),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                body = build_project_confirmation_batch(source).drafts[0].body
+                line = next(
+                    value
+                    for value in body.splitlines()
+                    if value.startswith("• SHAWN FRAPPIER-BARABÉ")
+                )
+                if expected is None:
+                    self.assertNotIn(" h", line)
+                else:
+                    self.assertIn(expected, line)
+
+    def test_855_shift_assets_are_per_shift_and_context_only_assets_are_excluded(self) -> None:
+        base = self._830_single_demand_projection(
+            name="Clément",
+            phone="555-0151",
+            two_shifts=True,
+        )
+        project_row = base.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        first, second = task.request_assignments
+        mat151 = replace(
+            first.assets[0],
+            allocation_id="ALLOC-151",
+            asset_id="ASSET-151",
+            asset_code="MAT151",
+            association_kind="OWNED_SHIFT",
+        )
+        mat204 = replace(
+            first.assets[0],
+            allocation_id="ALLOC-204",
+            asset_id="ASSET-204",
+            asset_code="MAT204",
+            association_kind="INHERITED_RESOURCE_PERIOD",
+        )
+        context = replace(
+            first.assets[0],
+            allocation_id="ALLOC-CONTEXT",
+            asset_id="ASSET-CONTEXT",
+            asset_code="CTX999",
+            association_kind="RELATED_REQUEST",
+        )
+        changed_task = replace(
+            task,
+            request_assignments=(
+                replace(first, assets=(mat151, context)),
+                replace(second, assets=(mat204,)),
+            ),
+        )
+        source = replace(
+            base,
+            projects=(
+                replace(
+                    project_row,
+                    days=(replace(day, tasks=(changed_task,)),),
+                ),
+            ),
+        )
+        body = build_project_confirmation_batch(source).drafts[0].body
+        self.assertIn("• SHAWN FRAPPIER-BARABÉ — 3 h (MAT151)", body)
+        self.assertIn("• SHAWN FRAPPIER-BARABÉ — 5 h (MAT204)", body)
+        self.assertNotIn("CTX999", body)
+        self.assertNotIn("Actif", body)
+        self.assertNotIn("()", body)
+
+    def test_855_dynamic_description_contact_and_employee_values_are_html_escaped(self) -> None:
+        base = self._830_single_demand_projection(
+            name="Clément <Chef> & équipe",
+            phone="555-0151",
+        )
+        project_row = base.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        changed_task = replace(
+            task,
+            task_description="Installer <harnais> & tester",
+            request_assignments=(
+                replace(
+                    task.request_assignments[0],
+                    resource_name="654 - DAVID <DERY> & FILS",
+                ),
+            ),
+        )
+        source = replace(
+            base,
+            projects=(
+                replace(
+                    project_row,
+                    project_name="Rheinmetal <Nord> & Sud",
+                    days=(replace(day, tasks=(changed_task,)),),
+                ),
+            ),
+        )
+        draft = build_project_confirmation_batch(source).drafts[0]
+        html = draft.body_html or ""
+        self.assertIn("Rheinmetal &lt;Nord&gt; &amp; Sud", html)
+        self.assertIn("Installer &lt;harnais&gt; &amp; tester", html)
+        self.assertIn("Clément &lt;Chef&gt; &amp; équipe", html)
+        self.assertIn("DAVID &lt;DERY&gt; &amp; FILS", html)
+        self.assertNotIn("<Chef>", html)
+        self.assertNotIn("<harnais>", html)
 
     def test_855_html_change_changes_message_content_fingerprint(self) -> None:
         source = projection(
