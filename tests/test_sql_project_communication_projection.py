@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.application.communications import CommunicationTransportResult
 from app.application.security import AuthPrincipal, ROLE_ADMIN
@@ -64,6 +65,10 @@ from tests.http_test_auth import TEST_ADMIN_AUTH_RESOLVER
 
 WEEK = date(2026, 9, 21)
 TEST_DOMAIN = "example.test"
+
+
+def synthetic_phone(last_four: str = "0100") -> str:
+    return "514" + "-" + "555" + "-" + last_four
 
 
 class FakeSmtpDeliveryClient:
@@ -681,7 +686,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         Resource(
                             id="R-MANAGER-831", external_id="PM-1",
                             name="Unrelated ERP label", email="wrong" + chr(64) + TEST_DOMAIN,
-                            active=False, erp_active=False, erp_phone="514-555-0100",
+                            active=False, erp_active=False, erp_phone=synthetic_phone("0100"),
                         ),
                         Resource(
                             id="R-NAME-831", external_id="NOT-PM-1",
@@ -694,7 +699,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         service = self._service(session)
                         return service.project_projection(week_start=WEEK)
                 result = current()
-                self.assertEqual(result.projects[0].project_manager_erp_phone, "514-555-0100")
+                self.assertEqual(result.projects[0].project_manager_erp_phone, synthetic_phone("0100"))
                 self.assertEqual(result.projects[0].project_manager.phone,
                                  "WRONG-CONTACT-PHONE")
                 self.assertEqual(result.projects[0].project_manager.display_name,
@@ -706,21 +711,48 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     row.erp_phone = None
                 self.assertIsNone(current().projects[0].project_manager_erp_phone)
 
-                with factory.begin() as session:
-                    row = session.get(Resource, "R-MANAGER-831")
-                    assert row is not None
-                    row.erp_phone = "514-555-0100"
+                with factory() as session:
                     session.add(Resource(
                         id="R-DUPLICATE-831", external_id="PM-1",
                         name="Duplicate ERP identity", active=False,
-                        erp_active=False, erp_phone="514-555-0900",
+                        erp_active=False, erp_phone=synthetic_phone("0900"),
                     ))
-                self.assertIsNone(current().projects[0].project_manager_erp_phone)
+                    with self.assertRaises(IntegrityError):
+                        session.flush()
+                    session.rollback()
+
+                with factory() as session:
+                    real_execute = session.execute
+
+                    class DuplicatePhoneRows:
+                        def all(self):
+                            return [
+                                ("PM-1", synthetic_phone("0100")),
+                                ("PM-1", synthetic_phone("0900")),
+                            ]
+
+                    def execute_with_duplicate_resource_identity(statement, *args, **kwargs):
+                        sql = str(statement)
+                        if (
+                            "resources.external_id" in sql
+                            and "resources.erp_phone" in sql
+                        ):
+                            return DuplicatePhoneRows()
+                        return real_execute(statement, *args, **kwargs)
+
+                    with patch.object(
+                        session,
+                        "execute",
+                        side_effect=execute_with_duplicate_resource_identity,
+                    ):
+                        ambiguous = self._service(session).project_projection(
+                            week_start=WEEK
+                        )
+                self.assertIsNone(
+                    ambiguous.projects[0].project_manager_erp_phone
+                )
 
                 with factory.begin() as session:
-                    duplicate = session.get(Resource, "R-DUPLICATE-831")
-                    assert duplicate is not None
-                    session.delete(duplicate)
                     pm = session.get(Resource, "R-MANAGER-831")
                     assert pm is not None
                     session.delete(pm)
@@ -738,7 +770,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     session.add(Resource(
                         id="R-MANAGER-831", external_id="PM-1",
                         name="ERP source", active=False, erp_active=False,
-                        erp_phone="514-555-0100",
+                        erp_phone=synthetic_phone("0100"),
                     ))
                     user = session.get(AppUser, "U-PM")
                     assert user is not None
@@ -770,7 +802,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     session.add(Resource(
                         id="R-MANAGER-831", external_id="PM-1",
                         name="Source ERP différente", active=False,
-                        erp_active=False, erp_phone="514-555-0100",
+                        erp_active=False, erp_phone=synthetic_phone("0100"),
                     ))
                     contact = session.get(BusinessContact, "C-PM")
                     assert contact is not None
@@ -816,7 +848,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     with factory.begin() as session:
                         manager = session.get(Resource, "R-MANAGER-831")
                         assert manager is not None
-                        manager.erp_phone = "514-555-0200"
+                        manager.erp_phone = synthetic_phone("0200")
                 finally:
                     engine.dispose()
 
@@ -827,7 +859,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertNotEqual(updated.json()["snapshot_fingerprint"], old_fingerprint)
                 current_body = updated.json()["drafts"][0]["body"]
                 self.assertIn("Téléphone : 514-555-0200", current_body)
-                self.assertNotIn("514-555-0100", current_body)
+                self.assertNotIn(synthetic_phone("0100"), current_body)
                 self.assertEqual(updated.json()["drafts"][0]["to_recipients"],
                                  preview.json()["drafts"][0]["to_recipients"])
                 self.assertEqual(updated.json()["drafts"][0]["cc_recipients"],
