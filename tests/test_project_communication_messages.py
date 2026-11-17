@@ -4,6 +4,7 @@ from datetime import date
 from dataclasses import replace
 import json
 import unittest
+from unittest.mock import patch
 
 from app.domain.operational_contacts import ContactResolution, STATUS_RESOLVED
 from app.domain.project_communication import (
@@ -248,6 +249,24 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertEqual(
             render_project_review_html("Texte <édité> & sûr"),
             "<div><div>Texte &lt;édité&gt; &amp; sûr</div></div>",
+        )
+
+    def test_855_html_change_changes_message_content_fingerprint(self) -> None:
+        source = projection(
+            project(resources=(resource("R1", "Alice", address=email("alice")),))
+        )
+        first = build_project_confirmation_batch(source).drafts[0]
+        with patch(
+            "app.domain.project_communication_messages._render_project_html",
+            return_value="<div>alternate-html</div>",
+        ):
+            second = build_project_confirmation_batch(source).drafts[0]
+
+        self.assertEqual(first.body, second.body)
+        self.assertNotEqual(first.body_html, second.body_html)
+        self.assertNotEqual(
+            first.content_fingerprint,
+            second.content_fingerprint,
         )
 
     def test_resource_line_without_asset_is_unchanged(self) -> None:
