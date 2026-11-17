@@ -140,8 +140,8 @@ class MicrosoftGraphCommunicationTransport(CommunicationTransportPort):
         return {
             "subject": message.subject,
             "body": {
-                "contentType": "Text",
-                "content": message.body,
+                "contentType": "HTML" if message.body_html is not None else "Text",
+                "content": message.body_html if message.body_html is not None else message.body,
             },
             "toRecipients": [
                 {"emailAddress": {"address": address}}
