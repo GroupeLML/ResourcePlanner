@@ -862,7 +862,10 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
 
         self.assertIn("1000 - Projet 1000", draft.body)
         self.assertIn("Responsable projet\nChargé Démo", draft.body)
-        self.assertNotIn("Jean Responsable", draft.body)
+        self.assertIn(
+            "Responsable opérationnel : Jean Responsable — " + "555" + "-" + "0100",
+            draft.body,
+        )
         self.assertIn("210 Installation de poteaux", draft.body)
         self.assertIn("220 Mise en service", draft.body)
         self.assertIn("Lundi le 21 septembre 2026", draft.body)
@@ -908,10 +911,14 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
 
         draft = build_project_confirmation_batch(projection(source)).drafts[0]
 
-        self.assertIn("• Alice", draft.body)
-        self.assertIn("• Bob", draft.body)
-        self.assertNotIn("Responsable Alice", draft.body)
-        self.assertNotIn("Responsable Bob", draft.body)
+        self.assertIn(
+            "• Alice — Responsable : Responsable Alice",
+            draft.body,
+        )
+        self.assertIn(
+            "• Bob — Responsable : Responsable Bob",
+            draft.body,
+        )
         self.assertEqual(
             {row.email for row in draft.cc_recipients},
             {email("alice"), email("bob")},
@@ -1444,7 +1451,10 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                     "Responsable projet\nChargé Démo\n" + number,
                     body,
                 )
-                self.assertNotIn("Jean Responsable", body)
+                self.assertIn(
+                    "Responsable opérationnel : Jean Responsable",
+                    body,
+                )
                 self.assertIn("Contact chantier\n", body)
                 self.assertEqual(len(batch.drafts), 1)
                 self.assertEqual(batch.drafts[0].to_recipients,
