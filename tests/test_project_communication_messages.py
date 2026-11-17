@@ -309,7 +309,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                     resource_name="654 - DAVID DERY",
                     hours=8.0,
                     site_contact_name="Clément",
-                    site_contact_phone="438-938-6557",
+                    site_contact_phone=synthetic_phone("0655"),
                     assets=(asset,),
                     standard_hours=8.0,
                 ),
@@ -322,7 +322,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                     resource_name="MATIS PELLETIER",
                     hours=8.0,
                     site_contact_name="Clément",
-                    site_contact_phone="438-938-6557",
+                    site_contact_phone=synthetic_phone("0655"),
                     assets=(),
                     standard_hours=8.0,
                 ),
@@ -355,7 +355,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                     project_number="M0187",
                     project_name="Rheinmetal",
                     project_manager=manager,
-                    project_manager_erp_phone="514-743-8475",
+                    project_manager_erp_phone=synthetic_phone("0147"),
                     days=(
                         ProjectCommunicationDay(day=day_one, tasks=(task_one,)),
                         ProjectCommunicationDay(day=day_two, tasks=(task_two,)),
@@ -371,11 +371,11 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             "M0187 - Rheinmetal\n"
             "\nResponsable projet\n"
             "Marie-Pier Dulac\n"
-            "514-743-8475\n"
+            synthetic_phone("0147") + "\n"
             "\nDescription\n"
             "AS07112-1 Installation électrique pour branchement harnais (T & M)\n"
             "\nContact chantier\n"
-            "Clément : 438-938-6557\n"
+            "Clément : " + synthetic_phone("0655") + "\n"
             "\nHoraire\n"
             "\nJeudi le 19 novembre 2026\n"
             "• DAVID DERY (MAT151)\n"
@@ -434,6 +434,12 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                                     tasks=(
                                         replace(
                                             task,
+                                            resources=(
+                                                replace(
+                                                    task.resources[0],
+                                                    hours=actual,
+                                                ),
+                                            ),
                                             request_assignments=(changed,),
                                         ),
                                     ),
@@ -1007,7 +1013,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             )
         )
 
-        self.assertNotEqual(first.drafts[0].body, second.drafts[0].body)
+        self.assertEqual(first.drafts[0].body, second.drafts[0].body)
         self.assertNotEqual(
             first.drafts[0].content_fingerprint,
             second.drafts[0].content_fingerprint,
