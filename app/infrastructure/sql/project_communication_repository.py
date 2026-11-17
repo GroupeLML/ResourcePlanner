@@ -11,6 +11,7 @@ from ...application.project_managers import (
     EffectiveProjectManager,
     ProjectManagerResolutionService,
 )
+from ...domain.availability_rules import availability_state_for_day
 from ...domain.confirmation import effective_confirmation
 from ...domain.planning_engine import MISSING_ALLOCATION_TYPE
 from ...domain.reservable_assets import AssetRequirementOrigin
@@ -19,6 +20,7 @@ from ...domain.project_communication import (
     ProjectCommunicationAssignment,
     ProjectCommunicationParticipant,
 )
+from .availability_class_scope import availability_class_codes_by_rule
 from .asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from .asset_qualification import (
     QUALIFICATION_SATISFIED,
@@ -34,6 +36,7 @@ from .models import (
     ORIGIN_QUICK_SHIFT,
     Project,
     Resource,
+    ResourceAvailabilityRule,
     ResourceRequirement,
     Shift,
     WorkforceRequest,
@@ -66,6 +69,24 @@ def _text(value: object) -> str:
 
 def _unique(values: list[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
+
+
+def _availability_record(
+    rule: ResourceAvailabilityRule,
+    resource_class_codes: tuple[str, ...] = (),
+) -> dict[str, object]:
+    return {
+        "Type": rule.availability_type,
+        "Actif": bool(rule.active),
+        "Technicien": rule.resource_id or "",
+        "ClassesRessources": resource_class_codes,
+        "DateDebut": rule.start_date,
+        "DateFin": rule.end_date,
+        "JoursSemaine": rule.weekdays,
+        "HeureDebut": rule.start_time,
+        "HeureFin": rule.end_time,
+        "Note": rule.note,
+    }
 
 
 class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
@@ -413,6 +434,35 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                             [],
                         ).append(diagnostic)
 
+        availability_rules = self._session.scalars(
+            select(ResourceAvailabilityRule).where(
+                ResourceAvailabilityRule.active == True  # noqa: E712
+            )
+        ).all()
+        availability_class_codes = availability_class_codes_by_rule(
+            self._session,
+            tuple(rule.id for rule in availability_rules),
+        )
+        availability_records = tuple(
+            _availability_record(
+                rule,
+                availability_class_codes.get(rule.id, ()),
+            )
+            for rule in availability_rules
+        )
+        standard_hours_by_resource_day: dict[tuple[str, date], float] = {}
+        for shift, _human_requirement, resource, _project in rows:
+            key = (resource.id, shift.work_date)
+            if key in standard_hours_by_resource_day:
+                continue
+            state = availability_state_for_day(
+                availability_records,
+                resource.id,
+                shift.work_date,
+                resource_class=resource.resource_class,
+            )
+            standard_hours_by_resource_day[key] = round(float(state.hours), 2)
+
         assets_by_shift: dict[str, list[ProjectCommunicationAsset]] = {}
         for shift, human_requirement, _resource, _project in rows:
             seen_allocations: set[str] = set()
@@ -651,6 +701,9 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                         if request is not None else None
                     ),
                     assets=tuple(assets_by_shift.get(shift.id, ())),
+                    standard_hours=standard_hours_by_resource_day[
+                        (resource.id, shift.work_date)
+                    ],
                     diagnostics=diagnostics,
                 )
             )
