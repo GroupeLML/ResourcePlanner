@@ -77,13 +77,19 @@ Consequently a change to chantier contact, ERP manager phone, applicable standar
 
 Prepared bodies remain immutable. Old prepared/approved P0/P1 batches become incompatible/stale once the current projection is v2 and must be cancelled/re-prepared through the existing workflow; they are never upgraded in place.
 
-### 8. Future HTML/text boundary
+### 8. Durable HTML/text representation
 
-#855 later phases may add a durable HTML representation alongside plain text, but both must derive from one semantic renderer and remain one communication authority. Phase 2 does not add HTML fields, migrations, transport changes, or manual-review redesign.
+#855 Phase 3 retains required plain-text `body` as the canonical fallback and adds nullable persisted `body_html`. Both representations derive from one transient semantic composition; no semantic tree is persisted.
+
+Prepared subject/text/HTML are immutable delivery artifacts. Manual review remains one path: unchanged text retains the generated pair, while edited plain text regenerates escaped HTML server-side. Client-supplied HTML is rejected and never becomes authority.
+
+Graph, SMTP and EML consume the persisted pair without consulting live Planning data. Graph selects HTML only when persisted HTML exists; SMTP/EML use plain text first with HTML as a multipart alternative. Historical rows with null HTML retain text-only behavior.
+
+Migration `0036_communication_message_body_html` widens `communication_messages` with nullable `body_html`; no backfill or row rewrite is performed.
 
 ## Rollback implications
 
-The database schema is unchanged by this capability. A rollback to code that cannot understand provenance v2 must not preview, prepare, approve, deliver, regenerate, or rewrite project communication snapshots/fingerprints created under v2. Restore a v2-capable binary before communication operations resume.
+The `body_html` migration is widening-only and remains forward on operational rollback. An older PREV image may ignore the nullable column and deliver only plain text, but it may also lack provenance-v2 or prepared-artifact semantics. Before rollback, verify the actual immutable PREV image capabilities. If it cannot safely operate on v2 snapshots or current prepared messages, freeze project communication preview/prepare/approve/deliver/regenerate operations until compatible code is restored. Do not automatically downgrade or drop populated HTML.
 
 ## Consequences
 
