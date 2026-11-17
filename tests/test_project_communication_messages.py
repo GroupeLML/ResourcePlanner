@@ -856,9 +856,15 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             provenance = (row,)
             employee = task.resources[0]
         provenance = tuple(
-            replace(item, workforce_request_id="DEMAND-124",
-                    request_number="DMO-2026-0124",
-                    site_contact_name=name, site_contact_phone=phone)
+            replace(
+                item,
+                workforce_request_id="DEMAND-124",
+                request_number="DMO-2026-0124",
+                site_contact_name=name,
+                site_contact_phone=phone,
+                assets=(asset,),
+                standard_hours=8.0,
+            )
             for item in provenance
         )
         modified_task = replace(
@@ -869,6 +875,8 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             projects=(replace(
                 source, days=(replace(day, tasks=(modified_task,)),)
             ),),
+            request_provenance_version=2,
+            request_provenance_complete=True,
         )
 
     def test_866_single_demand_without_contact_stays_compact(self) -> None:
