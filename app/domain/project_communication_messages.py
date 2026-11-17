@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date
 import hashlib
+from html import escape
 import json
 import math
 from typing import Sequence
@@ -85,11 +86,17 @@ class ProjectCommunicationDraft:
     cc_recipients: tuple[ProjectCommunicationParticipant, ...]
     subject: str
     body: str
+    body_html: str | None
     message_kind: str
     week_start: date
     content_fingerprint: str
     approvable: bool
     diagnostics: tuple[ProjectMessageDiagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectMessageSemantic:
+    lines: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -768,11 +775,11 @@ def _resource_suffix(resource) -> str:
     return f" ({', '.join(signals)})"
 
 
-def _project_body(
+def _project_semantic_message(
     project: ProjectCommunicationProject,
     *,
     change_kind: str | None = None,
-) -> str:
+) -> ProjectMessageSemantic:
     lines = _project_header(project)
     if change_kind is not None:
         labels = {
@@ -898,7 +905,29 @@ def _project_body(
                     f"  • {resource.resource_name} — {resource.hours:g} h"
                     f"{_resource_suffix(resource)}{asset_suffix}{responsible_suffix}"
                 )
-    return "\n".join(lines)
+    return ProjectMessageSemantic(lines=tuple(lines))
+
+
+def _render_project_text(message: ProjectMessageSemantic) -> str:
+    return "\n".join(message.lines)
+
+
+def _render_project_html(message: ProjectMessageSemantic) -> str:
+    rendered: list[str] = []
+    for line in message.lines:
+        if line:
+            rendered.append(f"<div>{escape(line)}</div>")
+        else:
+            rendered.append("<br>")
+    return "<div>" + "".join(rendered) + "</div>"
+
+
+def render_project_review_html(body: str) -> str:
+    """Render reviewed plain text as escaped HTML without accepting client markup."""
+
+    return _render_project_html(
+        ProjectMessageSemantic(lines=tuple(str(body).splitlines()))
+    )
 
 
 def _subject(
@@ -921,6 +950,7 @@ def _draft_fingerprint_payload(
     cc_recipients: Sequence[ProjectCommunicationParticipant],
     subject: str,
     body: str,
+    body_html: str | None,
     message_kind: str,
     diagnostics: Sequence[ProjectMessageDiagnostic],
     source_projects: Sequence[ProjectCommunicationProject],
@@ -931,6 +961,7 @@ def _draft_fingerprint_payload(
         tuple(_participant_payload(value) for value in cc_recipients),
         subject,
         body,
+        body_html,
         message_kind,
         tuple(
             (
@@ -969,7 +1000,9 @@ def _build_draft(
         week_start,
         change=message_kind == MESSAGE_KIND_PLANNING_CHANGE,
     )
-    body = _project_body(project, change_kind=change_kind)
+    semantic = _project_semantic_message(project, change_kind=change_kind)
+    body = _render_project_text(semantic)
+    body_html = _render_project_html(semantic)
     fingerprint = _fingerprint_payload(
         _draft_fingerprint_payload(
             message_key=message_key,
@@ -977,6 +1010,7 @@ def _build_draft(
             cc_recipients=cc_recipients,
             subject=subject,
             body=body,
+            body_html=body_html,
             message_kind=message_kind,
             diagnostics=diagnostics,
             source_projects=cc_sources,
@@ -995,6 +1029,7 @@ def _build_draft(
         cc_recipients=cc_recipients,
         subject=subject,
         body=body,
+        body_html=body_html,
         message_kind=message_kind,
         week_start=week_start,
         content_fingerprint=fingerprint,
