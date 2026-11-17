@@ -2866,9 +2866,7 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
     expect(aliceLine).toBeTruthy();
     const expectedAssetCode = refreshedCommunicationAsset!.code.replace(
       /[.*+?^${}()|[\]\\]/g,
-      "\\    const previewText = await body.inputValue();
-    expect(previewText).not.toContain("Actif :");
-    expect(previewText).toContain("(" + refreshedCommunicationAsset!.code + ")");",
+      (match) => "\\" + match,
     );
     expect(aliceLine!).toMatch(
       new RegExp("\\([^)]*" + expectedAssetCode + "[^)]*\\)"),
