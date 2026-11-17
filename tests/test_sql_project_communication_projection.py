@@ -903,7 +903,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     projection = self._service(session).project_preview(week_start=WEEK)
                 self.assertEqual(len(projection.drafts), 1)
                 draft = projection.drafts[0]
-                self.assertIn("Téléphone : " + synthetic_phone("0100"), draft.body)
+                self.assertIn(
+                    "Responsable projet\nERP source\n" + synthetic_phone("0100"),
+                    draft.body,
+                )
                 self.assertFalse(draft.approvable)
                 self.assertIsNone(draft.to_recipient.email)
                 self.assertNotIn("pm" + chr(64) + TEST_DOMAIN,
@@ -1082,7 +1085,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 current_body = updated.json()["drafts"][0]["body"]
                 current_html = updated.json()["drafts"][0]["body_html"]
                 self.assertIsNotNone(current_html)
-                self.assertIn("Téléphone : " + synthetic_phone("0200"), current_body)
+                self.assertIn(
+                    "Responsable projet\nChargé de projet Démo\n"
+                    + synthetic_phone("0200"),
+                    current_body,
+                )
                 self.assertNotIn(synthetic_phone("0100"), current_body)
                 self.assertEqual(updated.json()["drafts"][0]["to_recipients"],
                                  preview.json()["drafts"][0]["to_recipients"])
