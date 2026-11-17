@@ -16,7 +16,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.application.communications import CommunicationTransportResult
+from app.application.communications import (
+    CommunicationMessageRecord,
+    CommunicationTransportResult,
+)
 from app.application.security import AuthPrincipal, ROLE_ADMIN
 from app.server.security import static_auth_resolver
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
@@ -26,7 +29,10 @@ from app.domain.project_communication_messages import (
     project_projection_fingerprint,
 )
 from app.application.operational_contacts import OperationalContactService
-from app.application.project_communications import ProjectCommunicationService
+from app.application.project_communications import (
+    ProjectCommunicationService,
+    _project_message_eml,
+)
 from app.domain.operational_contacts import (
     PROVENANCE_MIGRATION_OBSERVED,
     RESPONSIBILITY_CONTEXT_VERSION,
@@ -1035,6 +1041,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(preview.status_code, 200, preview.text)
                 old_fingerprint = preview.json()["snapshot_fingerprint"]
                 first_body = preview.json()["drafts"][0]["body"]
+                first_html = preview.json()["drafts"][0]["body_html"]
+                self.assertIsNotNone(first_html)
                 self.assertIn("Chargé de projet : Chargé de projet Démo", first_body)
                 self.assertIn("Téléphone : " + synthetic_phone("0100"), first_body)
                 self.assertNotIn("WRONG-CONTACT-PHONE", first_body)
@@ -1051,6 +1059,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(prepared.status_code, 201, prepared.text)
                 old_id = prepared.json()["id"]
                 self.assertEqual(prepared.json()["messages"][0]["body"], first_body)
+                self.assertEqual(prepared.json()["messages"][0]["body_html"], first_html)
 
                 engine = create_sql_engine(database_url)
                 factory = create_session_factory(engine)
@@ -1068,6 +1077,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(updated.status_code, 200, updated.text)
                 self.assertNotEqual(updated.json()["snapshot_fingerprint"], old_fingerprint)
                 current_body = updated.json()["drafts"][0]["body"]
+                current_html = updated.json()["drafts"][0]["body_html"]
+                self.assertIsNotNone(current_html)
                 self.assertIn("Téléphone : " + synthetic_phone("0200"), current_body)
                 self.assertNotIn(synthetic_phone("0100"), current_body)
                 self.assertEqual(updated.json()["drafts"][0]["to_recipients"],
@@ -1087,6 +1098,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(stored.status_code, 200, stored.text)
                 old = next(row for row in stored.json() if row["id"] == old_id)
                 self.assertEqual(old["messages"][0]["body"], first_body)
+                self.assertEqual(old["messages"][0]["body_html"], first_html)
 
                 replacement = client.post(
                     "/api/v1/communications/project-batches",
@@ -1099,6 +1111,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(replacement.status_code, 201, replacement.text)
                 new_id = replacement.json()["id"]
                 self.assertEqual(replacement.json()["messages"][0]["body"], current_body)
+                self.assertEqual(
+                    replacement.json()["messages"][0]["body_html"],
+                    current_html,
+                )
                 approved = client.post(
                     f"/api/v1/communications/project-batches/{new_id}/approve"
                 )
@@ -1109,6 +1125,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(drafts.status_code, 200, drafts.text)
                 self.assertEqual(len(transport.messages), 1)
                 self.assertEqual(transport.messages[0].body, current_body)
+                self.assertEqual(transport.messages[0].body_html, current_html)
 
                 configured = client.put(
                     "/api/v1/admin/settings/smtp",
@@ -1132,6 +1149,30 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(sent.status_code, 200, sent.text)
                 self.assertEqual(smtp.attempt_bodies, [current_body])
+                self.assertEqual(smtp.attempt_html, [current_html])
+
+    def test_855_historical_null_html_eml_remains_text_only(self) -> None:
+        message = CommunicationMessageRecord(
+            id="M-HISTORICAL-855",
+            audience="project",
+            recipient_id="P1",
+            recipient_email="pm" + chr(64) + TEST_DOMAIN,
+            subject="Sujet historique",
+            body="Corps texte historique",
+            body_html=None,
+            included=True,
+            to_emails=("pm" + chr(64) + TEST_DOMAIN,),
+        )
+
+        mime = BytesParser(policy=policy.default).parsebytes(
+            _project_message_eml(message)
+        )
+        self.assertFalse(mime.is_multipart())
+        self.assertEqual(mime.get_content_type(), "text/plain")
+        self.assertEqual(
+            mime.get_content().replace("\r\n", "\n").rstrip("\n"),
+            "Corps texte historique",
+        )
 
     def test_projection_uses_approved_context_and_resource_recipients(self) -> None:
         with TemporaryDirectory() as directory:
