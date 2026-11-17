@@ -25,6 +25,7 @@ from ..domain.project_communication_messages import (
     build_project_confirmation_batch,
     build_project_delta_batch,
     project_projection_fingerprint,
+    render_project_review_html,
 )
 from .communications import (
     DELIVERY_PROVIDER_SMTP,
@@ -112,6 +113,8 @@ def _project_message_eml(message: CommunicationMessageRecord) -> bytes:
         mime["Cc"] = ", ".join(message.cc_emails)
     mime["Subject"] = message.subject
     mime.set_content(message.body)
+    if message.body_html is not None:
+        mime.add_alternative(message.body_html, subtype="html")
     return mime.as_bytes(policy=SMTP)
 
 
@@ -359,6 +362,17 @@ class ProjectCommunicationService:
             return draft, True
         subject = draft.subject if review.subject is None else review.subject.strip()
         body = draft.body if review.body is None else review.body.strip()
+        body_html = (
+            draft.body_html
+            if body == draft.body
+            else render_project_review_html(body)
+        )
+        if (
+            subject == draft.subject
+            and body == draft.body
+            and body_html == draft.body_html
+        ):
+            return draft, bool(review.include)
         content_fingerprint = hashlib.sha256(
             (
                 draft.content_fingerprint
@@ -366,6 +380,8 @@ class ProjectCommunicationService:
                 + subject
                 + "\n"
                 + body
+                + "\n"
+                + (body_html or "")
             ).encode("utf-8")
         ).hexdigest()
         return (
@@ -373,6 +389,7 @@ class ProjectCommunicationService:
                 draft,
                 subject=subject,
                 body=body,
+                body_html=body_html,
                 content_fingerprint=content_fingerprint,
             ),
             bool(review.include),
@@ -618,6 +635,7 @@ class ProjectCommunicationService:
                 recipient_email=str(message.recipient_email or "").strip(),
                 subject=message.subject,
                 body=message.body,
+                body_html=message.body_html,
                 cc_emails=message.cc_emails,
                 to_emails=message.to_emails,
             )
@@ -759,6 +777,7 @@ class ProjectCommunicationService:
                 recipient_email=str(message.recipient_email or "").strip(),
                 subject=message.subject,
                 body=message.body,
+                body_html=message.body_html,
                 cc_emails=message.cc_emails,
                 to_emails=message.to_emails,
             )
