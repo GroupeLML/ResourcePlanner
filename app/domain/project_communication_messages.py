@@ -1194,9 +1194,24 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
             for day in project.get("days") or ():
                 for task in day.get("tasks") or ():
                     for assignment in task.get("request_assignments") or ():
-                        if "assets" not in assignment or "standard_hours" not in assignment:
+                        if (
+                            "assets" not in assignment
+                            or not isinstance(assignment.get("assets"), list)
+                            or "standard_hours" not in assignment
+                            or assignment.get("standard_hours") is None
+                        ):
                             raise ValueError(
                                 "Snapshot provenance v2 incomplet: actifs/heures standard absents"
+                            )
+                        try:
+                            standard_hours = float(assignment["standard_hours"])
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError(
+                                "Snapshot provenance v2 invalide: heures standard non numériques"
+                            ) from exc
+                        if not math.isfinite(standard_hours) or standard_hours < 0:
+                            raise ValueError(
+                                "Snapshot provenance v2 invalide: heures standard"
                             )
 
     def participant(row):
