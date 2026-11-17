@@ -129,6 +129,10 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
             [asset.asset_code for asset in employee_assigned_assets(assignments[0])],
             ["MAT151"],
         )
+        self.assertEqual(
+            [asset.asset_code for asset in result.projects[0].days[0].tasks[0].resources[0].assets],
+            ["MAT151"],
+        )
 
     def test_855_v2_rejects_missing_standard_hours(self) -> None:
         with self.assertRaisesRegex(ValueError, "Heures standard"):
