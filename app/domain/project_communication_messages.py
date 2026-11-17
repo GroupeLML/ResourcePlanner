@@ -682,15 +682,26 @@ def _project_body(
                 by_request: dict[str | None, list[ProjectCommunicationRequestAssignment]] = {}
                 for item in task.request_assignments:
                     by_request.setdefault(item.workforce_request_id, []).append(item)
-                # A single contactless request needs no extra detail; preserve
-                # the existing compact aggregated schedule in that case.
-                show_request_work = (
-                    len(by_request) > 1
-                    or any(
-                        item.site_contact_name or item.site_contact_phone
-                        for item in task.request_assignments
-                    )
-                )
+                # Render contribution lines only when distinct provenance
+                # groups explain the canonical total. Multiple physical Shifts
+                # for the same demand do not create separate groups; None is
+                # a genuine ad-hoc provenance group when mixed with a demand.
+                show_request_work = len(by_request) > 1
+                if not show_request_work and len(by_request) == 1:
+                    request_id, group = next(iter(by_request.items()))
+                    if request_id is not None:
+                        first = group[0]
+                        if first.site_contact_name or first.site_contact_phone:
+                            lines.append(
+                                f"Demande {first.request_number or request_id}"
+                            )
+                            contact = " — ".join(
+                                part for part in (
+                                    first.site_contact_name,
+                                    first.site_contact_phone,
+                                ) if part
+                            )
+                            lines.append(f"  Contact chantier : {contact}")
                 if show_request_work:
                     for request_id, group in sorted(
                         by_request.items(), key=lambda pair: pair[0] or ""
