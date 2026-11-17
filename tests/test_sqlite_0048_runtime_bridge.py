@@ -788,10 +788,11 @@ def _reshape_as_0048(path: Path) -> None:
             """
         )
         # The 0048 fixture is built from current ORM metadata for its other
-        # unchanged tables. Remove only the two post-0048 #830 columns before
-        # marking it as the frozen source revision; migration 0035 owns them.
+        # unchanged tables. Remove columns owned by forward migrations after
+        # 0048 before marking this copy as the frozen source revision.
         raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_contact_phone")
         raw.execute("ALTER TABLE workforce_requests DROP COLUMN site_contact_name")
+        raw.execute("ALTER TABLE communication_messages DROP COLUMN body_html")
         raw.commit()
     finally:
         raw.close()
