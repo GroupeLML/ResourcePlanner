@@ -274,12 +274,31 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         day_one = date(2026, 11, 19)
         day_two = date(2026, 11, 20)
+        david_day_one = replace(
+            resource(
+                "R-DAVID",
+                "654 - DAVID DERY",
+                address=email("david"),
+                hours=8.0,
+                assets=(asset,),
+            ),
+            shift_ids=("S-DAVID-19",),
+        )
+        matis_day_one = replace(
+            resource(
+                "R-MATIS",
+                "MATIS PELLETIER",
+                address=email("matis"),
+                hours=8.0,
+            ),
+            shift_ids=("S-MATIS-19",),
+        )
         task_one = ProjectCommunicationTask(
             task_description="Installation électrique pour branchement harnais (T & M)",
             task_ids=("TASK-855",),
             task_codes=("AS07112-1",),
             operational_responsibles=(),
-            resources=(),
+            resources=(david_day_one, matis_day_one),
             request_assignments=(
                 ProjectCommunicationRequestAssignment(
                     shift_id="S-DAVID-19",
@@ -311,6 +330,13 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         task_two = replace(
             task_one,
+            resources=(
+                replace(
+                    david_day_one,
+                    hours=5.0,
+                    shift_ids=("S-DAVID-20",),
+                ),
+            ),
             request_assignments=(
                 replace(
                     task_one.request_assignments[0],
