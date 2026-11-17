@@ -971,11 +971,13 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         mapped = (
             replace(
                 original_assignments[0],
+                hours=3.0,
                 assets=(first_asset,),
                 standard_hours=8.0,
             ),
             replace(
                 original_assignments[1],
+                hours=5.0,
                 assets=(second_asset,),
                 standard_hours=8.0,
             ),
