@@ -369,20 +369,24 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         draft = build_project_confirmation_batch(source).drafts[0]
         expected = (
             "M0187 - Rheinmetal\n"
-            "\nResponsable projet\n"
-            "Marie-Pier Dulac\n"
-            synthetic_phone("0147") + "\n"
-            "\nDescription\n"
-            "AS07112-1 Installation électrique pour branchement harnais (T & M)\n"
-            "\nContact chantier\n"
-            "Clément : " + synthetic_phone("0655") + "\n"
-            "\nHoraire\n"
-            "\nJeudi le 19 novembre 2026\n"
-            "• DAVID DERY (MAT151)\n"
-            "• MATIS PELLETIER\n"
-            "\nVendredi le 20 novembre 2026\n"
-            "• DAVID DERY — 5 h (MAT151)\n"
-            "\n" + PROJECT_RESPONSIBILITY_FOOTER
+            + "\nResponsable projet\n"
+            + "Marie-Pier Dulac\n"
+            + synthetic_phone("0147")
+            + "\n"
+            + "\nDescription\n"
+            + "AS07112-1 Installation électrique pour branchement harnais (T & M)\n"
+            + "\nContact chantier\n"
+            + "Clément : "
+            + synthetic_phone("0655")
+            + "\n"
+            + "\nHoraire\n"
+            + "\nJeudi le 19 novembre 2026\n"
+            + "• DAVID DERY (MAT151)\n"
+            + "• MATIS PELLETIER\n"
+            + "\nVendredi le 20 novembre 2026\n"
+            + "• DAVID DERY — 5 h (MAT151)\n"
+            + "\n"
+            + PROJECT_RESPONSIBILITY_FOOTER
         )
         self.assertEqual(draft.body, expected)
         self.assertNotIn("654 -", draft.body)
