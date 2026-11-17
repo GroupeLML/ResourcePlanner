@@ -246,10 +246,14 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertIn("Projet &lt;Alpha&gt; &amp; Beta", draft.body_html)
         self.assertIn("Alice &lt;Tech&gt;", draft.body_html)
         self.assertNotIn("Projet <Alpha>", draft.body_html)
-        self.assertEqual(
-            render_project_review_html("Texte <édité> & sûr"),
-            "<div><div>Texte &lt;édité&gt; &amp; sûr</div></div>",
+        reviewed = draft.body.replace(
+            "Projet <Alpha> & Beta",
+            "Projet <Gamma> & Delta",
         )
+        reviewed_html = render_project_review_html(reviewed)
+        self.assertIn("Projet &lt;Gamma&gt; &amp; Delta", reviewed_html)
+        self.assertIn("<strong><u>Responsable projet</u></strong>", reviewed_html)
+        self.assertTrue(reviewed_html.endswith("</div>"))
 
     def test_855_html_change_changes_message_content_fingerprint(self) -> None:
         source = projection(
@@ -280,7 +284,8 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             )
         )
         body = batch.drafts[0].body
-        self.assertIn("  • Alice — 8 h", body)
+        self.assertIn("• Alice", body)
+        self.assertNotIn("Alice — 8 h", body)
         self.assertNotIn("Actif :", body)
 
     def test_resource_line_renders_multiple_assets_with_canonical_unit_codes(self) -> None:
@@ -317,7 +322,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             )
         )
         body = batch.drafts[0].body
-        self.assertIn("Actif : V-12 / EQ-7", body)
+        self.assertNotIn("Actif :", body)
         self.assertNotIn("Camion 12", body)
         self.assertNotIn("Nacelle 7", body)
         self.assertNotIn("Véhicule —", body)
@@ -560,11 +565,14 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             projection(project(second_day=True))
         ).drafts[0]
 
-        self.assertIn("1000 — Projet 1000", draft.body)
-        self.assertIn("Responsable : Jean Responsable — " + "555" + "-" + "0100", draft.body)
-        self.assertIn("Lundi le 21 septembre 2026 — Installation de poteaux", draft.body)
-        self.assertIn("Mardi le 22 septembre 2026 — Mise en service", draft.body)
-        self.assertIn("  • Alice — 8 h", draft.body)
+        self.assertIn("1000 - Projet 1000", draft.body)
+        self.assertIn("Responsable projet\nChargé Démo", draft.body)
+        self.assertNotIn("Jean Responsable", draft.body)
+        self.assertIn("210 Installation de poteaux", draft.body)
+        self.assertIn("220 Mise en service", draft.body)
+        self.assertIn("Lundi le 21 septembre 2026", draft.body)
+        self.assertIn("Mardi le 22 septembre 2026", draft.body)
+        self.assertIn("• Alice", draft.body)
         self.assertNotIn("U-R1", draft.body)
         self.assertNotIn("C-R1", draft.body)
 
@@ -605,15 +613,10 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
 
         draft = build_project_confirmation_batch(projection(source)).drafts[0]
 
-        self.assertIn(
-            "Alice — 8 h · Responsable : Responsable Alice",
-            draft.body,
-        )
-        self.assertIn(
-            "Bob — 8 h · Responsable : Responsable Bob",
-            draft.body,
-        )
-        self.assertNotIn("Responsable Alice / Responsable Bob", draft.body)
+        self.assertIn("• Alice", draft.body)
+        self.assertIn("• Bob", draft.body)
+        self.assertNotIn("Responsable Alice", draft.body)
+        self.assertNotIn("Responsable Bob", draft.body)
         self.assertEqual(
             {row.email for row in draft.cc_recipients},
             {email("alice"), email("bob")},
@@ -691,7 +694,9 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             projection(project(resources=(row,)))
         ).drafts[0]
 
-        self.assertIn("Alice — 8 h (Tentative, hors horaire)", draft.body)
+        self.assertIn("• Alice", draft.body)
+        self.assertNotIn("Tentative", draft.body)
+        self.assertNotIn("hors horaire", draft.body)
 
     def test_fingerprint_changes_when_hours_change(self) -> None:
         first = build_project_confirmation_batch(
@@ -1119,7 +1124,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         original = base.projects[0]
         self.assertIsNone(original.project_manager_erp_phone)
         original_body = build_project_confirmation_batch(base).drafts[0].body
-        self.assertNotIn("Chargé de projet :", original_body)
+        self.assertIn("Responsable projet\nChargé Démo", original_body)
         self.assertNotIn("Téléphone :", original_body)
 
         for number in (synthetic_phone("0100"), synthetic_phone("0200")):
@@ -1131,11 +1136,11 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                 batch = build_project_confirmation_batch(current)
                 body = batch.drafts[0].body
                 self.assertIn(
-                    "Chargé de projet : Chargé Démo\nTéléphone : " + number,
+                    "Responsable projet\nChargé Démo\n" + number,
                     body,
                 )
-                self.assertIn("Responsable : Jean Responsable", body)
-                self.assertNotIn("Contact chantier :", body)
+                self.assertNotIn("Jean Responsable", body)
+                self.assertIn("Contact chantier\n", body)
                 self.assertEqual(len(batch.drafts), 1)
                 self.assertEqual(batch.drafts[0].to_recipients,
                                  build_project_confirmation_batch(base).drafts[0].to_recipients)
@@ -1192,9 +1197,9 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                               days=(replace(day, tasks=(task,)),)),),
         )
         draft = build_project_confirmation_batch(current).drafts[0]
-        self.assertIn("Téléphone : " + synthetic_phone("0100"), draft.body)
-        self.assertIn("Contact chantier : Chantier — 555-0300", draft.body)
-        self.assertEqual(draft.body.count("  • Alice — 8 h"), 1)
+        self.assertIn("Chargé Démo\n" + synthetic_phone("0100"), draft.body)
+        self.assertIn("Contact chantier\nChantier : 555-0300", draft.body)
+        self.assertEqual(draft.body.count("• Alice"), 1)
         self.assertNotIn("part de la demande", draft.body)
         self.assertNotIn("Totaux planifiés", draft.body)
 
