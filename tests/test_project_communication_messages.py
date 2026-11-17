@@ -888,14 +888,12 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         current = self._830_single_demand_projection(name=None, phone=None)
         batch = build_project_confirmation_batch(current)
         body = batch.drafts[0].body
-        self.assertIn(
-            "  • 654 - SHAWN FRAPPIER-BARABÉ — 8 h (Tentative) · Actif : MAT162",
-            body,
-        )
-        self.assertEqual(body.count("• 654 - SHAWN FRAPPIER-BARABÉ"), 1)
-        self.assertNotIn("Demande DMO-2026-0124", body)
-        self.assertNotIn("part de la demande", body)
-        self.assertNotIn("Totaux planifiés", body)
+        self.assertIn("Contact chantier\nAucun contact chantier renseigné", body)
+        self.assertIn("• SHAWN FRAPPIER-BARABÉ (MAT162)", body)
+        self.assertEqual(body.count("• SHAWN FRAPPIER-BARABÉ"), 1)
+        self.assertNotIn("654 -", body)
+        self.assertNotIn("Actif", body)
+        self.assertNotIn("— 8 h", body)
 
     def test_866_single_demand_contact_variants_show_one_canonical_line(self) -> None:
         for name, phone, expected in (
@@ -908,17 +906,18 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                     name=name, phone=phone
                 )
                 draft = build_project_confirmation_batch(current).drafts[0]
+                expected_contact = expected.replace(" — ", " : ")
                 self.assertIn(
-                    "Demande DMO-2026-0124\n  Contact chantier : "
-                    + expected + "\n  • 654 - SHAWN FRAPPIER-BARABÉ",
+                    "Contact chantier\n" + expected_contact,
                     draft.body,
                 )
                 self.assertEqual(
-                    draft.body.count("• 654 - SHAWN FRAPPIER-BARABÉ"), 1
+                    draft.body.count("• SHAWN FRAPPIER-BARABÉ"), 1
                 )
-                self.assertIn("— 8 h (Tentative) · Actif : MAT162", draft.body)
-                self.assertNotIn("part de la demande", draft.body)
-                self.assertNotIn("Totaux planifiés", draft.body)
+                self.assertIn("• SHAWN FRAPPIER-BARABÉ (MAT162)", draft.body)
+                self.assertNotIn("654 -", draft.body)
+                self.assertNotIn("Actif", draft.body)
+                self.assertNotIn("— 8 h", draft.body)
 
     def test_866_two_physical_shifts_same_demand_stay_one_line(self) -> None:
         current = self._830_single_demand_projection(
@@ -931,10 +930,11 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             {"DEMAND-124"},
         )
         draft = build_project_confirmation_batch(current).drafts[0]
-        self.assertEqual(draft.body.count("• 654 - SHAWN FRAPPIER-BARABÉ"), 1)
-        self.assertIn("8 h (Tentative) · Actif : MAT162", draft.body)
-        self.assertNotIn("part de la demande", draft.body)
-        self.assertNotIn("Totaux planifiés", draft.body)
+        self.assertEqual(draft.body.count("• SHAWN FRAPPIER-BARABÉ"), 2)
+        self.assertIn("• SHAWN FRAPPIER-BARABÉ — 3 h (MAT162)", draft.body)
+        self.assertIn("• SHAWN FRAPPIER-BARABÉ — 5 h (MAT162)", draft.body)
+        self.assertNotIn("654 -", draft.body)
+        self.assertNotIn("Actif", draft.body)
 
     def test_866_mixed_demand_and_adhoc_retains_distinct_contributions(self) -> None:
         current = self._830_single_demand_projection(
@@ -958,16 +958,26 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         body = build_project_confirmation_batch(mixed).drafts[0].body
         self.assertIn(
-            "Demande DMO-2026-0124\n  Contact chantier : Bob Barker — 5149370707"
-            "\n  ↳ 654 - SHAWN FRAPPIER-BARABÉ — 4 h (part de la demande)", body,
+            "Demande DMO-2026-0124 — Bob Barker : 5149370707",
+            body,
         )
         self.assertIn(
-            "Sans demande\n  ↳ 654 - SHAWN FRAPPIER-BARABÉ — 4 h", body
+            "Sans demande — Aucun contact chantier renseigné",
+            body,
         )
-        self.assertEqual(body.count("Totaux planifiés (toutes demandes)"), 1)
-        self.assertEqual(body.count("  • 654 - SHAWN FRAPPIER-BARABÉ — 8 h"), 1)
-        self.assertIn("Actif : MAT162", body)
-        self.assertNotIn("Sans demande\n  Contact chantier :", body)
+        self.assertIn(
+            "Demande DMO-2026-0124 — 210 Installation de poteaux\n"
+            "• SHAWN FRAPPIER-BARABÉ — 4 h (MAT162)",
+            body,
+        )
+        self.assertIn(
+            "Sans demande — 210 Installation de poteaux\n"
+            "• SHAWN FRAPPIER-BARABÉ — 4 h (MAT162)",
+            body,
+        )
+        self.assertEqual(body.count("• SHAWN FRAPPIER-BARABÉ"), 2)
+        self.assertNotIn("654 -", body)
+        self.assertNotIn("Actif", body)
 
     def test_866_rendering_preserves_p1_semantics_and_serialized_preview(self) -> None:
         current = self._830_single_demand_projection(
@@ -1258,6 +1268,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                 workforce_request_id="DEMAND-A",
                 request_number="DM-A",
                 hours=first_hours,
+                standard_hours=8.0,
                 site_contact_name="Jean",
                 site_contact_phone="555-0101",
             )
@@ -1268,6 +1279,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                 workforce_request_id="DEMAND-B",
                 request_number="DM-B",
                 hours=second_hours,
+                standard_hours=8.0,
                 site_contact_name="Pierre",
                 site_contact_phone="555-0202",
             )
@@ -1280,6 +1292,8 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             return replace(
                 base,
                 projects=(replace(old_project, days=(changed_day,)),),
+                request_provenance_version=2,
+                request_provenance_complete=True,
             )
 
         two_six = allocate(2.0, 6.0)
@@ -1295,13 +1309,25 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertEqual(one.message_key, "project:P1")
         self.assertEqual(one.to_recipients, two.to_recipients)
         self.assertEqual(one.cc_recipients, two.cc_recipients)
-        self.assertIn("Lundi le 21 septembre 2026 — Installation de poteaux", one.body)
-        self.assertIn("Demande DM-A\n  Contact chantier : Jean — 555-0101\n  ↳ Alice — 2 h", one.body)
-        self.assertIn("Demande DM-B\n  Contact chantier : Pierre — 555-0202\n  ↳ Alice — 6 h", one.body)
-        self.assertIn("Demande DM-A\n  Contact chantier : Jean — 555-0101\n  ↳ Alice — 6 h", two.body)
-        self.assertIn("Demande DM-B\n  Contact chantier : Pierre — 555-0202\n  ↳ Alice — 2 h", two.body)
-        self.assertIn("  • Alice — 8 h", one.body)
-        self.assertIn("  • Alice — 8 h", two.body)
+        self.assertIn("Lundi le 21 septembre 2026", one.body)
+        self.assertIn("Demande DM-A — Jean : 555-0101", one.body)
+        self.assertIn("Demande DM-B — Pierre : 555-0202", one.body)
+        self.assertIn(
+            "Demande DM-A — 210 Installation de poteaux\n• Alice — 2 h",
+            one.body,
+        )
+        self.assertIn(
+            "Demande DM-B — 210 Installation de poteaux\n• Alice — 6 h",
+            one.body,
+        )
+        self.assertIn(
+            "Demande DM-A — 210 Installation de poteaux\n• Alice — 6 h",
+            two.body,
+        )
+        self.assertIn(
+            "Demande DM-B — 210 Installation de poteaux\n• Alice — 2 h",
+            two.body,
+        )
         self.assertNotEqual(one.body, two.body)
         self.assertNotEqual(project_projection_fingerprint(two_six), project_projection_fingerprint(six_two))
         self.assertEqual(
@@ -1319,28 +1345,33 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         by_id = {row.resource_id: row for row in task.request_assignments}
         provenance = (
             replace(by_id["R1"], workforce_request_id="REQ-A", request_number="DM-A",
-                    site_contact_name="Jean", site_contact_phone="555-0101"),
+                    site_contact_name="Jean", site_contact_phone="555-0101",
+                    standard_hours=8.0),
             replace(by_id["R2"], workforce_request_id="REQ-B", request_number="DM-B",
-                    site_contact_name="Jean", site_contact_phone="555-0101"),
+                    site_contact_name="Jean", site_contact_phone="555-0101",
+                    standard_hours=8.0),
             replace(by_id["R3"], workforce_request_id=None, request_number=None,
-                    site_contact_name=None, site_contact_phone=None),
+                    site_contact_name=None, site_contact_phone=None,
+                    standard_hours=8.0),
         )
         updated_task = replace(task, request_assignments=provenance)
         updated_day = replace(base.projects[0].days[0], tasks=(updated_task,))
         current = replace(
             base,
             projects=(replace(base.projects[0], days=(updated_day,)),),
+            request_provenance_version=2,
+            request_provenance_complete=True,
         )
         draft = build_project_confirmation_batch(current).drafts[0]
-        self.assertIn("Demande DM-A\n  Contact chantier : Jean — 555-0101\n  ↳ Alice — 2 h", draft.body)
-        self.assertIn("Demande DM-B\n  Contact chantier : Jean — 555-0101\n  ↳ Bob — 6 h", draft.body)
-        self.assertIn("Sans demande\n  ↳ Carol — 1 h", draft.body)
-        self.assertEqual(draft.body.count("Contact chantier : Jean"), 2)
+        self.assertIn("Demande DM-A — Jean : 555-0101", draft.body)
+        self.assertIn("Demande DM-B — Jean : 555-0101", draft.body)
+        self.assertIn("Sans demande — Aucun contact chantier renseigné", draft.body)
+        self.assertEqual(draft.body.count("Jean : 555-0101"), 2)
         self.assertEqual(len(build_project_confirmation_batch(current).drafts), 1)
         self.assertEqual({row.email for row in draft.cc_recipients}, {email("alice"), email("bob"), email("carol")})
-        self.assertIn("  • Alice — 2 h", draft.body)
-        self.assertIn("  • Bob — 6 h", draft.body)
-        self.assertIn("  • Carol — 1 h", draft.body)
+        self.assertIn("• Alice — 2 h", draft.body)
+        self.assertIn("• Bob — 6 h", draft.body)
+        self.assertIn("• Carol — 1 h", draft.body)
 
     def test_830_version_and_completeness_fail_closed(self) -> None:
         current = projection(project())
