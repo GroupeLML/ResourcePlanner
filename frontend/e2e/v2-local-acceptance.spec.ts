@@ -2862,7 +2862,11 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
     expect(previewText).not.toContain("Actif :");
     const aliceLine = previewText
       .split("\n")
-      .find((line) => line.includes("Alice"));
+      .find(
+        (line) =>
+          line.trimStart().startsWith("•") &&
+          line.includes("Alice"),
+      );
     expect(aliceLine).toBeTruthy();
     const expectedAssetCode = refreshedCommunicationAsset!.code.replace(
       /[.*+?^${}()|[\]\\]/g,
