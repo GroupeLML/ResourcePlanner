@@ -2853,6 +2853,26 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "project_communication_review_template_invalid",
                 )
 
+                missing_bullet = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "body": draft["body"].replace("• ", "", 1),
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(missing_bullet.status_code, 422, missing_bullet.text)
+                self.assertEqual(
+                    missing_bullet.json()["error"]["code"],
+                    "project_communication_review_template_invalid",
+                )
+
                 rejected = client.post(
                     "/api/v1/communications/project-batches",
                     json={
