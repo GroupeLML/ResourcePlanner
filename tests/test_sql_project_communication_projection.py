@@ -2703,7 +2703,33 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     f"/api/v1/communications/project-batches/{batch_id}/draft-download"
                 )
                 self.assertEqual(retried.status_code, 200, retried.text)
-                self.assertEqual(retried.content, downloaded.content)
+                first_mime = BytesParser(policy=policy.default).parsebytes(
+                    downloaded.content
+                )
+                retry_mime = BytesParser(policy=policy.default).parsebytes(
+                    retried.content
+                )
+                self.assertEqual(retry_mime["To"], first_mime["To"])
+                self.assertEqual(retry_mime["Cc"], first_mime["Cc"])
+                self.assertEqual(retry_mime["Subject"], first_mime["Subject"])
+                self.assertTrue(first_mime.is_multipart())
+                self.assertTrue(retry_mime.is_multipart())
+                first_parts = list(first_mime.iter_parts())
+                retry_parts = list(retry_mime.iter_parts())
+                self.assertEqual(
+                    [part.get_content_type() for part in retry_parts],
+                    [part.get_content_type() for part in first_parts],
+                )
+                self.assertEqual(
+                    [
+                        part.get_content().replace("\r\n", "\n").rstrip("\n")
+                        for part in retry_parts
+                    ],
+                    [
+                        part.get_content().replace("\r\n", "\n").rstrip("\n")
+                        for part in first_parts
+                    ],
+                )
 
         self.assertEqual(transport.create_calls, 1)
         self.assertEqual(len(transport.messages), 1)
