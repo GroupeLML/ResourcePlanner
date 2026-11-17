@@ -26,10 +26,7 @@ from .asset_qualification import (
     QUALIFICATION_SATISFIED,
     evaluate_asset_qualifications,
 )
-from .asset_shift_projection import (
-    ASSOCIATION_SEGMENT_CONTEXT,
-    asset_shift_association,
-)
+from .asset_shift_projection import asset_shift_association
 from .business_contact_models import BusinessContact
 from .identity_models import AppUser
 from .models import (
@@ -473,11 +470,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     shift=shift,
                     human_requirement=human_requirement,
                 )
-                if (
-                    association is None
-                    or association == ASSOCIATION_SEGMENT_CONTEXT
-                    or allocation.id in seen_allocations
-                ):
+                if association is None or allocation.id in seen_allocations:
                     continue
                 seen_allocations.add(allocation.id)
                 assets_by_shift.setdefault(shift.id, []).append(
