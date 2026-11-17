@@ -24,6 +24,7 @@ from app.domain.project_communication_messages import (
     DIAGNOSTIC_TO_EMAIL_MISSING,
     MESSAGE_KIND_PLANNING_CHANGE,
     MESSAGE_KIND_WEEKLY_CONFIRMATION,
+    PROJECT_RESPONSIBILITY_FOOTER,
     SEVERITY_BLOCKING,
     SEVERITY_WARNING,
     build_project_confirmation_batch,
@@ -254,6 +255,126 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertIn("Projet &lt;Gamma&gt; &amp; Delta", reviewed_html)
         self.assertIn("<strong><u>Responsable projet</u></strong>", reviewed_html)
         self.assertTrue(reviewed_html.endswith("</div>"))
+
+    def test_855_capture_authoritative_order_emphasis_footer_and_shift_rules(self) -> None:
+        asset = ProjectCommunicationAsset(
+            allocation_id="ALLOC-MAT151",
+            asset_id="ASSET-MAT151",
+            asset_code="MAT151",
+            asset_label="Unité 151",
+            asset_type_label="Véhicule",
+            asset_category="VEHICLE",
+            association_kind="OWNED_SHIFT",
+        )
+        manager = participant(
+            "Marie-Pier Dulac",
+            contact_id="C-PM-855",
+            user_id="U-PM-855",
+            address=email("marie-pier"),
+        )
+        day_one = date(2026, 11, 19)
+        day_two = date(2026, 11, 20)
+        task_one = ProjectCommunicationTask(
+            task_description="Installation électrique pour branchement harnais (T & M)",
+            task_ids=("TASK-855",),
+            task_codes=("AS07112-1",),
+            operational_responsibles=(),
+            resources=(),
+            request_assignments=(
+                ProjectCommunicationRequestAssignment(
+                    shift_id="S-DAVID-19",
+                    requirement_id="REQ-DAVID-19",
+                    workforce_request_id="REQ-855",
+                    request_number="DMO-855",
+                    resource_id="R-DAVID",
+                    resource_name="654 - DAVID DERY",
+                    hours=8.0,
+                    site_contact_name="Clément",
+                    site_contact_phone="438-938-6557",
+                    assets=(asset,),
+                    standard_hours=8.0,
+                ),
+                ProjectCommunicationRequestAssignment(
+                    shift_id="S-MATIS-19",
+                    requirement_id="REQ-MATIS-19",
+                    workforce_request_id="REQ-855",
+                    request_number="DMO-855",
+                    resource_id="R-MATIS",
+                    resource_name="MATIS PELLETIER",
+                    hours=8.0,
+                    site_contact_name="Clément",
+                    site_contact_phone="438-938-6557",
+                    assets=(),
+                    standard_hours=8.0,
+                ),
+            ),
+        )
+        task_two = replace(
+            task_one,
+            request_assignments=(
+                replace(
+                    task_one.request_assignments[0],
+                    shift_id="S-DAVID-20",
+                    requirement_id="REQ-DAVID-20",
+                    hours=5.0,
+                ),
+            ),
+        )
+        source = ProjectCommunicationProjection(
+            week_start=date(2026, 11, 16),
+            week_end=date(2026, 11, 22),
+            projects=(
+                ProjectCommunicationProject(
+                    project_id="P-855",
+                    project_number="M0187",
+                    project_name="Rheinmetal",
+                    project_manager=manager,
+                    project_manager_erp_phone="514-743-8475",
+                    days=(
+                        ProjectCommunicationDay(day=day_one, tasks=(task_one,)),
+                        ProjectCommunicationDay(day=day_two, tasks=(task_two,)),
+                    ),
+                ),
+            ),
+            request_provenance_version=2,
+            request_provenance_complete=True,
+        )
+
+        draft = build_project_confirmation_batch(source).drafts[0]
+        expected = (
+            "M0187 - Rheinmetal\n"
+            "\nResponsable projet\n"
+            "Marie-Pier Dulac\n"
+            "514-743-8475\n"
+            "\nDescription\n"
+            "AS07112-1 Installation électrique pour branchement harnais (T & M)\n"
+            "\nContact chantier\n"
+            "Clément : 438-938-6557\n"
+            "\nHoraire\n"
+            "\nJeudi le 19 novembre 2026\n"
+            "• DAVID DERY (MAT151)\n"
+            "• MATIS PELLETIER\n"
+            "\nVendredi le 20 novembre 2026\n"
+            "• DAVID DERY — 5 h (MAT151)\n"
+            "\n" + PROJECT_RESPONSIBILITY_FOOTER
+        )
+        self.assertEqual(draft.body, expected)
+        self.assertNotIn("654 -", draft.body)
+        self.assertNotIn("Actif", draft.body)
+        self.assertEqual(draft.body.count(PROJECT_RESPONSIBILITY_FOOTER), 1)
+        self.assertTrue(draft.body.endswith(PROJECT_RESPONSIBILITY_FOOTER))
+
+        html = draft.body_html or ""
+        self.assertIn("<strong>M0187 - Rheinmetal</strong>", html)
+        for label in ("Responsable projet", "Description", "Contact chantier", "Horaire"):
+            self.assertIn(f"<strong><u>{label}</u></strong>", html)
+        self.assertIn("<strong>Jeudi le 19 novembre 2026</strong>", html)
+        self.assertIn("<strong>Vendredi le 20 novembre 2026</strong>", html)
+        self.assertIn("<ul ", html)
+        self.assertIn("<li ", html)
+        self.assertNotIn("<u>Jeudi le 19 novembre 2026</u>", html)
+        self.assertNotIn(f"<strong>{PROJECT_RESPONSIBILITY_FOOTER}</strong>", html)
+        self.assertIn(PROJECT_RESPONSIBILITY_FOOTER, html)
 
     def test_855_html_change_changes_message_content_fingerprint(self) -> None:
         source = projection(
