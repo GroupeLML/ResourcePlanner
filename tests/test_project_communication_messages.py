@@ -777,6 +777,162 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertNotIn("Alice", draft.body)
         self.assertIn("Bob", draft.body)
 
+    def _830_single_demand_projection(
+        self,
+        *,
+        name: str | None,
+        phone: str | None,
+        two_shifts: bool = False,
+    ) -> ProjectCommunicationProjection:
+        asset = ProjectCommunicationAsset(
+            allocation_id="ALLOC-162",
+            asset_id="ASSET-162",
+            asset_code="MAT162",
+            asset_label="Unit 162",
+            asset_type_label="Equipment",
+            asset_category="EQUIPMENT",
+            association_kind="INHERITED_REQUEST",
+        )
+        person = resource(
+            "R654", "654 - SHAWN FRAPPIER-BARABÉ",
+            address=email("employee"), hours=8.0,
+            confirmation="Tentative", assets=(asset,),
+        )
+        base = projection(project(resources=(person,)))
+        source = base.projects[0]
+        day = source.days[0]
+        task = day.tasks[0]
+        row = task.request_assignments[0]
+        if two_shifts:
+            provenance = (
+                replace(row, shift_id="S-A", requirement_id="REQ-A", hours=3.0),
+                replace(row, shift_id="S-B", requirement_id="REQ-B", hours=5.0),
+            )
+            employee = replace(task.resources[0], shift_ids=("S-A", "S-B"))
+        else:
+            provenance = (row,)
+            employee = task.resources[0]
+        provenance = tuple(
+            replace(item, workforce_request_id="DEMAND-124",
+                    request_number="DMO-2026-0124",
+                    site_contact_name=name, site_contact_phone=phone)
+            for item in provenance
+        )
+        modified_task = replace(
+            task, resources=(employee,), request_assignments=provenance
+        )
+        return replace(
+            base,
+            projects=(replace(
+                source, days=(replace(day, tasks=(modified_task,)),)
+            ),),
+        )
+
+    def test_866_single_demand_without_contact_stays_compact(self) -> None:
+        current = self._830_single_demand_projection(name=None, phone=None)
+        batch = build_project_confirmation_batch(current)
+        body = batch.drafts[0].body
+        self.assertIn(
+            "  • 654 - SHAWN FRAPPIER-BARABÉ — 8 h (Tentative) · Actif : MAT162",
+            body,
+        )
+        self.assertEqual(body.count("• 654 - SHAWN FRAPPIER-BARABÉ"), 1)
+        self.assertNotIn("Demande DMO-2026-0124", body)
+        self.assertNotIn("part de la demande", body)
+        self.assertNotIn("Totaux planifiés", body)
+
+    def test_866_single_demand_contact_variants_show_one_canonical_line(self) -> None:
+        for name, phone, expected in (
+            ("Bob Barker", "5149370707", "Bob Barker — 5149370707"),
+            ("Bob Barker", None, "Bob Barker"),
+            (None, "5149370707", "5149370707"),
+        ):
+            with self.subTest(name=name, phone=phone):
+                current = self._830_single_demand_projection(
+                    name=name, phone=phone
+                )
+                draft = build_project_confirmation_batch(current).drafts[0]
+                self.assertIn(
+                    "Demande DMO-2026-0124\n  Contact chantier : "
+                    + expected + "\n  • 654 - SHAWN FRAPPIER-BARABÉ",
+                    draft.body,
+                )
+                self.assertEqual(
+                    draft.body.count("• 654 - SHAWN FRAPPIER-BARABÉ"), 1
+                )
+                self.assertIn("— 8 h (Tentative) · Actif : MAT162", draft.body)
+                self.assertNotIn("part de la demande", draft.body)
+                self.assertNotIn("Totaux planifiés", draft.body)
+
+    def test_866_two_physical_shifts_same_demand_stay_one_line(self) -> None:
+        current = self._830_single_demand_projection(
+            name="Bob Barker", phone="5149370707", two_shifts=True
+        )
+        task = current.projects[0].days[0].tasks[0]
+        self.assertEqual({row.shift_id for row in task.request_assignments}, {"S-A", "S-B"})
+        self.assertEqual(
+            {row.workforce_request_id for row in task.request_assignments},
+            {"DEMAND-124"},
+        )
+        draft = build_project_confirmation_batch(current).drafts[0]
+        self.assertEqual(draft.body.count("• 654 - SHAWN FRAPPIER-BARABÉ"), 1)
+        self.assertIn("8 h (Tentative) · Actif : MAT162", draft.body)
+        self.assertNotIn("part de la demande", draft.body)
+        self.assertNotIn("Totaux planifiés", draft.body)
+
+    def test_866_mixed_demand_and_adhoc_retains_distinct_contributions(self) -> None:
+        current = self._830_single_demand_projection(
+            name="Bob Barker", phone="5149370707", two_shifts=True
+        )
+        source = current.projects[0]
+        day = source.days[0]
+        task = day.tasks[0]
+        first = replace(task.request_assignments[0], hours=4.0)
+        adhoc = replace(
+            task.request_assignments[1],
+            workforce_request_id=None, request_number=None,
+            site_contact_name=None, site_contact_phone=None, hours=4.0,
+        )
+        modified_task = replace(task, request_assignments=(first, adhoc))
+        mixed = replace(
+            current,
+            projects=(replace(
+                source, days=(replace(day, tasks=(modified_task,)),)
+            ),),
+        )
+        body = build_project_confirmation_batch(mixed).drafts[0].body
+        self.assertIn(
+            "Demande DMO-2026-0124\n  Contact chantier : Bob Barker — 5149370707"
+            "\n  ↳ 654 - SHAWN FRAPPIER-BARABÉ — 4 h (part de la demande)", body,
+        )
+        self.assertIn(
+            "Sans demande\n  ↳ 654 - SHAWN FRAPPIER-BARABÉ — 4 h", body
+        )
+        self.assertEqual(body.count("Totaux planifiés (toutes demandes)"), 1)
+        self.assertEqual(body.count("  • 654 - SHAWN FRAPPIER-BARABÉ — 8 h"), 1)
+        self.assertIn("Actif : MAT162", body)
+        self.assertNotIn("Sans demande\n  Contact chantier :", body)
+
+    def test_866_rendering_preserves_p1_semantics_and_serialized_preview(self) -> None:
+        current = self._830_single_demand_projection(
+            name="Bob Barker", phone="5149370707", two_shifts=True
+        )
+        initial_fingerprint = project_projection_fingerprint(current)
+        serialized = serialize_project_projection(current)
+        restored = deserialize_project_projection(serialized)
+        self.assertEqual(project_projection_fingerprint(restored), initial_fingerprint)
+        first = build_project_confirmation_batch(current)
+        prepared = build_project_confirmation_batch(restored)
+        self.assertEqual(first.snapshot_fingerprint, initial_fingerprint)
+        self.assertEqual(prepared.snapshot_fingerprint, initial_fingerprint)
+        self.assertEqual(first.drafts[0].body, prepared.drafts[0].body)
+        self.assertEqual(
+            first.drafts[0].content_fingerprint,
+            prepared.drafts[0].content_fingerprint,
+        )
+        self.assertEqual(first.drafts[0].message_key, "project:P1")
+        self.assertEqual(first.drafts[0].to_recipients, prepared.drafts[0].to_recipients)
+
     def test_830_contact_add_change_clear_and_legacy_delta(self) -> None:
         base = projection(project())
         old_project = base.projects[0]
