@@ -732,10 +732,17 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                             ]
 
                     def execute_with_duplicate_resource_identity(statement, *args, **kwargs):
-                        sql = str(statement)
+                        selected_columns = tuple(
+                            getattr(statement, "selected_columns", ())
+                        )
                         if (
-                            "resources.external_id" in sql
-                            and "resources.erp_phone" in sql
+                            len(selected_columns) == 2
+                            and [column.name for column in selected_columns]
+                            == ["external_id", "erp_phone"]
+                            and all(
+                                getattr(column.table, "name", None) == "resources"
+                                for column in selected_columns
+                            )
                         ):
                             return DuplicatePhoneRows()
                         return real_execute(statement, *args, **kwargs)
