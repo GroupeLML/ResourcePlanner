@@ -725,9 +725,9 @@ _SECTION_LABELS = (
 )
 _DATE_LINE_PATTERN = re.compile(
     r"^(Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche) le "
-    r"\\d{1,2} [A-Za-zÀ-ÿ]+ \\d{4}$"
+    r"\d{1,2} [A-Za-zÀ-ÿ]+ \d{4}$"
 )
-_EMPLOYEE_NUMBER_PREFIX = re.compile(r"^\\s*\\d+\\s*[-–—]\\s*(.+)$")
+_EMPLOYEE_NUMBER_PREFIX = re.compile(r"^\s*\d+\s*[-–—]\s*(.+)$")
 
 
 def _line(kind: str, text: str = "") -> ProjectMessageLine:
