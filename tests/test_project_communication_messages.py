@@ -937,6 +937,134 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertEqual(first.drafts[0].message_key, "project:P1")
         self.assertEqual(first.drafts[0].to_recipients, prepared.drafts[0].to_recipients)
 
+    def test_855_v2_round_trip_mapping_fingerprint_and_cross_version_policy(self) -> None:
+        first_asset = ProjectCommunicationAsset(
+            allocation_id="ALLOC-151",
+            asset_id="ASSET-151",
+            asset_code="MAT151",
+            asset_label="Unité 151",
+            asset_type_label="Véhicule",
+            asset_category="VEHICLE",
+            association_kind="OWNED_SHIFT",
+        )
+        second_asset = ProjectCommunicationAsset(
+            allocation_id="ALLOC-204",
+            asset_id="ASSET-204",
+            asset_code="MAT204",
+            asset_label="Unité 204",
+            asset_type_label="Véhicule",
+            asset_category="VEHICLE",
+            association_kind="INHERITED_REQUEST",
+        )
+        row = replace(
+            resource("R1", "Alice", address=email("alice"), hours=8.0),
+            shift_ids=("S-A", "S-B"),
+            assets=(first_asset, second_asset),
+        )
+        base = projection(project(resources=(row,)))
+        project_row = base.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        original_assignments = task.request_assignments
+        self.assertEqual(len(original_assignments), 2)
+
+        mapped = (
+            replace(
+                original_assignments[0],
+                assets=(first_asset,),
+                standard_hours=8.0,
+            ),
+            replace(
+                original_assignments[1],
+                assets=(second_asset,),
+                standard_hours=8.0,
+            ),
+        )
+        v2 = replace(
+            base,
+            projects=(
+                replace(
+                    project_row,
+                    days=(
+                        replace(
+                            day,
+                            tasks=(replace(task, request_assignments=mapped),),
+                        ),
+                    ),
+                ),
+            ),
+            request_provenance_version=2,
+            request_provenance_complete=True,
+        )
+        restored = deserialize_project_projection(
+            serialize_project_projection(v2)
+        )
+        self.assertEqual(restored, v2)
+        self.assertEqual(
+            project_projection_fingerprint(restored),
+            project_projection_fingerprint(v2),
+        )
+
+        swapped = replace(
+            v2,
+            projects=(
+                replace(
+                    project_row,
+                    days=(
+                        replace(
+                            day,
+                            tasks=(
+                                replace(
+                                    task,
+                                    request_assignments=(
+                                        replace(
+                                            mapped[0],
+                                            assets=(second_asset,),
+                                        ),
+                                        replace(
+                                            mapped[1],
+                                            assets=(first_asset,),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        self.assertNotEqual(
+            project_projection_fingerprint(v2),
+            project_projection_fingerprint(swapped),
+        )
+
+        v1 = replace(
+            base,
+            request_provenance_version=1,
+            request_provenance_complete=True,
+        )
+        v1_payload = json.loads(serialize_project_projection(v1))
+        request_row = v1_payload["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]
+        self.assertNotIn("assets", request_row)
+        self.assertNotIn("standard_hours", request_row)
+        self.assertEqual(
+            len(compare_project_communication_projections(v1, v2)),
+            1,
+        )
+        with self.assertRaisesRegex(ValueError, "Régression"):
+            compare_project_communication_projections(v2, v1)
+
+        malformed = json.loads(serialize_project_projection(v2))
+        del malformed["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]["standard_hours"]
+        with self.assertRaisesRegex(ValueError, "incomplet"):
+            deserialize_project_projection(
+                json.dumps(malformed, ensure_ascii=False)
+            )
+
     def test_831_erp_manager_phone_renders_only_when_available(self) -> None:
         base = projection(project())
         original = base.projects[0]
