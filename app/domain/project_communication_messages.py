@@ -1193,6 +1193,19 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
     elif provenance_version not in (1, 2) or provenance_complete is not True:
         raise ValueError("Version ou couverture de provenance chantier invalide")
 
+    if provenance_version == 1:
+        for project in data.get("projects") or ():
+            for day in project.get("days") or ():
+                for task in day.get("tasks") or ():
+                    for assignment in task.get("request_assignments") or ():
+                        if (
+                            "assets" in assignment
+                            or "standard_hours" in assignment
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v1 contient des faits v2"
+                            )
+
     if provenance_version == 2:
         for project in data.get("projects") or ():
             for day in project.get("days") or ():
