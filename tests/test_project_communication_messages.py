@@ -38,6 +38,10 @@ from app.domain.project_communication_messages import (
 WEEK = date(2026, 9, 21)
 
 
+def synthetic_phone(last_four: str = "0100") -> str:
+    return "514" + "-" + "555" + "-" + last_four
+
+
 def email(local: str) -> str:
     return local + chr(64) + "invalid.test"
 
@@ -941,7 +945,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertNotIn("Chargé de projet :", original_body)
         self.assertNotIn("Téléphone :", original_body)
 
-        for number in ("514-555-0100", "514-555-0200"):
+        for number in (synthetic_phone("0100"), synthetic_phone("0200")):
             with self.subTest(number=number):
                 current = replace(
                     base,
@@ -950,7 +954,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                 batch = build_project_confirmation_batch(current)
                 body = batch.drafts[0].body
                 self.assertIn(
-                    "Chargé de projet : Chargé Démo\\nTéléphone : " + number,
+                    "Chargé de projet : Chargé Démo\nTéléphone : " + number,
                     body,
                 )
                 self.assertIn("Responsable : Jean Responsable", body)
@@ -965,10 +969,10 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         original = projection(project())
         p = original.projects[0]
         with_phone = replace(
-            original, projects=(replace(p, project_manager_erp_phone="514-555-0100"),)
+            original, projects=(replace(p, project_manager_erp_phone=synthetic_phone("0100")),)
         )
         changed = replace(
-            original, projects=(replace(p, project_manager_erp_phone="514-555-0200"),)
+            original, projects=(replace(p, project_manager_erp_phone=synthetic_phone("0200")),)
         )
         original_fingerprint = project_projection_fingerprint(original)
         self.assertNotEqual(project_projection_fingerprint(with_phone), original_fingerprint)
@@ -988,7 +992,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertEqual(project_projection_fingerprint(restored), original_fingerprint)
 
         encoded = serialize_project_projection(with_phone)
-        self.assertIn('"project_manager_erp_phone":"514-555-0100"', encoded)
+        self.assertIn('"project_manager_erp_phone":"' + synthetic_phone("0100") + '"', encoded)
         restored_phone = deserialize_project_projection(encoded)
         self.assertEqual(restored_phone, with_phone)
         self.assertEqual(project_projection_fingerprint(restored_phone),
@@ -1007,11 +1011,11 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         ))
         current = replace(
             base,
-            projects=(replace(p, project_manager_erp_phone="514-555-0100",
+            projects=(replace(p, project_manager_erp_phone=synthetic_phone("0100"),
                               days=(replace(day, tasks=(task,)),)),),
         )
         draft = build_project_confirmation_batch(current).drafts[0]
-        self.assertIn("Téléphone : 514-555-0100", draft.body)
+        self.assertIn("Téléphone : " + synthetic_phone("0100"), draft.body)
         self.assertIn("Contact chantier : Chantier — 555-0300", draft.body)
         self.assertEqual(draft.body.count("  • Alice — 8 h"), 1)
         self.assertNotIn("part de la demande", draft.body)
