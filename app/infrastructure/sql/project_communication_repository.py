@@ -436,7 +436,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
 
         availability_rules = self._session.scalars(
             select(ResourceAvailabilityRule).where(
-                ResourceAvailabilityRule.active == True  # noqa: E712
+                ResourceAvailabilityRule.active.is_(True)
             )
         ).all()
         availability_class_codes = availability_class_codes_by_rule(
