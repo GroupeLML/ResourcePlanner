@@ -134,6 +134,35 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
             ["MAT151"],
         )
 
+    def test_855_v2_preserves_below_equal_and_above_standard_hours(self) -> None:
+        for shift_hours, standard_hours in ((5.0, 8.0), (8.0, 8.0), (9.0, 8.0)):
+            with self.subTest(
+                shift_hours=shift_hours,
+                standard_hours=standard_hours,
+            ):
+                result = build_project_communication_projection(
+                    week_start=WEEK,
+                    week_end=date(2026, 9, 27),
+                    assignments=(
+                        replace(
+                            self._row(
+                                shift_id=f"S-{shift_hours:g}",
+                                hours=shift_hours,
+                            ),
+                            standard_hours=standard_hours,
+                        ),
+                    ),
+                    request_provenance_version=2,
+                )
+                assignment = (
+                    result.projects[0]
+                    .days[0]
+                    .tasks[0]
+                    .request_assignments[0]
+                )
+                self.assertEqual(assignment.hours, shift_hours)
+                self.assertEqual(assignment.standard_hours, standard_hours)
+
     def test_855_v2_rejects_missing_standard_hours(self) -> None:
         with self.assertRaisesRegex(ValueError, "Heures standard"):
             build_project_communication_projection(
