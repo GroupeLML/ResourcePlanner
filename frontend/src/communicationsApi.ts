@@ -28,6 +28,7 @@ export type ProjectCommunicationDraft = {
   cc_recipients: CommunicationParticipant[];
   subject: string;
   body: string;
+  body_html: string | null;
   message_kind: "project_confirmation" | "project_planning_change";
   week_start: string;
   content_fingerprint: string;
@@ -68,6 +69,7 @@ export type CommunicationMessage = {
   recipient_email: string | null;
   subject: string;
   body: string;
+  body_html: string | null;
   included: boolean;
   message_key: string | null;
   project_id: string | null;
