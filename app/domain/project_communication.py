@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import math
 from typing import Sequence
 
 from .operational_contacts import ContactResolution
@@ -56,6 +57,7 @@ class ProjectCommunicationAssignment:
     site_contact_name: str | None = None
     site_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
+    standard_hours: float | None = None
     diagnostics: tuple[str, ...] = ()
     project_manager_erp_phone: str | None = None
 
@@ -93,6 +95,33 @@ class ProjectCommunicationRequestAssignment:
     hours: float
     site_contact_name: str | None
     site_contact_phone: str | None
+    assets: tuple[ProjectCommunicationAsset, ...] = ()
+    standard_hours: float | None = None
+
+
+_EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS = frozenset(
+    {
+        "OWNED_SHIFT",
+        "INHERITED_REQUEST",
+        "INHERITED_RESOURCE_PERIOD",
+        "INHERITED_PROJECT_DIRECT",
+        "INHERITED_SEGMENT",
+    }
+)
+
+
+def is_employee_assigned_asset(asset: ProjectCommunicationAsset) -> bool:
+    """Return whether a canonical association establishes an operator for a Shift."""
+
+    return asset.association_kind in _EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS
+
+
+def employee_assigned_assets(
+    assignment: ProjectCommunicationRequestAssignment,
+) -> tuple[ProjectCommunicationAsset, ...]:
+    """Return only asset associations that canonically assign an operator to this Shift."""
+
+    return tuple(asset for asset in assignment.assets if is_employee_assigned_asset(asset))
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,8 +188,24 @@ def build_project_communication_projection(
     week_start: date,
     week_end: date,
     assignments: Sequence[ProjectCommunicationAssignment],
+    request_provenance_version: int = 1,
 ) -> ProjectCommunicationProjection:
     """Group authoritative shifts as Project -> Date -> Task -> assigned resources."""
+
+    if request_provenance_version not in (1, 2):
+        raise ValueError("Version de provenance chantier non prise en charge")
+    if request_provenance_version == 2:
+        for row in assignments:
+            if (
+                row.standard_hours is None
+                or not math.isfinite(float(row.standard_hours))
+                or float(row.standard_hours) < 0
+            ):
+                raise ValueError(
+                    "Heures standard manquantes ou invalides pour la provenance v2"
+                )
+            if not isinstance(row.assets, tuple):
+                raise ValueError("Actifs Shift v2 non explicites")
 
     projects: dict[str, dict[str, object]] = {}
     global_diagnostics: list[str] = []
@@ -245,6 +290,8 @@ def build_project_communication_projection(
                 hours=row.hours,
                 site_contact_name=row.site_contact_name,
                 site_contact_phone=row.site_contact_phone,
+                assets=tuple(row.assets),
+                standard_hours=row.standard_hours,
             )
         )
         task["responsibility_assignments"].append(
@@ -279,7 +326,8 @@ def build_project_communication_projection(
         resource["confirmations"].append(row.confirmation)
         resource["outside_schedule"] = bool(resource["outside_schedule"]) or bool(row.outside_schedule)
         for asset in row.assets:
-            resource["assets"].setdefault(asset.allocation_id, asset)
+            if is_employee_assigned_asset(asset):
+                resource["assets"].setdefault(asset.allocation_id, asset)
         resource["diagnostics"].extend(row.resource_contact.diagnostics)
         resource["diagnostics"].extend(row.diagnostics)
 
@@ -382,7 +430,7 @@ def build_project_communication_projection(
         week_start=week_start,
         week_end=week_end,
         projects=tuple(projected_projects),
-        request_provenance_version=1,
+        request_provenance_version=request_provenance_version,
         request_provenance_complete=True,
         diagnostics=_unique(global_diagnostics),
     )

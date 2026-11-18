@@ -3,10 +3,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date
 import hashlib
+from html import escape
 import json
+import math
+import re
 from typing import Sequence
 
-from .operational_contacts import ContactResolution, STATUS_RESOLVED
+from .operational_contacts import (
+    ContactResolution,
+    SOURCE_PROJECT_MANAGER,
+    STATUS_RESOLVED,
+)
 from .project_communication import (
     ProjectCommunicationAsset,
     ProjectCommunicationDay,
@@ -17,6 +24,7 @@ from .project_communication import (
     ProjectCommunicationRequestAssignment,
     ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
+    employee_assigned_assets,
 )
 
 
@@ -83,11 +91,23 @@ class ProjectCommunicationDraft:
     cc_recipients: tuple[ProjectCommunicationParticipant, ...]
     subject: str
     body: str
+    body_html: str | None
     message_kind: str
     week_start: date
     content_fingerprint: str
     approvable: bool
     diagnostics: tuple[ProjectMessageDiagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectMessageLine:
+    kind: str
+    text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectMessageSemantic:
+    lines: tuple[ProjectMessageLine, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,8 +254,10 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
 
 
 def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
-    if projection.request_provenance_version != 1 or not projection.request_provenance_complete:
-        raise ValueError("Provenance chantier courante absente ou non prise en charge")
+    version = projection.request_provenance_version
+    if version not in (1, 2) or not projection.request_provenance_complete:
+        raise ValueError("Version ou couverture de provenance chantier invalide")
+
     seen: set[str] = set()
     for project in projection.projects:
         for day in project.days:
@@ -246,14 +268,20 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                     for shift_id in resource.shift_ids
                 }
                 actual: set[str] = set()
+                hours_by_resource: dict[str, float] = {}
                 for assignment in task.request_assignments:
                     if not assignment.shift_id or assignment.shift_id in seen:
                         raise ValueError("Shift de provenance manquant ou dupliqué")
-                    if (not assignment.requirement_id or not assignment.resource_id or
-                        assignment.hours <= 0):
+                    if (
+                        not assignment.requirement_id
+                        or not assignment.resource_id
+                        or not math.isfinite(float(assignment.hours))
+                        or assignment.hours <= 0
+                    ):
                         raise ValueError("Attribution chantier invalide")
                     if not assignment.workforce_request_id and (
-                        assignment.request_number or assignment.site_contact_name
+                        assignment.request_number
+                        or assignment.site_contact_name
                         or assignment.site_contact_phone
                     ):
                         raise ValueError("Contact chantier sans provenance demande")
@@ -263,10 +291,43 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                         for resource in task.resources
                     ):
                         raise ValueError("Ressource de provenance incohérente")
+                    if version == 2:
+                        standard_hours = assignment.standard_hours
+                        if (
+                            standard_hours is None
+                            or not math.isfinite(float(standard_hours))
+                            or float(standard_hours) < 0
+                        ):
+                            raise ValueError(
+                                "Heures standard v2 manquantes ou invalides"
+                            )
+                        if not isinstance(assignment.assets, tuple):
+                            raise ValueError("Actifs Shift v2 non explicites")
+                        if any(
+                            not asset.association_kind
+                            for asset in assignment.assets
+                        ):
+                            raise ValueError(
+                                "Provenance d'association d'actif v2 manquante"
+                            )
+                        hours_by_resource[assignment.resource_id] = round(
+                            hours_by_resource.get(assignment.resource_id, 0.0)
+                            + float(assignment.hours),
+                            2,
+                        )
                     actual.add(assignment.shift_id)
                     seen.add(assignment.shift_id)
                 if actual != expected:
                     raise ValueError("Couverture de provenance chantier incomplète")
+                if version == 2:
+                    for resource in task.resources:
+                        if round(float(resource.hours), 2) != hours_by_resource.get(
+                            resource.resource_id,
+                            0.0,
+                        ):
+                            raise ValueError(
+                                "Heures Shift v2 incohérentes avec le total ressource"
+                            )
 
 
 def _contact_semantics(project: ProjectCommunicationProject) -> tuple[object, ...]:
@@ -295,6 +356,61 @@ def _contact_semantics(project: ProjectCommunicationProject) -> tuple[object, ..
     return tuple(days)
 
 
+def _shift_v2_semantics(
+    project: ProjectCommunicationProject,
+) -> tuple[object, ...]:
+    """Capture complete Shift communication facts without physical Shift/requirement IDs."""
+
+    days: list[object] = []
+    for day in project.days:
+        tasks: list[object] = []
+        for task in day.tasks:
+            responsibility_by_shift = {
+                assignment.shift_id: assignment.operational_responsible
+                for assignment in task.responsibility_assignments
+            }
+            assignments = tuple(
+                sorted(
+                    (
+                        (
+                            row.workforce_request_id,
+                            row.request_number,
+                            row.resource_id,
+                            row.resource_name,
+                            round(float(row.hours), 2),
+                            round(float(row.standard_hours or 0.0), 2),
+                            tuple(
+                                sorted(
+                                    (
+                                        _asset_payload(asset)
+                                        for asset in employee_assigned_assets(row)
+                                    ),
+                                    key=repr,
+                                )
+                            ),
+                            (
+                                _responsible_payload(
+                                    responsibility_by_shift[row.shift_id]
+                                )
+                                if row.shift_id in responsibility_by_shift
+                                else None
+                            ),
+                        )
+                        for row in task.request_assignments
+                    ),
+                    key=repr,
+                )
+            )
+            tasks.append(
+                (
+                    task.task_description.strip().casefold(),
+                    assignments,
+                )
+            )
+        days.append((day.day.isoformat(), tuple(tasks)))
+    return tuple(days)
+
+
 def _has_site_contact(project: ProjectCommunicationProject) -> bool:
     return any(
         row.site_contact_name or row.site_contact_phone
@@ -316,6 +432,15 @@ def _project_semantic_payload(
     )
 
 
+def _project_v2_semantic_payload(
+    project: ProjectCommunicationProject,
+) -> tuple[object, ...]:
+    return (
+        _project_semantic_payload(project, include_provenance=True),
+        ("shift_provenance_v2", _shift_v2_semantics(project)),
+    )
+
+
 def _fingerprint_payload(payload: object) -> str:
     encoded = json.dumps(
         payload,
@@ -328,20 +453,35 @@ def _fingerprint_payload(payload: object) -> str:
 def project_projection_fingerprint(
     projection: ProjectCommunicationProjection,
 ) -> str:
-    if projection.request_provenance_version is not None:
+    version = projection.request_provenance_version
+    if version is not None:
         _validate_provenance(projection)
-    return _fingerprint_payload(
-        (
+
+    if version == 2:
+        payload = (
+            "project_provenance_v2",
             projection.week_start.isoformat(),
             projection.week_end.isoformat(),
             tuple(
-                _project_semantic_payload(project, include_provenance=True)
-                if projection.request_provenance_version == 1 else _project_payload(project)
+                _project_v2_semantic_payload(project)
                 for project in projection.projects
             ),
             tuple(projection.diagnostics),
         )
-    )
+    else:
+        # Preserve the historical P0/P1 algorithms exactly.
+        payload = (
+            projection.week_start.isoformat(),
+            projection.week_end.isoformat(),
+            tuple(
+                _project_semantic_payload(project, include_provenance=True)
+                if version == 1
+                else _project_payload(project)
+                for project in projection.projects
+            ),
+            tuple(projection.diagnostics),
+        )
+    return _fingerprint_payload(payload)
 
 
 def _diagnostic(
@@ -587,31 +727,33 @@ def _cc_recipients(
     )
 
 
-def _unique_responsibles(
-    project: ProjectCommunicationProject,
-) -> tuple[ContactResolution, ...]:
-    result: dict[tuple[object, ...], ContactResolution] = {}
-    for day in project.days:
-        for task in day.tasks:
-            for responsible in task.operational_responsibles:
-                key = (
-                    responsible.status,
-                    responsible.contact_id,
-                    responsible.display_name,
-                    responsible.phone,
-                    responsible.source_type,
-                )
-                result.setdefault(key, responsible)
-    return tuple(
-        result[key]
-        for key in sorted(
-            result,
-            key=lambda value: tuple("" if part is None else str(part) for part in value),
-        )
-    )
+PROJECT_RESPONSIBILITY_FOOTER = (
+    "Il est de votre responsabilité de communiquer avec les ressources déployées "
+    "sur votre projet pour assurer une bonne coordination de chantier et les "
+    "informer de tout détail supplémentaire nécessaire."
+)
+_SECTION_LABELS = (
+    "Responsable projet",
+    "Description",
+    "Contact chantier",
+    "Horaire",
+)
+_DATE_LINE_PATTERN = re.compile(
+    r"^(Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche) le "
+    r"\d{1,2} [A-Za-zÀ-ÿ]+ \d{4}$"
+)
+_EMPLOYEE_NUMBER_PREFIX = re.compile(r"^\s*\d+\s*[-–—]\s*(.+)$")
 
 
-def _format_responsible(value: ContactResolution) -> str:
+def _line(kind: str, text: str = "") -> ProjectMessageLine:
+    return ProjectMessageLine(kind=kind, text=text)
+
+
+def _asset_display(value: ProjectCommunicationAsset) -> str:
+    return (value.asset_code or "").strip()
+
+
+def _responsible_display(value: ContactResolution) -> str:
     if value.status != STATUS_RESOLVED or not (value.display_name or "").strip():
         return "Non résolu"
     parts = [value.display_name.strip()]
@@ -620,174 +762,444 @@ def _format_responsible(value: ContactResolution) -> str:
     return " — ".join(parts)
 
 
-def _project_header(project: ProjectCommunicationProject) -> list[str]:
-    lines = [f"{project.project_number} — {project.project_name}".strip(" —")]
-    if project.project_manager_erp_phone:
-        lines.append(f"Chargé de projet : {project.project_manager.display_name}")
-        lines.append(f"Téléphone : {project.project_manager_erp_phone}")
-    responsibles = _unique_responsibles(project)
-    resolved = tuple(
-        value
-        for value in responsibles
-        if value.status == STATUS_RESOLVED and (value.display_name or "").strip()
-    )
-    if len(resolved) == 1:
-        lines.append(f"Responsable : {_format_responsible(resolved[0])}")
-    elif len(resolved) > 1:
-        lines.append(
-            "Responsables opérationnels : voir chaque affectation ci-dessous"
+def _unique_responsibles(
+    project: ProjectCommunicationProject,
+) -> tuple[ContactResolution, ...]:
+    values: dict[tuple[object, ...], ContactResolution] = {}
+    for day in project.days:
+        for task in day.tasks:
+            for responsible in task.operational_responsibles:
+                values.setdefault(_responsible_payload(responsible), responsible)
+    return tuple(
+        values[key]
+        for key in sorted(
+            values,
+            key=lambda key: tuple("" if part is None else str(part) for part in key),
         )
-    else:
-        lines.append("Responsable : Non résolu")
-    return lines
+    )
 
 
-def _asset_display(value: ProjectCommunicationAsset) -> str:
-    return (value.asset_code or value.asset_id).strip()
+def _distinct_resolved_responsibles(
+    project: ProjectCommunicationProject,
+) -> tuple[ContactResolution, ...]:
+    by_identity: dict[tuple[str, str], ContactResolution] = {}
+    for value in _unique_responsibles(project):
+        if value.status != STATUS_RESOLVED or not (value.display_name or "").strip():
+            continue
+        key = (value.contact_id or "", value.display_name.strip().casefold())
+        by_identity.setdefault(key, value)
+    return tuple(
+        sorted(
+            by_identity.values(),
+            key=lambda value: (
+                (value.display_name or "").casefold(),
+                value.contact_id or "",
+            ),
+        )
+    )
 
 
-def _resource_suffix(resource) -> str:
-    signals: list[str] = []
-    if any(value == "Tentative" for value in resource.confirmations):
-        signals.append("Tentative")
-    if resource.outside_schedule:
-        signals.append("hors horaire")
-    if not signals:
-        return ""
-    return f" ({', '.join(signals)})"
+def _display_resource_name(value: str) -> str:
+    cleaned = str(value or "").strip()
+    matched = _EMPLOYEE_NUMBER_PREFIX.match(cleaned)
+    return matched.group(1).strip() if matched else cleaned
 
 
-def _project_body(
+def _task_display(task: ProjectCommunicationTask) -> str:
+    codes = " / ".join(dict.fromkeys(code for code in task.task_codes if code))
+    description = task.task_description.strip()
+    if codes and description:
+        return f"{codes} {description}"
+    return codes or description
+
+
+def _request_key(
+    assignment: ProjectCommunicationRequestAssignment,
+) -> tuple[str | None, str | None]:
+    return assignment.workforce_request_id, assignment.request_number
+
+
+def _request_label(key: tuple[str | None, str | None]) -> str:
+    request_id, request_number = key
+    if request_id is None:
+        return "Sans demande"
+    return f"Demande {request_number or request_id}"
+
+
+def _contact_display(
+    name: str | None,
+    phone: str | None,
+) -> str:
+    contact_name = (name or "").strip()
+    contact_phone = (phone or "").strip()
+    if contact_name and contact_phone:
+        return f"{contact_name} : {contact_phone}"
+    return contact_name or contact_phone or "Aucun contact chantier renseigné"
+
+
+def _project_request_groups(
+    project: ProjectCommunicationProject,
+) -> dict[
+    tuple[str | None, str | None],
+    list[tuple[ProjectCommunicationDay, ProjectCommunicationTask, ProjectCommunicationRequestAssignment]],
+]:
+    groups: dict[
+        tuple[str | None, str | None],
+        list[tuple[ProjectCommunicationDay, ProjectCommunicationTask, ProjectCommunicationRequestAssignment]],
+    ] = {}
+    for day in project.days:
+        for task in day.tasks:
+            for assignment in task.request_assignments:
+                groups.setdefault(_request_key(assignment), []).append(
+                    (day, task, assignment)
+                )
+    return groups
+
+
+def _description_lines(project: ProjectCommunicationProject) -> tuple[str, ...]:
+    values: list[str] = []
+    for day in project.days:
+        for task in day.tasks:
+            value = _task_display(task)
+            if value and value not in values:
+                values.append(value)
+    return tuple(values)
+
+
+def _contact_lines(project: ProjectCommunicationProject) -> tuple[str, ...]:
+    groups = _project_request_groups(project)
+    if not groups:
+        return ("Aucun contact chantier renseigné",)
+
+    if len(groups) == 1:
+        key, rows = next(iter(groups.items()))
+        first = rows[0][2]
+        if key[0] is None:
+            return ("Aucun contact chantier renseigné",)
+        return (_contact_display(first.site_contact_name, first.site_contact_phone),)
+
+    values: list[str] = []
+    for key, rows in sorted(
+        groups.items(),
+        key=lambda pair: (
+            pair[0][1] or "",
+            pair[0][0] or "",
+        ),
+    ):
+        contacts: list[str] = []
+        for _day, _task, assignment in rows:
+            contact = _contact_display(
+                assignment.site_contact_name,
+                assignment.site_contact_phone,
+            )
+            if contact not in contacts:
+                contacts.append(contact)
+        values.append(f"{_request_label(key)} — {' / '.join(contacts)}")
+    return tuple(values)
+
+
+def _shift_resource_line(
+    assignment: ProjectCommunicationRequestAssignment,
+    *,
+    responsible: ContactResolution | None = None,
+) -> str:
+    text = _display_resource_name(assignment.resource_name)
+    if (
+        assignment.standard_hours is not None
+        and float(assignment.hours) < float(assignment.standard_hours)
+    ):
+        text += f" — {float(assignment.hours):g} h"
+
+    asset_codes = tuple(
+        dict.fromkeys(
+            code
+            for code in (
+                _asset_display(asset)
+                for asset in employee_assigned_assets(assignment)
+            )
+            if code
+        )
+    )
+    if asset_codes:
+        text += f" ({' / '.join(asset_codes)})"
+    if responsible is not None:
+        text += f" — Responsable : {_responsible_display(responsible)}"
+    return text
+
+
+def _day_schedule_lines(
+    day: ProjectCommunicationDay,
+    *,
+    show_request_groups: bool,
+    show_assignment_responsible: bool,
+) -> tuple[ProjectMessageLine, ...]:
+    grouped: dict[
+        tuple[str | None, str | None],
+        list[tuple[ProjectCommunicationTask, ProjectCommunicationRequestAssignment]],
+    ] = {}
+    responsible_by_shift: dict[str, ContactResolution] = {}
+    legacy_resources: list[ProjectCommunicationResource] = []
+    for task in day.tasks:
+        for responsibility in task.responsibility_assignments:
+            responsible_by_shift[responsibility.shift_id] = (
+                responsibility.operational_responsible
+            )
+        if task.request_assignments:
+            for assignment in task.request_assignments:
+                grouped.setdefault(_request_key(assignment), []).append(
+                    (task, assignment)
+                )
+        else:
+            legacy_resources.extend(task.resources)
+
+    lines: list[ProjectMessageLine] = [_line("date", french_long_date(day.day))]
+    for key, rows in sorted(
+        grouped.items(),
+        key=lambda pair: (pair[0][1] or "", pair[0][0] or ""),
+    ):
+        if show_request_groups:
+            works = tuple(
+                dict.fromkeys(
+                    value
+                    for value in (_task_display(task) for task, _row in rows)
+                    if value
+                )
+            )
+            label = _request_label(key)
+            if works:
+                label += " — " + " / ".join(works)
+            lines.append(_line("group", label))
+        for _task, assignment in sorted(
+            rows,
+            key=lambda value: (
+                _display_resource_name(value[1].resource_name).casefold(),
+                value[1].shift_id,
+            ),
+        ):
+            lines.append(
+                _line(
+                    "bullet",
+                    _shift_resource_line(
+                        assignment,
+                        responsible=(
+                            responsible_by_shift.get(assignment.shift_id)
+                            if show_assignment_responsible
+                            else None
+                        ),
+                    ),
+                )
+            )
+
+    # Historical snapshots without Shift provenance stay renderable without
+    # inventing standard hours or Shift assets that were never persisted.
+    for resource in sorted(
+        legacy_resources,
+        key=lambda value: (value.resource_name.casefold(), value.resource_id),
+    ):
+        lines.append(_line("bullet", _display_resource_name(resource.resource_name)))
+    return tuple(lines)
+
+
+def _project_semantic_message(
     project: ProjectCommunicationProject,
     *,
     change_kind: str | None = None,
-) -> str:
-    lines = _project_header(project)
+) -> ProjectMessageSemantic:
+    lines: list[ProjectMessageLine] = [
+        _line(
+            "project_header",
+            f"{project.project_number} - {project.project_name}".strip(" -"),
+        )
+    ]
     if change_kind is not None:
         labels = {
             "added": "Projet ajouté au planning communiqué.",
             "removed": "Projet retiré du planning communiqué.",
             "modified": "Mise à jour du planning communiqué.",
         }
-        lines.extend(("", labels[change_kind]))
+        lines.extend((_line("blank"), _line("text", labels[change_kind])))
 
-    all_responsibles = _unique_responsibles(project)
-    multiple_responsibles = len(
-        {
-            value.contact_id or (value.display_name or "")
-            for value in all_responsibles
-            if value.status == STATUS_RESOLVED
-        }
-    ) > 1
+    lines.extend(
+        (
+            _line("blank"),
+            _line("section", "Responsable projet"),
+            _line("text", project.project_manager.display_name),
+        )
+    )
+    if project.project_manager_erp_phone:
+        lines.append(_line("text", project.project_manager_erp_phone))
 
+    resolved_responsibles = _distinct_resolved_responsibles(project)
+    if len(resolved_responsibles) == 1:
+        responsible = resolved_responsibles[0]
+        manager_contact_id = project.project_manager.contact_id
+        is_manager_fallback = (
+            responsible.source_type == SOURCE_PROJECT_MANAGER
+            and responsible.source_entity_id == project.project_id
+            and manager_contact_id is not None
+            and responsible.contact_id == manager_contact_id
+        )
+        if not is_manager_fallback:
+            lines.append(
+                _line(
+                    "text",
+                    f"Responsable opérationnel : {_responsible_display(responsible)}",
+                )
+            )
+
+    lines.extend((_line("blank"), _line("section", "Description")))
+    for value in _description_lines(project):
+        lines.append(_line("text", value))
+
+    lines.extend((_line("blank"), _line("section", "Contact chantier")))
+    for value in _contact_lines(project):
+        lines.append(_line("text", value))
+
+    lines.extend((_line("blank"), _line("section", "Horaire")))
+    show_request_groups = len(_project_request_groups(project)) > 1
+    show_assignment_responsible = len(resolved_responsibles) > 1
     for day in project.days:
-        for task in day.tasks:
-            lines.extend(("", f"{french_long_date(day.day)} — {task.task_description}"))
-            if task.request_assignments:
-                by_request: dict[str | None, list[ProjectCommunicationRequestAssignment]] = {}
-                for item in task.request_assignments:
-                    by_request.setdefault(item.workforce_request_id, []).append(item)
-                # Render contribution lines only when distinct provenance
-                # groups explain the canonical total. Multiple physical Shifts
-                # for the same demand do not create separate groups; None is
-                # a genuine ad-hoc provenance group when mixed with a demand.
-                show_request_work = len(by_request) > 1
-                if not show_request_work and len(by_request) == 1:
-                    request_id, group = next(iter(by_request.items()))
-                    if request_id is not None:
-                        first = group[0]
-                        if first.site_contact_name or first.site_contact_phone:
-                            lines.append(
-                                f"Demande {first.request_number or request_id}"
-                            )
-                            contact = " — ".join(
-                                part for part in (
-                                    first.site_contact_name,
-                                    first.site_contact_phone,
-                                ) if part
-                            )
-                            lines.append(f"  Contact chantier : {contact}")
-                if show_request_work:
-                    for request_id, group in sorted(
-                        by_request.items(), key=lambda pair: pair[0] or ""
-                    ):
-                        first = group[0]
-                        label = (
-                            first.request_number or request_id
-                            if request_id is not None
-                            else "Sans demande"
-                        )
-                        lines.append(f"Demande {label}" if request_id is not None else label)
-                        if first.site_contact_name or first.site_contact_phone:
-                            contact = " — ".join(
-                                part for part in (
-                                    first.site_contact_name,
-                                    first.site_contact_phone,
-                                ) if part
-                            )
-                            lines.append(f"  Contact chantier : {contact}")
-                        elif request_id is not None:
-                            lines.append("  Aucun contact chantier renseigné")
-                        # These are subdivisions of the canonical resource
-                        # totals below, not additional scheduled hours.
-                        by_resource: dict[str, tuple[str, float]] = {}
-                        for item in group:
-                            name, hours = by_resource.get(
-                                item.resource_id, (item.resource_name, 0.0)
-                            )
-                            by_resource[item.resource_id] = (
-                                name, hours + item.hours
-                            )
-                        for resource_id, (name, hours) in sorted(
-                            by_resource.items(),
-                            key=lambda pair: (pair[1][0].casefold(), pair[0]),
-                        ):
-                            lines.append(f"  ↳ {name} — {hours:g} h (part de la demande)")
-                    lines.append("  Totaux planifiés (toutes demandes) :")
-            assignments_by_resource: dict[str, list[ContactResolution]] = {}
-            for assignment in task.responsibility_assignments:
-                assignments_by_resource.setdefault(
-                    assignment.resource_id,
-                    [],
-                ).append(assignment.operational_responsible)
-            for resource in task.resources:
-                responsible_suffix = ""
-                if multiple_responsibles:
-                    associated: dict[tuple[object, ...], ContactResolution] = {}
-                    for value in assignments_by_resource.get(resource.resource_id, ()):
-                        associated.setdefault(_responsible_payload(value), value)
-                    resolved = tuple(
-                        value
-                        for value in associated.values()
-                        if value.status == STATUS_RESOLVED
-                    )
-                    if resolved:
-                        responsible_suffix = (
-                            " · Responsable : "
-                            + " / ".join(
-                                _format_responsible(value)
-                                for value in sorted(
-                                    resolved,
-                                    key=lambda value: (
-                                        (value.display_name or "").casefold(),
-                                        value.contact_id or "",
-                                    ),
-                                )
-                            )
-                        )
-                    elif assignments_by_resource.get(resource.resource_id):
-                        responsible_suffix = " · Responsable : Non résolu"
-                asset_suffix = (
-                    " · Actif : "
-                    + " / ".join(_asset_display(asset) for asset in resource.assets)
-                    if resource.assets
-                    else ""
+        lines.append(_line("blank"))
+        lines.extend(
+            _day_schedule_lines(
+                day,
+                show_request_groups=show_request_groups,
+                show_assignment_responsible=show_assignment_responsible,
+            )
+        )
+
+    lines.extend(
+        (
+            _line("blank"),
+            _line("footer", PROJECT_RESPONSIBILITY_FOOTER),
+        )
+    )
+    return ProjectMessageSemantic(lines=tuple(lines))
+
+
+def _render_project_text(message: ProjectMessageSemantic) -> str:
+    values: list[str] = []
+    for line in message.lines:
+        if line.kind == "blank":
+            values.append("")
+        elif line.kind == "bullet":
+            values.append(f"• {line.text}")
+        else:
+            values.append(line.text)
+    return "\n".join(values)
+
+
+def _render_project_html(message: ProjectMessageSemantic) -> str:
+    rendered: list[str] = [
+        '<div style="font-family:Arial,Helvetica,sans-serif;line-height:1.25;max-width:640px;">'
+    ]
+    in_list = False
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            rendered.append("</ul>")
+            in_list = False
+
+    for line in message.lines:
+        value = escape(line.text)
+        if line.kind == "bullet":
+            if not in_list:
+                rendered.append(
+                    '<ul style="margin:0 0 0 20px;padding:0;">'
                 )
-                lines.append(
-                    f"  • {resource.resource_name} — {resource.hours:g} h"
-                    f"{_resource_suffix(resource)}{asset_suffix}{responsible_suffix}"
-                )
-    return "\n".join(lines)
+                in_list = True
+            rendered.append(
+                f'<li style="margin:0;padding:0;">{value}</li>'
+            )
+            continue
+
+        close_list()
+        if line.kind == "blank":
+            rendered.append(
+                '<div style="height:12px;line-height:12px;">&nbsp;</div>'
+            )
+        elif line.kind == "project_header":
+            rendered.append(
+                f'<div style="margin:0;"><strong>{value}</strong></div>'
+            )
+        elif line.kind == "section":
+            rendered.append(
+                f'<div style="margin:0 0 2px 0;"><strong><u>{value}</u></strong></div>'
+            )
+        elif line.kind == "date":
+            rendered.append(
+                f'<div style="margin:0 0 2px 0;"><strong>{value}</strong></div>'
+            )
+        elif line.kind == "group":
+            rendered.append(f'<div style="margin:4px 0 2px 0;">{value}</div>')
+        elif line.kind == "footer":
+            rendered.append(f'<div style="margin-top:12px;">{value}</div>')
+        else:
+            rendered.append(f'<div style="margin:0;">{value}</div>')
+    close_list()
+    rendered.append("</div>")
+    return "".join(rendered)
+
+
+def _semantic_from_review_body(body: str) -> ProjectMessageSemantic:
+    raw_lines = str(body).splitlines()
+    nonempty = [(index, value) for index, value in enumerate(raw_lines) if value.strip()]
+    if not nonempty:
+        raise ValueError("Le corps révisé du courriel projet ne peut pas être vide.")
+    if nonempty[-1][1].strip() != PROJECT_RESPONSIBILITY_FOOTER:
+        raise ValueError(
+            "Le message obligatoire de responsabilité doit rester intact à la fin du courriel."
+        )
+
+    section_positions: list[int] = []
+    for label in _SECTION_LABELS:
+        positions = [
+            index
+            for index, value in enumerate(raw_lines)
+            if value.strip() == label
+        ]
+        if len(positions) != 1:
+            raise ValueError(
+                f"La section obligatoire « {label} » doit apparaître exactement une fois."
+            )
+        section_positions.append(positions[0])
+    if section_positions != sorted(section_positions):
+        raise ValueError("L'ordre obligatoire des sections du courriel projet a été modifié.")
+    if nonempty[0][0] >= section_positions[0]:
+        raise ValueError("L'en-tête projet obligatoire est manquant.")
+
+    semantic: list[ProjectMessageLine] = []
+    first_nonempty = nonempty[0][0]
+    for index, value in enumerate(raw_lines):
+        stripped = value.strip()
+        if not stripped:
+            semantic.append(_line("blank"))
+        elif index == first_nonempty:
+            semantic.append(_line("project_header", stripped))
+        elif stripped in _SECTION_LABELS:
+            semantic.append(_line("section", stripped))
+        elif stripped == PROJECT_RESPONSIBILITY_FOOTER:
+            semantic.append(_line("footer", stripped))
+        elif _DATE_LINE_PATTERN.match(stripped):
+            semantic.append(_line("date", stripped))
+        elif stripped.startswith("• "):
+            semantic.append(_line("bullet", stripped[2:].strip()))
+        else:
+            semantic.append(_line("text", stripped))
+    return ProjectMessageSemantic(lines=tuple(semantic))
+
+
+def project_review_structure_signature(body: str) -> tuple[str, ...]:
+    """Return the template structure that a manual review is allowed to preserve."""
+
+    return tuple(line.kind for line in _semantic_from_review_body(body).lines)
+
+
+def render_project_review_html(body: str) -> str:
+    """Regenerate safe HTML while preserving the mandatory project template."""
+
+    return _render_project_html(_semantic_from_review_body(body))
 
 
 def _subject(
@@ -810,6 +1222,7 @@ def _draft_fingerprint_payload(
     cc_recipients: Sequence[ProjectCommunicationParticipant],
     subject: str,
     body: str,
+    body_html: str | None,
     message_kind: str,
     diagnostics: Sequence[ProjectMessageDiagnostic],
     source_projects: Sequence[ProjectCommunicationProject],
@@ -820,6 +1233,7 @@ def _draft_fingerprint_payload(
         tuple(_participant_payload(value) for value in cc_recipients),
         subject,
         body,
+        body_html,
         message_kind,
         tuple(
             (
@@ -858,7 +1272,9 @@ def _build_draft(
         week_start,
         change=message_kind == MESSAGE_KIND_PLANNING_CHANGE,
     )
-    body = _project_body(project, change_kind=change_kind)
+    semantic = _project_semantic_message(project, change_kind=change_kind)
+    body = _render_project_text(semantic)
+    body_html = _render_project_html(semantic)
     fingerprint = _fingerprint_payload(
         _draft_fingerprint_payload(
             message_key=message_key,
@@ -866,6 +1282,7 @@ def _build_draft(
             cc_recipients=cc_recipients,
             subject=subject,
             body=body,
+            body_html=body_html,
             message_kind=message_kind,
             diagnostics=diagnostics,
             source_projects=cc_sources,
@@ -884,6 +1301,7 @@ def _build_draft(
         cc_recipients=cc_recipients,
         subject=subject,
         body=body,
+        body_html=body_html,
         message_kind=message_kind,
         week_start=week_start,
         content_fingerprint=fingerprint,
@@ -945,13 +1363,19 @@ def compare_project_communication_projections(
         raise ValueError(
             "Les deltas de communication doivent comparer la même semaine."
         )
-    if current.request_provenance_version != 1 or not current.request_provenance_complete:
+
+    current_version = current.request_provenance_version
+    previous_version = previous.request_provenance_version
+    if current_version not in (1, 2) or not current.request_provenance_complete:
         raise ValueError("Projection courante sans provenance chantier complète")
     _validate_provenance(current)
-    if previous.request_provenance_version not in (None, 1):
+    if previous_version not in (None, 1, 2):
         raise ValueError("Version historique de provenance chantier non supportée")
-    if previous.request_provenance_version == 1:
+    if previous_version is not None:
         _validate_provenance(previous)
+    if previous_version == 2 and current_version != 2:
+        raise ValueError("Régression de capacité de provenance chantier interdite")
+
     before = {project.project_id: project for project in previous.projects}
     after = {project.project_id: project for project in current.projects}
     changes: list[ProjectCommunicationChange] = []
@@ -962,11 +1386,22 @@ def compare_project_communication_projections(
             changes.append(ProjectCommunicationChange(project_id, "added", None, new))
         elif new is None:
             changes.append(ProjectCommunicationChange(project_id, "removed", old, None))
-        elif previous.request_provenance_version is None:
-            if (_project_payload(old) != _project_payload(new)
-                or _has_site_contact(new)):
+        elif current_version == 2 and previous_version in (None, 1):
+            # Historical snapshots cannot prove equality for v2 Shift facts.
+            changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
+        elif current_version == 2:
+            if _project_v2_semantic_payload(old) != _project_v2_semantic_payload(new):
                 changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
-        elif _project_semantic_payload(old, include_provenance=True) != _project_semantic_payload(new, include_provenance=True):
+        elif previous_version is None:
+            if (
+                _project_payload(old) != _project_payload(new)
+                or _has_site_contact(new)
+            ):
+                changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
+        elif (
+            _project_semantic_payload(old, include_provenance=True)
+            != _project_semantic_payload(new, include_provenance=True)
+        ):
             changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
     return tuple(changes)
 
@@ -1032,6 +1467,14 @@ def serialize_project_projection(
             for day in project["days"]:
                 for task in day["tasks"]:
                     task.pop("request_assignments", None)
+    elif projection.request_provenance_version == 1:
+        # Preserve historical v1 JSON byte shape: v2 fields did not exist.
+        for project in serialized["projects"]:
+            for day in project["days"]:
+                for task in day["tasks"]:
+                    for assignment in task.get("request_assignments") or ():
+                        assignment.pop("assets", None)
+                        assignment.pop("standard_hours", None)
     return json.dumps(
         serialized,
         ensure_ascii=False,
@@ -1054,8 +1497,46 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
             for task in day.get("tasks") or ()
         ):
             raise ValueError("Snapshot chantier legacy incohérent")
-    elif provenance_version != 1 or provenance_complete is not True:
+    elif provenance_version not in (1, 2) or provenance_complete is not True:
         raise ValueError("Version ou couverture de provenance chantier invalide")
+
+    if provenance_version == 1:
+        for project in data.get("projects") or ():
+            for day in project.get("days") or ():
+                for task in day.get("tasks") or ():
+                    for assignment in task.get("request_assignments") or ():
+                        if (
+                            "assets" in assignment
+                            or "standard_hours" in assignment
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v1 contient des faits v2"
+                            )
+
+    if provenance_version == 2:
+        for project in data.get("projects") or ():
+            for day in project.get("days") or ():
+                for task in day.get("tasks") or ():
+                    for assignment in task.get("request_assignments") or ():
+                        if (
+                            "assets" not in assignment
+                            or not isinstance(assignment.get("assets"), list)
+                            or "standard_hours" not in assignment
+                            or assignment.get("standard_hours") is None
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v2 incomplet: actifs/heures standard absents"
+                            )
+                        try:
+                            standard_hours = float(assignment["standard_hours"])
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError(
+                                "Snapshot provenance v2 invalide: heures standard non numériques"
+                            ) from exc
+                        if not math.isfinite(standard_hours) or standard_hours < 0:
+                            raise ValueError(
+                                "Snapshot provenance v2 invalide: heures standard"
+                            )
 
     def participant(row):
         return ProjectCommunicationParticipant(
@@ -1158,6 +1639,31 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 hours=float(value["hours"]),
                                 site_contact_name=value.get("site_contact_name"),
                                 site_contact_phone=value.get("site_contact_phone"),
+                                assets=tuple(
+                                    ProjectCommunicationAsset(
+                                        allocation_id=str(asset.get("allocation_id") or ""),
+                                        asset_id=str(asset.get("asset_id") or ""),
+                                        asset_code=str(asset.get("asset_code") or ""),
+                                        asset_label=str(asset.get("asset_label") or ""),
+                                        asset_type_label=str(asset.get("asset_type_label") or ""),
+                                        asset_category=str(asset.get("asset_category") or ""),
+                                        association_kind=str(asset.get("association_kind") or ""),
+                                    )
+                                    for asset in (
+                                        value["assets"]
+                                        if provenance_version == 2
+                                        else value.get("assets") or ()
+                                    )
+                                ),
+                                standard_hours=(
+                                    float(value["standard_hours"])
+                                    if provenance_version == 2
+                                    else (
+                                        float(value["standard_hours"])
+                                        if value.get("standard_hours") is not None
+                                        else None
+                                    )
+                                ),
                             )
                             for value in task_row.get("request_assignments") or ()
                         ),

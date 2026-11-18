@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0035_workforce_request_site_contact"
+HEAD_REVISION = "0036_communication_message_body_html"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -104,6 +104,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0033_erp_sync_scheduler_observation.py",
                 "0034_request_shift_survivor_protections.py",
                 "0035_workforce_request_site_contact.py",
+                "0036_communication_message_body_html.py",
             ],
         )
 
@@ -122,6 +123,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0035_workforce_request_site_contact",
                 "0034_request_shift_survivor_protections",
                 "0033_erp_sync_scheduler_observation",
                 "0032_erp_sync_plausibility_review_decisions",
@@ -158,6 +160,73 @@ class SqlMigrationTests(unittest.TestCase):
                 BASELINE_REVISION,
             ],
         )
+
+    def test_0036_communication_message_html_is_nullable_and_preserves_existing_rows(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "communication-html.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0035_workforce_request_site_contact")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "INSERT INTO communication_batches "
+                            "(id, week_start, kind, snapshot_fingerprint, status, "
+                            "prepared_at, drafts_created_count, model_version) "
+                            "VALUES ('B-HTML-LEGACY', '2026-09-21', 'project_confirmation', "
+                            "'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', "
+                            "'PREPARED', CURRENT_TIMESTAMP, 0, 'project_v2')"
+                        )
+                    )
+                    connection.execute(
+                        text(
+                            "INSERT INTO communication_messages "
+                            "(id, batch_id, audience, recipient_id, subject, body, included, approvable) "
+                            "VALUES ('M-HTML-LEGACY', 'B-HTML-LEGACY', 'project', 'P1', "
+                            "'Sujet historique', 'Corps historique', 1, 1)"
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+            command.upgrade(config, "head")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                columns = {
+                    row["name"]: row
+                    for row in inspect(engine).get_columns("communication_messages")
+                }
+                self.assertIn("body_html", columns)
+                self.assertTrue(columns["body_html"]["nullable"])
+                with engine.begin() as connection:
+                    historical = connection.execute(
+                        text(
+                            "SELECT body, body_html FROM communication_messages "
+                            "WHERE id = 'M-HTML-LEGACY'"
+                        )
+                    ).one()
+                    self.assertEqual(historical.body, "Corps historique")
+                    self.assertIsNone(historical.body_html)
+                    connection.execute(
+                        text(
+                            "INSERT INTO communication_messages "
+                            "(id, batch_id, audience, recipient_id, subject, body, body_html, included, approvable) "
+                            "VALUES ('M-HTML-NEW', 'B-HTML-LEGACY', 'project', 'P2', "
+                            "'Sujet HTML', 'Corps texte', '<div>Corps HTML</div>', 1, 1)"
+                        )
+                    )
+                    html = connection.execute(
+                        text(
+                            "SELECT body, body_html FROM communication_messages "
+                            "WHERE id = 'M-HTML-NEW'"
+                        )
+                    ).one()
+                    self.assertEqual(html.body, "Corps texte")
+                    self.assertEqual(html.body_html, "<div>Corps HTML</div>")
+            finally:
+                engine.dispose()
 
     def test_0034_survivor_protection_migration_is_additive_empty_and_constrained(self) -> None:
         with TemporaryDirectory() as directory:

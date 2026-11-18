@@ -80,6 +80,7 @@ Voir :
 - `ADR-033-daily-acumatica-sync-and-safe-recovery.md` — Accepted, ASTRA-643; [contrat de livraison et d'exploitation](ASTRA-643-implementation-contract.md).
 - `ADR-034-work-queue-returns-and-post-approval-need-reduction.md` — Accepted, ASTRA-778; retours vers la File de Travail, préservation explicite de couverture et réduction durable post-approbation.
 - `ADR-035-placement-not-before-approved-residual.md` — Accepted, ASTRA-777; début opérationnel durable de placement du reliquat approuvé, distinct de la fenêtre autorisée.
+- `ADR-036-project-communication-provenance-v2.md` — Accepted, #855; provenance communication v2 par Shift, heures standard canoniques, actifs associés et compatibilité historique P0/P1/P2.
 
 Chaîne métier actuelle :
 

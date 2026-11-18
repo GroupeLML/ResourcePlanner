@@ -6,9 +6,11 @@ import unittest
 
 from app.domain.operational_contacts import ContactResolution, STATUS_RESOLVED
 from app.domain.project_communication import (
+    ProjectCommunicationAsset,
     ProjectCommunicationAssignment,
     ProjectCommunicationParticipant,
     build_project_communication_projection,
+    employee_assigned_assets,
 )
 
 
@@ -78,6 +80,97 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
             project_manager=participant("Jean PM", contact_id="C-PM", user_id="U-PM"),
             operational_responsible=responsible("C-RESP", "Responsable chantier"),
         )
+
+    def test_855_v2_preserves_shift_assets_standard_hours_and_operator_semantics(self) -> None:
+        owned = ProjectCommunicationAsset(
+            allocation_id="A-OWN",
+            asset_id="ASSET-OWN",
+            asset_code="MAT151",
+            asset_label="Unité 151",
+            asset_type_label="Véhicule",
+            asset_category="VEHICLE",
+            association_kind="OWNED_SHIFT",
+        )
+        related = ProjectCommunicationAsset(
+            allocation_id="A-RELATED",
+            asset_id="ASSET-RELATED",
+            asset_code="MAT204",
+            asset_label="Unité 204",
+            asset_type_label="Véhicule",
+            asset_category="VEHICLE",
+            association_kind="RELATED_REQUEST",
+        )
+        rows = (
+            replace(
+                self._row(shift_id="S1", hours=5.0),
+                assets=(owned, related),
+                standard_hours=7.5,
+            ),
+            replace(
+                self._row(shift_id="S2", hours=3.0),
+                assets=(),
+                standard_hours=7.5,
+            ),
+        )
+
+        result = build_project_communication_projection(
+            week_start=WEEK,
+            week_end=date(2026, 9, 27),
+            assignments=rows,
+            request_provenance_version=2,
+        )
+
+        self.assertEqual(result.request_provenance_version, 2)
+        assignments = result.projects[0].days[0].tasks[0].request_assignments
+        self.assertEqual(assignments[0].assets, (owned, related))
+        self.assertEqual(assignments[0].standard_hours, 7.5)
+        self.assertEqual(assignments[1].assets, ())
+        self.assertEqual(
+            [asset.asset_code for asset in employee_assigned_assets(assignments[0])],
+            ["MAT151"],
+        )
+        self.assertEqual(
+            [asset.asset_code for asset in result.projects[0].days[0].tasks[0].resources[0].assets],
+            ["MAT151"],
+        )
+
+    def test_855_v2_preserves_below_equal_and_above_standard_hours(self) -> None:
+        for shift_hours, standard_hours in ((5.0, 8.0), (8.0, 8.0), (9.0, 8.0)):
+            with self.subTest(
+                shift_hours=shift_hours,
+                standard_hours=standard_hours,
+            ):
+                result = build_project_communication_projection(
+                    week_start=WEEK,
+                    week_end=date(2026, 9, 27),
+                    assignments=(
+                        replace(
+                            self._row(
+                                shift_id=f"S-{shift_hours:g}",
+                                hours=shift_hours,
+                            ),
+                            standard_hours=standard_hours,
+                        ),
+                    ),
+                    request_provenance_version=2,
+                )
+                assignment = (
+                    result.projects[0]
+                    .days[0]
+                    .tasks[0]
+                    .request_assignments[0]
+                )
+                self.assertEqual(assignment.hours, shift_hours)
+                self.assertEqual(assignment.standard_hours, standard_hours)
+
+    def test_855_v2_rejects_missing_standard_hours(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Heures standard"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(self._row(shift_id="S1"),),
+                request_provenance_version=2,
+            )
 
     def test_831_manager_erp_phone_propagates_without_changing_shift_grouping(self) -> None:
         rows = (

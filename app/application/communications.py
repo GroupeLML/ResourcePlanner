@@ -69,6 +69,7 @@ class CommunicationMessageRecord:
     recipient_email: str | None
     subject: str
     body: str
+    body_html: str | None
     included: bool
     message_key: str | None = None
     project_id: str | None = None
@@ -132,6 +133,7 @@ class CommunicationTransportMessage:
     recipient_email: str
     subject: str
     body: str
+    body_html: str | None = None
     cc_emails: tuple[str, ...] = ()
     to_emails: tuple[str, ...] = ()
 

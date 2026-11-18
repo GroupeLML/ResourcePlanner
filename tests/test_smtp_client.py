@@ -72,13 +72,14 @@ class SmtpClientTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _message() -> CommunicationTransportMessage:
+    def _message(*, body_html: str | None = None) -> CommunicationTransportMessage:
         return CommunicationTransportMessage(
             audience="project",
             recipient_id="project:P1",
             recipient_email="pm" + chr(64) + TEST_DOMAIN,
             subject="Confirmation projet",
             body="Bonjour\nPlanning confirmé.",
+            body_html=body_html,
             cc_emails=(
                 "tech-a" + chr(64) + TEST_DOMAIN,
                 "tech-b" + chr(64) + TEST_DOMAIN,
@@ -116,6 +117,28 @@ class SmtpClientTests(unittest.TestCase):
             sent["Message-ID"],
             "<fixture-message" + chr(64) + "local.invalid>",
         )
+        self.assertFalse(sent.is_multipart())
+        self.assertEqual(sent.get_content_type(), "text/plain")
+
+    def test_html_send_builds_multipart_alternative_with_text_first(self) -> None:
+        connection = FakeSmtpConnection()
+        html = "<div>Bonjour &amp; confirmé.</div>"
+        with patch("app.infrastructure.smtp.smtplib.SMTP", return_value=connection):
+            SmtpClient().send_message(
+                self._configuration(SMTP_SECURITY_STARTTLS),
+                self._message(body_html=html),
+                message_id="<fixture-html" + chr(64) + "local.invalid>",
+            )
+
+        sent = connection.sent_messages[0]
+        self.assertTrue(sent.is_multipart())
+        parts = list(sent.iter_parts())
+        self.assertEqual([part.get_content_type() for part in parts], ["text/plain", "text/html"])
+        self.assertEqual(
+            parts[0].get_content().replace("\r\n", "\n").rstrip("\n"),
+            "Bonjour\nPlanning confirmé.",
+        )
+        self.assertEqual(parts[1].get_content().strip(), html)
 
     def test_ssl_tls_uses_smtp_ssl_and_connection_test_does_not_send(self) -> None:
         connection = FakeSmtpConnection()

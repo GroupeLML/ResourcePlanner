@@ -467,6 +467,15 @@ def _seed(database_url: str) -> None:
                         active=True,
                         sort_order=20,
                     ),
+                    Resource(
+                        id="R-PM-COMMUNICATION",
+                        external_id="EMP-PM",
+                        name="ERP manager communication fixture",
+                        resource_class="GENERAL",
+                        active=False,
+                        erp_active=False,
+                        erp_phone="-".join(("450", "555", "0199")),
+                    ),
                 ]
             )
             session.flush()

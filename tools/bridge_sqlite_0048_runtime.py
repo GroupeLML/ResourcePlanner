@@ -121,7 +121,7 @@ SOURCE_MISSING_COLUMNS = {
         "parent_attempt_id",
         "erp_generation",
     },
-    "communication_messages": {"to_recipients_json"},
+    "communication_messages": {"to_recipients_json", "body_html"},
     "competencies": {"resource_class_code", "resource_class_version"},
     "work_packages": {
         "task_catalog_item_id",

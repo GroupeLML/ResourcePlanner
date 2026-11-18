@@ -87,6 +87,7 @@ class CommunicationMessageRow(Base):
     diagnostics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     subject: Mapped[str] = mapped_column(String(512), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     included: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true())
 
 

@@ -27,7 +27,11 @@ class MicrosoftGraphCommunicationTransportTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _message(local_part: str) -> CommunicationTransportMessage:
+    def _message(
+        local_part: str,
+        *,
+        body_html: str | None = None,
+    ) -> CommunicationTransportMessage:
         address = local_part + chr(64) + TEST_DOMAIN
         return CommunicationTransportMessage(
             audience="technician",
@@ -35,6 +39,7 @@ class MicrosoftGraphCommunicationTransportTests(unittest.TestCase):
             recipient_email=address,
             subject="Planning semaine prochaine",
             body="Bonjour\nVoici votre planning.",
+            body_html=body_html,
             cc_emails=(
                 "cc-" + local_part + chr(64) + TEST_DOMAIN,
             ),
@@ -85,6 +90,29 @@ class MicrosoftGraphCommunicationTransportTests(unittest.TestCase):
         self.assertEqual(result.created_count, 2)
         self.assertEqual(sum("/messages" in request.url.path for request in requests), 2)
         self.assertFalse(any(request.url.path.endswith("/send") for request in requests))
+
+    def test_html_message_uses_persisted_html_and_html_content_type(self) -> None:
+        observed: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/oauth2/v2.0/token"):
+                return httpx.Response(200, json={"access_token": "test-token"})
+            if request.method == "POST" and request.url.path.endswith("/messages"):
+                payload = json.loads(request.content)
+                observed.update(payload)
+                return httpx.Response(201, json={"id": "draft-html"})
+            self.fail(f"Requête Graph inattendue: {request.method} {request.url}")
+
+        html = "<div>Bonjour &amp; planning</div>"
+        adapter = MicrosoftGraphCommunicationTransport(
+            self._settings(),
+            transport=httpx.MockTransport(handler),
+        )
+        result = adapter.create_drafts((self._message("tech-html", body_html=html),))
+
+        self.assertEqual(result.created_count, 1)
+        self.assertEqual(observed["body"]["contentType"], "HTML")
+        self.assertEqual(observed["body"]["content"], html)
 
     def test_partial_failure_attempts_to_delete_drafts_already_created(self) -> None:
         draft_posts = 0

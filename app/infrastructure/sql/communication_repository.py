@@ -312,6 +312,7 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
                     recipient_email=_optional_text(row.recipient_email),
                     subject=row.subject,
                     body=row.body,
+                    body_html=_optional_text(row.body_html),
                     included=bool(row.included),
                     message_key=_optional_text(row.message_key),
                     project_id=_optional_text(row.project_id),
@@ -509,6 +510,7 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
                 ),
                 subject=draft.subject,
                 body=draft.body,
+                body_html=draft.body_html,
                 included=bool(included),
             )
             self._session.add(message_row)

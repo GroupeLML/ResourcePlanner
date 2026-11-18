@@ -4,7 +4,7 @@ from datetime import date
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..application.communications import CommunicationBatchRecord
 from ..application.project_communications import (
@@ -20,6 +20,8 @@ ProjectCommunicationDependency = Callable[..., Any]
 
 
 class ProjectReviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     message_key: str
     include: bool = True
     subject: str | None = None

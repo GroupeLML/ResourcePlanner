@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 import json
 from decimal import Decimal
 from email import policy
@@ -16,12 +16,23 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.application.communications import CommunicationTransportResult
+from app.application.communications import (
+    CommunicationMessageRecord,
+    CommunicationTransportResult,
+)
 from app.application.security import AuthPrincipal, ROLE_ADMIN
 from app.server.security import static_auth_resolver
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
+from app.domain.project_communication import employee_assigned_assets
+from app.domain.project_communication_messages import (
+    deserialize_project_projection,
+    project_projection_fingerprint,
+)
 from app.application.operational_contacts import OperationalContactService
-from app.application.project_communications import ProjectCommunicationService
+from app.application.project_communications import (
+    ProjectCommunicationService,
+    _project_message_eml,
+)
 from app.domain.operational_contacts import (
     PROVENANCE_MIGRATION_OBSERVED,
     RESPONSIBILITY_CONTEXT_VERSION,
@@ -30,6 +41,7 @@ from app.domain.operational_contacts import (
 )
 from app.infrastructure.sql import (
     AppUser,
+    AvailabilityRuleResourceClass,
     Asset,
     AssetAllocation,
     AssetRequirement,
@@ -42,6 +54,8 @@ from app.infrastructure.sql import (
     ProjectCoManager,
     RequestLine,
     Resource,
+    ResourceAvailabilityRule,
+    ResourceClassConfig,
     ResourceRequirement,
     Shift,
     TaskCatalogEntry,
@@ -50,6 +64,7 @@ from app.infrastructure.sql import (
     create_session_factory,
     create_sql_engine,
 )
+from app.infrastructure.sql.communication_models import CommunicationMessageRow
 from app.infrastructure.sql.operational_contact_repository import (
     SqlOperationalContactRepository,
 )
@@ -75,6 +90,7 @@ class FakeSmtpDeliveryClient:
     def __init__(self) -> None:
         self.attempt_subjects: list[str] = []
         self.attempt_bodies: list[str] = []
+        self.attempt_html: list[str | None] = []
         self.attempt_cc: list[tuple[str, ...]] = []
         self._failed_once = False
 
@@ -84,6 +100,7 @@ class FakeSmtpDeliveryClient:
     def send_message(self, configuration, message, *, message_id: str) -> str:
         self.attempt_subjects.append(message.subject)
         self.attempt_bodies.append(message.body)
+        self.attempt_html.append(message.body_html)
         self.attempt_cc.append(tuple(message.cc_emails))
         if "2000" in message.subject and not self._failed_once:
             self._failed_once = True
@@ -511,6 +528,106 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             )
         )
 
+    def test_855_v2_standard_hours_use_canonical_availability_and_class_holiday(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add_all(
+                        [
+                            ResourceClassConfig(
+                                code="INSTALL",
+                                label="Installation",
+                                active=True,
+                            ),
+                            ResourceClassConfig(
+                                code="OTHER",
+                                label="Autre",
+                                active=True,
+                            ),
+                        ]
+                    )
+                    r1 = session.get(Resource, "R1")
+                    r2 = session.get(Resource, "R2")
+                    assert r1 is not None and r2 is not None
+                    r1.resource_class = "INSTALL"
+                    r2.resource_class = "OTHER"
+                    session.add_all(
+                        [
+                            ResourceAvailabilityRule(
+                                id="STD-R1-855",
+                                resource_id="R1",
+                                availability_type="Horaire standard",
+                                weekdays="Lun,Mar,Mer,Jeu,Ven",
+                                start_time=time(7, 0),
+                                end_time=time(14, 30),
+                                active=True,
+                            ),
+                            ResourceAvailabilityRule(
+                                id="STD-R2-855",
+                                resource_id="R2",
+                                availability_type="Horaire standard",
+                                weekdays="Lun,Mar,Mer,Jeu,Ven",
+                                start_time=time(8, 0),
+                                end_time=time(16, 0),
+                                active=True,
+                            ),
+                        ]
+                    )
+
+                with factory() as session:
+                    before = self._service(session).project_projection(
+                        week_start=WEEK
+                    )
+                self.assertEqual(before.request_provenance_version, 2)
+                before_rows = {
+                    row.resource_id: row
+                    for task in before.projects[0].days[0].tasks
+                    for row in task.request_assignments
+                }
+                self.assertEqual(before_rows["R1"].standard_hours, 7.5)
+                self.assertEqual(before_rows["R2"].standard_hours, 8.0)
+                before_fingerprint = project_projection_fingerprint(before)
+
+                with factory.begin() as session:
+                    session.add(
+                        ResourceAvailabilityRule(
+                            id="HOLIDAY-INSTALL-855",
+                            resource_id=None,
+                            availability_type="Jour férié",
+                            start_date=WEEK,
+                            end_date=WEEK,
+                            active=True,
+                        )
+                    )
+                    session.flush()
+                    session.add(
+                        AvailabilityRuleResourceClass(
+                            availability_rule_id="HOLIDAY-INSTALL-855",
+                            resource_class_code="INSTALL",
+                        )
+                    )
+
+                with factory() as session:
+                    after = self._service(session).project_projection(
+                        week_start=WEEK
+                    )
+                after_rows = {
+                    row.resource_id: row
+                    for task in after.projects[0].days[0].tasks
+                    for row in task.request_assignments
+                }
+                self.assertEqual(after_rows["R1"].standard_hours, 0.0)
+                self.assertEqual(after_rows["R2"].standard_hours, 8.0)
+                self.assertNotEqual(
+                    project_projection_fingerprint(after),
+                    before_fingerprint,
+                )
+            finally:
+                engine.dispose()
+
     def test_missing_allocation_proposals_are_not_project_assignments(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
@@ -786,7 +903,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     projection = self._service(session).project_preview(week_start=WEEK)
                 self.assertEqual(len(projection.drafts), 1)
                 draft = projection.drafts[0]
-                self.assertIn("Téléphone : " + synthetic_phone("0100"), draft.body)
+                self.assertIn(
+                    "Responsable projet\nAncien nom\n" + synthetic_phone("0100"),
+                    draft.body,
+                )
+                self.assertNotIn("ERP source", draft.body)
                 self.assertFalse(draft.approvable)
                 self.assertIsNone(draft.to_recipient.email)
                 self.assertNotIn("pm" + chr(64) + TEST_DOMAIN,
@@ -798,6 +919,186 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 ))
             finally:
                 engine.dispose()
+
+    def test_855_pre_v2_prepared_batch_is_stale_and_not_upgraded_in_place(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()[
+                            "snapshot_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                batch_id = prepared.json()["id"]
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        batch = session.get(CommunicationBatchRow, batch_id)
+                        assert batch is not None
+                        assert batch.project_snapshot_json is not None
+                        legacy = json.loads(batch.project_snapshot_json)
+                        legacy["request_provenance_version"] = 1
+                        for project in legacy["projects"]:
+                            for day in project["days"]:
+                                for task in day["tasks"]:
+                                    for assignment in (
+                                        task.get("request_assignments") or ()
+                                    ):
+                                        assignment.pop("assets", None)
+                                        assignment.pop("standard_hours", None)
+                        legacy_json = json.dumps(
+                            legacy,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                        legacy_projection = deserialize_project_projection(
+                            legacy_json
+                        )
+                        batch.project_snapshot_json = legacy_json
+                        batch.snapshot_fingerprint = (
+                            project_projection_fingerprint(
+                                legacy_projection
+                            )
+                        )
+                        message = session.scalar(
+                            select(CommunicationMessageRow).where(
+                                CommunicationMessageRow.batch_id == batch_id
+                            )
+                        )
+                        assert message is not None
+                        stored_body = message.body
+
+                    stale = client.post(
+                        f"/api/v1/communications/project-batches/{batch_id}/approve"
+                    )
+                    self.assertEqual(stale.status_code, 409, stale.text)
+                    self.assertEqual(
+                        stale.json()["error"]["code"],
+                        "project_communication_batch_stale",
+                    )
+
+                    with factory() as session:
+                        batch = session.get(CommunicationBatchRow, batch_id)
+                        assert batch is not None
+                        self.assertEqual(
+                            batch.project_snapshot_json,
+                            legacy_json,
+                        )
+                        message = session.scalar(
+                            select(CommunicationMessageRow).where(
+                                CommunicationMessageRow.batch_id == batch_id
+                            )
+                        )
+                        assert message is not None
+                        self.assertEqual(message.body, stored_body)
+                finally:
+                    engine.dispose()
+
+    def test_855_prepared_p2_batch_is_stale_when_shift_hours_reassociate_responsibility(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    requirement = session.get(ResourceRequirement, "REQ2")
+                    shift = session.get(Shift, "S2")
+                    assert requirement is not None and shift is not None
+                    requirement.assigned_resource_id = "R1"
+                    requirement.captured_operational_responsible_contact_id = "C-CURRENT"
+                    requirement.captured_operational_responsible_source_type = (
+                        SOURCE_TASK_RESPONSIBLE
+                    )
+                    requirement.captured_operational_responsible_source_entity_id = (
+                        "T-CURRENT"
+                    )
+                    requirement.captured_operational_responsible_status = STATUS_RESOLVED
+                    shift.resource_id = "R1"
+            finally:
+                engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                before = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(before.status_code, 200, before.text)
+                before_payload = before.json()
+                before_draft = before_payload["drafts"][0]
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": before_payload[
+                            "snapshot_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                batch_id = prepared.json()["id"]
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        first = session.get(Shift, "S1")
+                        second = session.get(Shift, "S2")
+                        assert first is not None and second is not None
+                        first.hours = Decimal("4")
+                        second.hours = Decimal("8")
+                finally:
+                    engine.dispose()
+
+                after = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(after.status_code, 200, after.text)
+                after_payload = after.json()
+                after_draft = after_payload["drafts"][0]
+                self.assertNotEqual(
+                    before_payload["snapshot_fingerprint"],
+                    after_payload["snapshot_fingerprint"],
+                )
+                self.assertEqual(
+                    before_draft["to_recipients"],
+                    after_draft["to_recipients"],
+                )
+                self.assertEqual(
+                    before_draft["cc_recipients"],
+                    after_draft["cc_recipients"],
+                )
+
+                stale = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(
+                    stale.json()["error"]["code"],
+                    "project_communication_batch_stale",
+                )
 
     def test_831_preview_prepared_stale_and_graph_smtp_use_persisted_body(self) -> None:
         with TemporaryDirectory() as directory:
@@ -832,8 +1133,13 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(preview.status_code, 200, preview.text)
                 old_fingerprint = preview.json()["snapshot_fingerprint"]
                 first_body = preview.json()["drafts"][0]["body"]
-                self.assertIn("Chargé de projet : Chargé de projet Démo", first_body)
-                self.assertIn("Téléphone : " + synthetic_phone("0100"), first_body)
+                first_html = preview.json()["drafts"][0]["body_html"]
+                self.assertIsNotNone(first_html)
+                self.assertIn(
+                    "Responsable projet\nChargé de projet Démo\n"
+                    + synthetic_phone("0100"),
+                    first_body,
+                )
                 self.assertNotIn("WRONG-CONTACT-PHONE", first_body)
                 self.assertEqual(len(preview.json()["drafts"]), 1)
 
@@ -848,6 +1154,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(prepared.status_code, 201, prepared.text)
                 old_id = prepared.json()["id"]
                 self.assertEqual(prepared.json()["messages"][0]["body"], first_body)
+                self.assertEqual(prepared.json()["messages"][0]["body_html"], first_html)
 
                 engine = create_sql_engine(database_url)
                 factory = create_session_factory(engine)
@@ -865,7 +1172,13 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(updated.status_code, 200, updated.text)
                 self.assertNotEqual(updated.json()["snapshot_fingerprint"], old_fingerprint)
                 current_body = updated.json()["drafts"][0]["body"]
-                self.assertIn("Téléphone : " + synthetic_phone("0200"), current_body)
+                current_html = updated.json()["drafts"][0]["body_html"]
+                self.assertIsNotNone(current_html)
+                self.assertIn(
+                    "Responsable projet\nChargé de projet Démo\n"
+                    + synthetic_phone("0200"),
+                    current_body,
+                )
                 self.assertNotIn(synthetic_phone("0100"), current_body)
                 self.assertEqual(updated.json()["drafts"][0]["to_recipients"],
                                  preview.json()["drafts"][0]["to_recipients"])
@@ -884,6 +1197,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(stored.status_code, 200, stored.text)
                 old = next(row for row in stored.json() if row["id"] == old_id)
                 self.assertEqual(old["messages"][0]["body"], first_body)
+                self.assertEqual(old["messages"][0]["body_html"], first_html)
 
                 replacement = client.post(
                     "/api/v1/communications/project-batches",
@@ -896,6 +1210,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(replacement.status_code, 201, replacement.text)
                 new_id = replacement.json()["id"]
                 self.assertEqual(replacement.json()["messages"][0]["body"], current_body)
+                self.assertEqual(
+                    replacement.json()["messages"][0]["body_html"],
+                    current_html,
+                )
                 approved = client.post(
                     f"/api/v1/communications/project-batches/{new_id}/approve"
                 )
@@ -906,6 +1224,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(drafts.status_code, 200, drafts.text)
                 self.assertEqual(len(transport.messages), 1)
                 self.assertEqual(transport.messages[0].body, current_body)
+                self.assertEqual(transport.messages[0].body_html, current_html)
 
                 configured = client.put(
                     "/api/v1/admin/settings/smtp",
@@ -929,6 +1248,30 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(sent.status_code, 200, sent.text)
                 self.assertEqual(smtp.attempt_bodies, [current_body])
+                self.assertEqual(smtp.attempt_html, [current_html])
+
+    def test_855_historical_null_html_eml_remains_text_only(self) -> None:
+        message = CommunicationMessageRecord(
+            id="M-HISTORICAL-855",
+            audience="project",
+            recipient_id="P1",
+            recipient_email="pm" + chr(64) + TEST_DOMAIN,
+            subject="Sujet historique",
+            body="Corps texte historique",
+            body_html=None,
+            included=True,
+            to_emails=("pm" + chr(64) + TEST_DOMAIN,),
+        )
+
+        mime = BytesParser(policy=policy.default).parsebytes(
+            _project_message_eml(message)
+        )
+        self.assertFalse(mime.is_multipart())
+        self.assertEqual(mime.get_content_type(), "text/plain")
+        self.assertEqual(
+            mime.get_content().replace("\r\n", "\n").rstrip("\n"),
+            "Corps texte historique",
+        )
 
     def test_projection_uses_approved_context_and_resource_recipients(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1469,7 +1812,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "project_planning_change",
                 )
                 self.assertEqual(len(delta_payload["drafts"]), 1)
-                self.assertIn("6 h", delta_payload["drafts"][0]["body"])
+                self.assertNotIn("6 h", delta_payload["drafts"][0]["body"])
                 self.assertNotEqual(
                     delta_payload["snapshot_fingerprint"],
                     delta_payload["baseline_fingerprint"],
@@ -1835,11 +2178,20 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     by_shift = {row.shift_id: row for row in r1_rows}
                     self.assertEqual(
                         {asset.asset_label for asset in by_shift["S1"].assets},
-                        {"Nacelle 708B", "Camion 708B", "Actif demande 843"},
+                        {
+                            "Nacelle 708B",
+                            "Camion 708B",
+                            "Actif demande 843",
+                            "Actif segment sans opérateur",
+                        },
                     )
                     self.assertEqual(
                         {asset.asset_label for asset in by_shift["S1-SECOND-708B"].assets},
-                        {"Camion 708B", "Actif demande 843"},
+                        {
+                            "Camion 708B",
+                            "Actif demande 843",
+                            "Actif segment sans opérateur",
+                        },
                     )
                     s2 = next(row for row in assignments if row.shift_id == "S2")
                     self.assertNotIn(
@@ -1868,13 +2220,57 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                             for asset in row.assets
                         },
                     )
-                    self.assertNotIn(
+                    self.assertIn(
                         "Actif segment sans opérateur",
                         {
                             asset.asset_label
                             for row in r1_rows
                             for asset in row.assets
                         },
+                    )
+
+                    immutable = ProjectCommunicationService(
+                        repository
+                    ).project_projection(week_start=WEEK)
+                    self.assertEqual(immutable.request_provenance_version, 2)
+                    shift_rows = {
+                        item.shift_id: item
+                        for day in immutable.projects[0].days
+                        for task in day.tasks
+                        for item in task.request_assignments
+                    }
+                    self.assertEqual(
+                        {
+                            asset.asset_label
+                            for asset in shift_rows["S1"].assets
+                        },
+                        {
+                            "Nacelle 708B",
+                            "Camion 708B",
+                            "Actif demande 843",
+                            "Actif segment sans opérateur",
+                        },
+                    )
+                    self.assertEqual(
+                        {
+                            asset.association_kind
+                            for asset in shift_rows["S1"].assets
+                        },
+                        {
+                            "OWNED_SHIFT",
+                            "INHERITED_RESOURCE_PERIOD",
+                            "INHERITED_REQUEST",
+                            "SEGMENT_CONTEXT",
+                        },
+                    )
+                    self.assertEqual(
+                        {
+                            asset.asset_code
+                            for asset in employee_assigned_assets(
+                                shift_rows["S1"]
+                            )
+                        },
+                        {"EQ-708B", "V-708B", "REQ-843"},
                     )
 
                     projection = ProjectCommunicationService(
@@ -1885,7 +2281,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                         for row in projection.drafts
                         if row.project_id == "P1"
                     )
-                    self.assertIn("Actif : V-708B / REQ-843 / EQ-708B", draft.body)
+                    self.assertIn("(V-708B / REQ-843 / EQ-708B)", draft.body)
+                    self.assertNotIn("Actif", draft.body)
                     self.assertNotIn("Camion 708B", draft.body)
                     self.assertNotIn("Nacelle 708B", draft.body)
 
@@ -1910,7 +2307,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     draft = next(
                         row for row in changed.drafts if row.project_id == "P1"
                     )
-                    self.assertIn("Actif : V-NEW-708B", draft.body)
+                    self.assertIn("V-NEW-708B", draft.body)
+                    self.assertIn("REQ-843", draft.body)
+                    self.assertIn("(V-NEW-708B / REQ-843)", draft.body)
+                    self.assertNotIn("Actif", draft.body)
+                    self.assertNotIn("()", draft.body)
                     self.assertNotIn("Camion remplacement 708B", draft.body)
                     self.assertNotIn("Camion 708B", draft.body)
                     self.assertNotIn("Nacelle 708B", draft.body)
@@ -2011,9 +2412,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertIn("Inspection urgente", preview_body)
                 self.assertIn("Installation approuvée", preview_body)
                 self.assertIn("Technicien ressource", preview_body)
-                self.assertIn("2 h", preview_body)
-                self.assertIn("1 h", preview_body)
-                self.assertIn("Actif : NAC-MAIL-708B", preview_body)
+                self.assertNotIn("2 h", preview_body)
+                self.assertNotIn("1 h", preview_body)
+                self.assertIn("(NAC-MAIL-708B)", preview_body)
+                self.assertNotIn("Actif", preview_body)
                 self.assertNotIn("Nacelle courriel 708B", preview_body)
 
                 prepared = client.post(
@@ -2129,8 +2531,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(preview.status_code, 200, preview.text)
                 original_fingerprint = preview.json()["snapshot_fingerprint"]
                 original_body = preview.json()["drafts"][0]["body"]
-                self.assertIn("Demande DMO-290A-1", original_body)
-                self.assertIn("Contact chantier : Jean Tremblay — 555-0101", original_body)
+                original_html = preview.json()["drafts"][0]["body_html"]
+                self.assertIsNotNone(original_html)
+                self.assertIn("Contact chantier\nJean Tremblay : 555-0101", original_body)
+                self.assertNotIn("Demande DMO-290A-1", original_body)
 
                 prepared = client.post(
                     "/api/v1/communications/project-batches",
@@ -2143,6 +2547,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(prepared.status_code, 201, prepared.text)
                 batch_id = prepared.json()["id"]
                 self.assertEqual(prepared.json()["messages"][0]["body"], original_body)
+                self.assertEqual(prepared.json()["messages"][0]["body_html"], original_html)
 
                 engine = create_sql_engine(database_url)
                 factory = create_session_factory(engine)
@@ -2166,7 +2571,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     original_fingerprint,
                 )
                 self.assertIn(
-                    "Contact chantier : Pierre Gagnon — 555-0202",
+                    "Contact chantier\nPierre Gagnon : 555-0202",
                     current_preview.json()["drafts"][0]["body"],
                 )
                 self.assertNotIn("Jean Tremblay", current_preview.json()["drafts"][0]["body"])
@@ -2186,7 +2591,9 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(reloaded.status_code, 200, reloaded.text)
                 stored = next(row for row in reloaded.json() if row["id"] == batch_id)
                 self.assertEqual(stored["messages"][0]["body"], original_body)
+                self.assertEqual(stored["messages"][0]["body_html"], original_html)
                 self.assertNotIn("Pierre Gagnon", stored["messages"][0]["body"])
+                self.assertNotIn("Pierre Gagnon", stored["messages"][0]["body_html"])
 
 
     def test_830_canonical_contact_patch_preserves_populated_approved_plan_and_cas(self) -> None:
@@ -2340,11 +2747,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(preview_response.status_code, 200, preview_response.text)
                 preview = preview_response.json()
                 self.assertIn(
-                    "Demande DMO-290A-1",
-                    preview["drafts"][0]["body"],
-                )
-                self.assertIn(
-                    "Contact chantier : Jean Tremblay — 555-0101",
+                    "Contact chantier\nJean Tremblay : 555-0101",
                     preview["drafts"][0]["body"],
                 )
 
@@ -2360,7 +2763,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 prepared_payload = prepared.json()
                 batch_id = prepared_payload["id"]
                 self.assertIn(
-                    "Contact chantier : Jean Tremblay — 555-0101",
+                    "Contact chantier\nJean Tremblay : 555-0101",
                     prepared_payload["messages"][0]["body"],
                 )
 
@@ -2401,7 +2804,33 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     f"/api/v1/communications/project-batches/{batch_id}/draft-download"
                 )
                 self.assertEqual(retried.status_code, 200, retried.text)
-                self.assertEqual(retried.content, downloaded.content)
+                first_mime = BytesParser(policy=policy.default).parsebytes(
+                    downloaded.content
+                )
+                retry_mime = BytesParser(policy=policy.default).parsebytes(
+                    retried.content
+                )
+                self.assertEqual(retry_mime["To"], first_mime["To"])
+                self.assertEqual(retry_mime["Cc"], first_mime["Cc"])
+                self.assertEqual(retry_mime["Subject"], first_mime["Subject"])
+                self.assertTrue(first_mime.is_multipart())
+                self.assertTrue(retry_mime.is_multipart())
+                first_parts = list(first_mime.iter_parts())
+                retry_parts = list(retry_mime.iter_parts())
+                self.assertEqual(
+                    [part.get_content_type() for part in retry_parts],
+                    [part.get_content_type() for part in first_parts],
+                )
+                self.assertEqual(
+                    [
+                        part.get_content().replace("\r\n", "\n").rstrip("\n")
+                        for part in retry_parts
+                    ],
+                    [
+                        part.get_content().replace("\r\n", "\n").rstrip("\n")
+                        for part in first_parts
+                    ],
+                )
 
         self.assertEqual(transport.create_calls, 1)
         self.assertEqual(len(transport.messages), 1)
@@ -2417,7 +2846,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             ),
         )
         self.assertIn(
-            "Contact chantier : Jean Tremblay — 555-0101",
+            "Contact chantier\nJean Tremblay : 555-0101",
             transport.messages[0].body,
         )
         self.assertNotIn("Pierre Gagnon", transport.messages[0].body)
@@ -2432,11 +2861,126 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             mime["Cc"],
             ", ".join(transport.messages[0].cc_emails),
         )
+        self.assertTrue(mime.is_multipart())
+        parts = list(mime.iter_parts())
         self.assertEqual(
-            mime.get_content().replace("\r\n", "\n").rstrip("\n"),
+            [part.get_content_type() for part in parts],
+            ["text/plain", "text/html"],
+        )
+        self.assertEqual(
+            parts[0].get_content().replace("\r\n", "\n").rstrip("\n"),
             transport.messages[0].body.replace("\r\n", "\n").rstrip("\n"),
         )
+        self.assertEqual(
+            parts[1].get_content().strip(),
+            transport.messages[0].body_html,
+        )
 
+
+    def test_855_manual_review_regenerates_html_and_rejects_client_html_authority(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                draft = preview.json()["drafts"][0]
+                original_fingerprint = draft["content_fingerprint"]
+
+                edited = draft["body"].replace(
+                    "Chargé de projet Démo",
+                    "Chargé de projet <sécurisé> & conservé",
+                )
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "subject": draft["subject"],
+                                "body": edited,
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = prepared.json()["messages"][0]
+                self.assertEqual(message["body"], edited)
+                self.assertIn(
+                    "Chargé de projet &lt;sécurisé&gt; &amp; conservé",
+                    message["body_html"],
+                )
+                self.assertNotIn("<sécurisé>", message["body_html"])
+                self.assertIn(
+                    "<strong><u>Responsable projet</u></strong>",
+                    message["body_html"],
+                )
+                self.assertNotEqual(message["content_fingerprint"], original_fingerprint)
+
+                missing_footer = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "body": draft["body"].rsplit("\n", 2)[0],
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(missing_footer.status_code, 422, missing_footer.text)
+                self.assertEqual(
+                    missing_footer.json()["error"]["code"],
+                    "project_communication_review_template_invalid",
+                )
+
+                missing_bullet = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "body": draft["body"].replace("• ", "", 1),
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(missing_bullet.status_code, 422, missing_bullet.text)
+                self.assertEqual(
+                    missing_bullet.json()["error"]["code"],
+                    "project_communication_review_template_invalid",
+                )
+
+                rejected = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "body": draft["body"],
+                                "body_html": "<script>client authority</script>",
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(rejected.status_code, 422, rejected.text)
 
     def test_project_batch_subset_excludes_unchecked_messages_from_graph_and_smtp(self) -> None:
         with TemporaryDirectory() as directory:
@@ -2805,6 +3349,13 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["week_start"], "2026-09-21")
         self.assertEqual(payload["week_end"], "2026-09-27")
+        self.assertEqual(payload["request_provenance_version"], 2)
+        self.assertTrue(payload["request_provenance_complete"])
+        assignment = payload["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]
+        self.assertIn("assets", assignment)
+        self.assertIn("standard_hours", assignment)
         self.assertEqual(payload["projects"][0]["project_number"], "1000")
         self.assertEqual(
             payload["projects"][0]["days"][0]["tasks"][0]["task_description"],

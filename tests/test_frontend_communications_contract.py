@@ -69,6 +69,7 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertIn("response.blob()", api)
         self.assertIn('"send-smtp"', api)
         self.assertIn("CommunicationDelivery", api)
+        self.assertIn("body_html", api)
         self.assertNotIn("/api/v1/communications/contacts", api)
         self.assertNotIn("/api/v1/communications/preview?", api)
         self.assertNotIn("graph.microsoft", api.lower())

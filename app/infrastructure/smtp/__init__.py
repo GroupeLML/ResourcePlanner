@@ -274,6 +274,8 @@ class SmtpClient:
             email["Reply-To"] = configuration.reply_to
         email["Message-ID"] = message_id
         email.set_content(message.body)
+        if message.body_html is not None:
+            email.add_alternative(message.body_html, subtype="html")
 
         with self._connect(configuration) as client:
             self._login(client, configuration)
