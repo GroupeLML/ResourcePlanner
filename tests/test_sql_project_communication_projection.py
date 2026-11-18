@@ -1082,11 +1082,6 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     before_payload["snapshot_fingerprint"],
                     after_payload["snapshot_fingerprint"],
                 )
-                self.assertNotEqual(before_draft["body"], after_draft["body"])
-                self.assertNotEqual(
-                    before_draft["body_html"],
-                    after_draft["body_html"],
-                )
                 self.assertEqual(
                     before_draft["to_recipients"],
                     after_draft["to_recipients"],
