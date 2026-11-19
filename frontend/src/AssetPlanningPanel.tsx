@@ -882,9 +882,10 @@ export default function AssetPlanningPanel({
             >
               <div className="asset-approved-toolbar">
                 <label className="asset-approved-search">
-                  <span>Rechercher les besoins approuvés</span>
+                  <span>Filtrer les besoins approuvés</span>
                   <input
                     type="search"
+                    aria-label="Filtrer les besoins approuvés"
                     value={approvedSearch}
                     onChange={(event) => setApprovedSearch(event.target.value)}
                     placeholder="Projet, DMO, code ou type d’actif…"
