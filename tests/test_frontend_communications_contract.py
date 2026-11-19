@@ -76,6 +76,23 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertIn("value={draft.body}", page)
         self.assertNotIn("body_html:", page)
 
+    def test_871_preparation_serializes_only_canonical_review_fields(self) -> None:
+        page = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "function projectCommunicationReview(draft: DraftState): ProjectCommunicationReview",
+            page,
+        )
+        self.assertIn("message_key: draft.message_key", page)
+        self.assertIn("include: draft.include", page)
+        self.assertIn("subject: draft.subject", page)
+        self.assertIn("body: draft.body", page)
+        self.assertIn("drafts.map(projectCommunicationReview)", page)
+        self.assertNotIn(
+            "drafts.map(({ source: _source, ...review }) => review)",
+            page,
+        )
+
     def test_api_targets_only_project_v2_controlled_routes(self) -> None:
         api = API.read_text(encoding="utf-8")
         self.assertIn("/api/v1/communications/project-preview", api)
