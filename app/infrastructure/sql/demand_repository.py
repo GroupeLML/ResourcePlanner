@@ -14,6 +14,7 @@ from ...application.demand_completion import (
     DemandCompletionFacts,
     project_effective_demand_state,
 )
+from ...application.demand_planning_progress import project_demand_planning_progress
 from ...application.errors import ApplicationConflictError, ApplicationValidationError
 from ...application.query_models import DemandCancellationMaterializationReadModel
 from ...application.read_models import DemandLineReadModel, DemandReadModel
@@ -23,6 +24,7 @@ from ...domain.reservable_assets import AssetRequirementOrigin
 from .asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from .base import new_id, utc_now
 from .request_version import acquire_request_aggregate_version
+from .planning_intent_repository import current_effective_need_sql
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .resource_class_models import ResourceClassConfig
 from .models import (
@@ -98,6 +100,7 @@ class SqlDemandRepository(DemandRepositoryPort):
         competency_ids: tuple[str, ...] = (),
         lines: tuple[DemandLineReadModel, ...] = (),
         completion_facts: DemandCompletionFacts | None = None,
+        planning_progress: str | None = None,
     ) -> DemandReadModel:
         model = DemandReadModel(
             # During the first SQL cutover the existing NoDemande is preserved in
@@ -108,6 +111,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             approved_by_name=_optional_text(request.approved_by_name),
             approved_at=request.approved_at,
             approval_comment=_optional_text(request.approval_comment),
+            planning_progress=planning_progress,
             created_at=request.created_at,
             cancellation_request_id=_optional_text(request.cancellation_request_id),
             cancellation_state=_optional_text(request.cancellation_state),
@@ -181,16 +185,18 @@ class SqlDemandRepository(DemandRepositoryPort):
         dict[str, tuple[DemandLineReadModel, ...]],
         dict[str, tuple[int, int, int, int]],
         dict[str, DemandCompletionFacts],
+        dict[str, str | None],
     ]:
         """Load child projections plus lifecycle facts in one batch query."""
 
         identifiers = tuple(str(value) for value in request_ids if str(value))
         if not identifiers:
-            return {}, {}, {}, {}
+            return {}, {}, {}, {}, {}
 
         request_competency = aliased(WorkforceRequestCompetency)
         line_competency = aliased(RequestLineCompetency)
         proposed_resource = aliased(Resource)
+        progress_requirement = aliased(ResourceRequirement)
 
         human_shift_count = (
             select(func.count(Shift.id))
@@ -281,6 +287,50 @@ class SqlDemandRepository(DemandRepositoryPort):
                 | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
             )
             .correlate(ResourceRequirement)
+            .scalar_subquery()
+        )
+        progress_shift_hours = (
+            select(func.coalesce(func.sum(Shift.hours), 0))
+            .where(
+                Shift.resource_requirement_id == progress_requirement.id,
+                (Shift.allocation_type.is_(None))
+                | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+            )
+            .correlate(progress_requirement)
+            .scalar_subquery()
+        )
+        progress_effective_need = current_effective_need_sql(
+            progress_requirement.id,
+            progress_requirement.planned_hours,
+        )
+        active_progress_requirement = (
+            (progress_requirement.workforce_request_id == WorkforceRequest.id)
+            & (progress_requirement.origin == "REQUEST")
+            & (progress_requirement.status != "Annulé")
+            & (progress_effective_need > 0)
+        )
+        planning_human_requirement_count = (
+            select(func.count(progress_requirement.id))
+            .where(active_progress_requirement)
+            .correlate(WorkforceRequest)
+            .scalar_subquery()
+        )
+        planning_human_uncovered_count = (
+            select(func.count(progress_requirement.id))
+            .where(
+                active_progress_requirement,
+                progress_shift_hours <= 0,
+            )
+            .correlate(WorkforceRequest)
+            .scalar_subquery()
+        )
+        planning_human_full_count = (
+            select(func.count(progress_requirement.id))
+            .where(
+                active_progress_requirement,
+                progress_shift_hours >= progress_effective_need,
+            )
+            .correlate(WorkforceRequest)
             .scalar_subquery()
         )
         human_requirement_count = (
@@ -385,6 +435,9 @@ class SqlDemandRepository(DemandRepositoryPort):
                 active_asset_requirement_count,
                 uncovered_asset_requirement_count,
                 current_or_future_asset_allocation_count,
+                planning_human_requirement_count,
+                planning_human_uncovered_count,
+                planning_human_full_count,
             )
             .select_from(WorkforceRequest)
             .outerjoin(
@@ -427,6 +480,7 @@ class SqlDemandRepository(DemandRepositoryPort):
         ] = {}
         cancellation_counts: dict[str, tuple[int, int, int, int]] = {}
         completion_facts: dict[str, DemandCompletionFacts] = {}
+        planning_progress: dict[str, str | None] = {}
 
         for (
             request_id,
@@ -445,6 +499,9 @@ class SqlDemandRepository(DemandRepositoryPort):
             asset_requirement_total,
             uncovered_asset_requirement_total,
             current_or_future_asset_allocation_total,
+            planning_human_requirement_total,
+            planning_human_uncovered_total,
+            planning_human_full_total,
         ) in rows:
             cancellation_counts.setdefault(
                 request_id,
@@ -472,6 +529,19 @@ class SqlDemandRepository(DemandRepositoryPort):
                     ),
                 ),
             )
+            if request_id not in planning_progress:
+                human_total = int(planning_human_requirement_total or 0)
+                human_uncovered = int(planning_human_uncovered_total or 0)
+                human_full = int(planning_human_full_total or 0)
+                asset_total = int(asset_requirement_total or 0)
+                asset_uncovered = int(uncovered_asset_requirement_total or 0)
+                states = (
+                    ("full",) * (human_full + asset_total - asset_uncovered)
+                    + ("uncovered",) * (human_uncovered + asset_uncovered)
+                    + ("partial",)
+                    * max(human_total - human_full - human_uncovered, 0)
+                )
+                planning_progress[request_id] = project_demand_planning_progress(states)
             if request_competency_id is not None:
                 request_competencies.setdefault(request_id, set()).add(
                     request_competency_id
@@ -643,6 +713,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             },
             cancellation_counts,
             completion_facts,
+            planning_progress,
         )
 
     def _row_query(self):
@@ -718,6 +789,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             lines_by_request,
             cancellation_counts,
             completion_facts,
+            planning_progress,
         ) = self._aggregate_children(request_ids)
         return tuple(
             (
@@ -729,6 +801,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                     competency_ids.get(request.id, ()),
                     lines_by_request.get(request.id, ()),
                     completion_facts.get(request.id),
+                    planning_progress.get(request.id),
                 ),
                 self._cancellation_materialization(
                     request,
@@ -773,6 +846,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             lines_by_request,
             cancellation_counts,
             completion_facts,
+            planning_progress,
         ) = self._aggregate_children((request.id,))
         return (
             self._read_model(
@@ -783,6 +857,7 @@ class SqlDemandRepository(DemandRepositoryPort):
                 competency_ids.get(request.id, ()),
                 lines_by_request.get(request.id, ()),
                 completion_facts.get(request.id),
+                planning_progress.get(request.id),
             ),
             self._cancellation_materialization(
                 request,

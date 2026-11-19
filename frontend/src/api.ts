@@ -711,6 +711,7 @@ export type DemandReadModel = {
   approved_by_name?: string | null;
   approved_at?: string | null;
   approval_comment?: string | null;
+  planning_progress?: "À planifier" | "En planification" | "Planifié" | null;
   effective_status?: string | null;
   terminal?: boolean;
   created_at?: string | null;

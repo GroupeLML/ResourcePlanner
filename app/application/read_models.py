@@ -89,6 +89,7 @@ class DemandReadModel:
     approved_by_name: str | None = None
     approved_at: datetime | None = None
     approval_comment: str | None = None
+    planning_progress: str | None = None
     effective_status: str | None = None
     terminal: bool = False
     created_at: datetime | None = None
