@@ -282,6 +282,41 @@ class SqlRepositoryTests(unittest.TestCase):
             self.assertFalse(created.include_project_manager_contact_phone)
             self.assertIsNone(created.project_manager_contact_phone)
 
+            explicit_number = service.create(
+                {
+                    "NumeroProjet": "P-1",
+                    "DateDebutSouhaitee": date(2026, 8, 27),
+                    "Description": "Installation avec contact responsable",
+                    "NombreRessources": 1,
+                    "TempsEstimeHeures": 8,
+                    "IncludeProjectManagerContactPhone": True,
+                    "ProjectManagerContactPhone": "514-555-0888",
+                },
+                submit=False,
+            )
+            explicit = repository.get(explicit_number)
+            assert explicit is not None
+            self.assertTrue(explicit.include_project_manager_contact_phone)
+            self.assertEqual(
+                explicit.project_manager_contact_phone,
+                "514-555-0888",
+            )
+            with self.assertRaisesRegex(
+                ApplicationValidationError,
+                "numéro de contact du responsable projet",
+            ):
+                service.create(
+                    {
+                        "NumeroProjet": "P-1",
+                        "DateDebutSouhaitee": date(2026, 8, 28),
+                        "Description": "Contact invalide",
+                        "NombreRessources": 1,
+                        "TempsEstimeHeures": 8,
+                        "IncludeProjectManagerContactPhone": True,
+                    },
+                    submit=False,
+                )
+
             service.approve(number, "OK")
             approved = repository.get(number)
             assert approved is not None
