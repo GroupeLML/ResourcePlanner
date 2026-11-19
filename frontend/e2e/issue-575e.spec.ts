@@ -258,31 +258,20 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
 
     const approvedPanel = panel.getByTestId("approved-asset-requirements");
     const parentToggle = panel.getByTestId("approved-asset-requirements-toggle");
-    const unreservedGroup = panel.getByTestId("unreserved-asset-requirements");
-    const reservedGroup = panel.getByTestId("reserved-asset-requirements");
-    const unreservedToggle = panel.getByTestId("unreserved-asset-requirements-toggle");
-    const reservedToggle = panel.getByTestId("reserved-asset-requirements-toggle");
+    const master = panel.getByTestId("approved-asset-master-list");
+    const detail = panel.getByTestId("approved-asset-detail");
 
     await expect(approvedPanel).toContainText("Besoins approuvés");
-    await expect(unreservedGroup).toContainText("À réserver (1)");
-    await expect(reservedGroup).toContainText("Réservé (1)");
-    await expect(
-      unreservedGroup.locator('.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]'),
-    ).toHaveCount(1);
-    await expect(
-      reservedGroup.locator('.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]'),
-    ).toHaveCount(0);
-    await expect(
-      reservedGroup.locator('.asset-requirement-card[data-requirement-id="AREQ-RESERVED-575E"]'),
-    ).toHaveCount(1);
+    await expect(approvedPanel.getByRole("button", { name: "À réserver (1)" })).toHaveAttribute("aria-pressed", "false");
+    await expect(approvedPanel.getByRole("button", { name: "Réservé (1)" })).toHaveAttribute("aria-pressed", "false");
+    await expect(master.locator('[data-requirement-id="AREQ-REQUEST-575E"]')).toHaveCount(1);
+    await expect(master.locator('[data-requirement-id="AREQ-RESERVED-575E"]')).toHaveCount(1);
+    await expect(detail).toContainText("Aucun besoin d'actif sélectionné");
+    await expect(detail.locator(".asset-requirement-card")).toHaveCount(0);
 
     const beforeCollapseUrl = page.url();
     const beforeCollapseSnapshots = planningSnapshotRequests;
     const beforeCollapseMutations = requirementReservationMutations;
-
-    await reservedToggle.click();
-    await expect(reservedToggle).toHaveAttribute("aria-expanded", "false");
-    await expect(panel.getByTestId("reserved-asset-requirements-content")).toHaveCount(0);
 
     await parentToggle.click();
     await expect(parentToggle).toHaveAttribute("aria-expanded", "false");
@@ -290,18 +279,17 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
 
     await parentToggle.click();
     await expect(parentToggle).toHaveAttribute("aria-expanded", "true");
-    await expect(panel.getByTestId("unreserved-asset-requirements-content")).toBeVisible();
-    await expect(panel.getByTestId("reserved-asset-requirements-content")).toHaveCount(0);
-    await expect(reservedToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(master).toBeVisible();
 
     expect(page.url()).toBe(beforeCollapseUrl);
     expect(planningSnapshotRequests).toBe(beforeCollapseSnapshots);
     expect(requirementReservationMutations).toBe(beforeCollapseMutations);
 
-    await reservedToggle.click();
-    await expect(panel.getByTestId("reserved-asset-requirements-content")).toBeVisible();
+    const requestMaster = master.locator('[data-requirement-id="AREQ-REQUEST-575E"]');
+    await requestMaster.click();
+    await expect(requestMaster).toHaveAttribute("aria-pressed", "true");
 
-    const requestCard = unreservedGroup.locator(
+    let requestCard = detail.locator(
       '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
     );
     await expect(requestCard).toContainText("Fenêtre autorisée");
@@ -312,7 +300,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
       .getByRole("button", { name: "Fermer" })
       .click();
 
-    const requestUnit = requestCard.locator('label:has(> span:text-is("Unité")) select');
+    let requestUnit = requestCard.locator('label:has(> span:text-is("Unité")) select');
     await requestUnit.selectOption("ASSET-575E");
     const [reserveMutation] = await Promise.all([
       page.waitForResponse((response) => (
@@ -324,20 +312,16 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
       requestCard.getByRole("button", { name: "Enregistrer la réservation" }).click(),
     ]);
     expect(reserveMutation.status()).toBe(200);
-    await expect(unreservedGroup).toContainText("À réserver (0)");
-    await expect(reservedGroup).toContainText("Réservé (2)");
-    await expect(panel.getByTestId("unreserved-asset-requirements-content")).toContainText(
-      "Aucun besoin à réserver",
-    );
-    const movedReservedCard = reservedGroup.locator(
+    await expect(approvedPanel.getByRole("button", { name: "À réserver (0)" })).toBeVisible();
+    await expect(approvedPanel.getByRole("button", { name: "Réservé (2)" })).toBeVisible();
+    await expect(requestMaster).toContainText("Réservé");
+    await expect(detail.locator(
       '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
-    );
-    await expect(movedReservedCard).toHaveCount(1);
-    await expect(unreservedGroup.locator(
-      '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
-    )).toHaveCount(0);
+    )).toHaveCount(1);
 
-    await movedReservedCard.locator('label:has(> span:text-is("Unité")) select').selectOption("");
+    requestCard = detail.locator('.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]');
+    requestUnit = requestCard.locator('label:has(> span:text-is("Unité")) select');
+    await requestUnit.selectOption("");
     const [releaseMutation] = await Promise.all([
       page.waitForResponse((response) => (
         response.request().method() === "PUT"
@@ -345,23 +329,15 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
           "/api/v1/assets/requirements/AREQ-REQUEST-575E/reservation",
         )
       )),
-      movedReservedCard.getByRole("button", { name: "Libérer" }).click(),
+      requestCard.getByRole("button", { name: "Libérer" }).click(),
     ]);
     expect(releaseMutation.status()).toBe(200);
-    await expect(unreservedGroup).toContainText("À réserver (1)");
-    await expect(reservedGroup).toContainText("Réservé (1)");
-    await expect(unreservedGroup.locator(
+    await expect(approvedPanel.getByRole("button", { name: "À réserver (1)" })).toBeVisible();
+    await expect(approvedPanel.getByRole("button", { name: "Réservé (1)" })).toBeVisible();
+    await expect(requestMaster).toContainText("À réserver");
+    await expect(detail.locator(
       '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
     )).toHaveCount(1);
-    await expect(reservedGroup.locator(
-      '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
-    )).toHaveCount(0);
-
-    await unreservedToggle.click();
-    await expect(unreservedToggle).toHaveAttribute("aria-expanded", "false");
-    await expect(panel.getByTestId("unreserved-asset-requirements-content")).toHaveCount(0);
-    await unreservedToggle.click();
-    await expect(unreservedToggle).toHaveAttribute("aria-expanded", "true");
 
     const occupancyToggle = panel.getByTestId("asset-unit-occupancy-toggle");
     await expect(occupancyToggle).toHaveAttribute("aria-expanded", "true");
