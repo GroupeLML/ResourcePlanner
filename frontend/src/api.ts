@@ -850,6 +850,7 @@ export type DemandDetailAssetRequirementReadModel = {
   qualification_state: "SATISFIED" | "MISSING_OPERATOR" | "SKILL_MISMATCH" | "NO_OVERLAP";
   required_competency_ids: string[];
   required_competency_names: string[];
+  eligible_asset_ids: string[];
 };
 
 export type ApprovalCycleApproverReadModel = {
