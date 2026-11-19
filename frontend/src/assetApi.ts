@@ -320,6 +320,27 @@ export function setShiftAssetAssignment(
   );
 }
 
+export type AssetRequirementReservationCandidates = {
+  requirement_id: string;
+  eligible_asset_ids: string[];
+};
+
+export function getAssetRequirementReservationCandidates(
+  requirementId: string,
+  startDate: string,
+  endDate: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    start_date: startDate,
+    end_date: endDate,
+  });
+  return getJson<AssetRequirementReservationCandidates>(
+    `/api/v1/assets/requirements/${encodeURIComponent(requirementId)}/reservation-candidates?${params.toString()}`,
+    signal,
+  );
+}
+
 export type AssetOperatorCandidate = {
   resource_id: string;
   resource_name: string;
