@@ -884,6 +884,50 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_871_communication_manager_uses_canonical_app_user_human_name(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            phone = synthetic_phone("0871")
+            try:
+                with factory.begin() as session:
+                    contact = session.get(BusinessContact, "C-PM")
+                    user = session.get(AppUser, "U-PM")
+                    assert contact is not None and user is not None
+                    contact.display_name = "12345 - Jean Tremblay"
+                    user.display_name = "Jean Tremblay"
+                    session.add(
+                        Resource(
+                            id="R-MANAGER-871",
+                            external_id="PM-1",
+                            name="12345 - ERP Jean Tremblay",
+                            active=False,
+                            erp_active=False,
+                            erp_phone=phone,
+                        )
+                    )
+
+                with factory() as session:
+                    preview = self._service(session).project_preview(week_start=WEEK)
+
+                self.assertEqual(len(preview.drafts), 1)
+                draft = preview.drafts[0]
+                self.assertIn(
+                    "Responsable projet\nJean Tremblay\n" + phone,
+                    draft.body,
+                )
+                self.assertNotIn("12345 - Jean Tremblay", draft.body)
+                self.assertIsNotNone(draft.body_html)
+                self.assertIn(">Jean Tremblay</div>", draft.body_html or "")
+                self.assertNotIn("12345 - Jean Tremblay", draft.body_html or "")
+                self.assertEqual(
+                    [row.email for row in draft.to_recipients],
+                    ["pm" + chr(64) + TEST_DOMAIN],
+                )
+            finally:
+                engine.dispose()
+
     def test_831_missing_local_manager_contact_does_not_invent_recipient(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
@@ -2978,6 +3022,42 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                 "body_html": "<script>client authority</script>",
                             }
                         ],
+                    },
+                )
+                self.assertEqual(rejected.status_code, 422, rejected.text)
+
+    def test_871_server_html_preview_renders_review_and_rejects_client_html(self) -> None:
+        with TemporaryDirectory() as directory:
+            app = create_api_app(
+                self._database(directory),
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                draft = preview.json()["drafts"][0]
+                edited = draft["body"].replace(
+                    "Installation approuvée",
+                    "Installation approuvée révisée",
+                )
+
+                rendered = client.post(
+                    "/api/v1/communications/project-preview-html",
+                    json={"body": edited},
+                )
+                self.assertEqual(rendered.status_code, 200, rendered.text)
+                html = rendered.json()["body_html"]
+                self.assertIn("<strong><u>Responsable projet</u></strong>", html)
+                self.assertIn("<strong><u>Description</u></strong>", html)
+                self.assertIn("Installation approuvée révisée", html)
+
+                rejected = client.post(
+                    "/api/v1/communications/project-preview-html",
+                    json={
+                        "body": edited,
+                        "body_html": "<script>client authority</script>",
                     },
                 )
                 self.assertEqual(rejected.status_code, 422, rejected.text)
