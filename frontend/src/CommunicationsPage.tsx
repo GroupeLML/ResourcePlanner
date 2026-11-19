@@ -11,6 +11,7 @@ import {
   listProjectCommunicationBatches,
   prepareProjectCommunicationBatch,
   projectCommunicationBatchAction,
+  renderProjectCommunicationReviewHtml,
 } from "./communicationsApi";
 
 function nextMondayIso() {
@@ -50,7 +51,12 @@ function triggerBrowserDownload(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-type DraftState = ProjectCommunicationReview & { source: ProjectCommunicationDraft };
+type DraftState = ProjectCommunicationReview & {
+  source: ProjectCommunicationDraft;
+  htmlPreview: string | null;
+  htmlPreviewStale: boolean;
+  htmlPreviewBusy: boolean;
+};
 type BatchAction = "approve" | "create-drafts" | "send-smtp" | "cancel" | "mark-communicated";
 
 export default function CommunicationsPage() {
@@ -69,6 +75,11 @@ export default function CommunicationsPage() {
   );
   const hasBlockingDraft = useMemo(
     () => drafts.some((draft) => draft.include && !draft.source.approvable),
+    [drafts],
+  );
+
+  const hasStaleHtmlPreview = useMemo(
+    () => drafts.some((draft) => draft.include && draft.htmlPreviewStale),
     [drafts],
   );
 
@@ -109,6 +120,9 @@ export default function CommunicationsPage() {
             subject: review?.subject ?? draft.subject,
             body: review?.body ?? draft.body,
             source: draft,
+            htmlPreview: draft.body_html,
+            htmlPreviewStale: Boolean(review?.body && review.body !== draft.body),
+            htmlPreviewBusy: false,
           };
         }),
       );
@@ -116,6 +130,37 @@ export default function CommunicationsPage() {
       setError(reason instanceof Error ? reason.message : "Prévisualisation impossible.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function refreshHtmlPreview(index: number) {
+    const current = drafts[index];
+    if (!current) return;
+    setDrafts((rows) => rows.map((row, rowIndex) => (
+      rowIndex === index ? { ...row, htmlPreviewBusy: true } : row
+    )));
+    setError(null);
+    try {
+      const rendered = await renderProjectCommunicationReviewHtml(current.body);
+      setDrafts((rows) => rows.map((row, rowIndex) => (
+        rowIndex === index
+          ? {
+              ...row,
+              htmlPreview: rendered.body_html,
+              htmlPreviewStale: row.body !== current.body,
+              htmlPreviewBusy: false,
+            }
+          : row
+      )));
+    } catch (reason) {
+      setDrafts((rows) => rows.map((row, rowIndex) => (
+        rowIndex === index ? { ...row, htmlPreviewBusy: false } : row
+      )));
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Prévisualisation HTML impossible.",
+      );
     }
   }
 
@@ -422,11 +467,54 @@ export default function CommunicationsPage() {
                           rows={11}
                           value={draft.body}
                           disabled={!draft.include}
-                          onChange={(event) => setDrafts((rows) => rows.map((row, rowIndex) =>
-                            rowIndex === index ? { ...row, body: event.target.value } : row
-                          ))}
+                          onChange={(event) => {
+                            const body = event.target.value;
+                            setDrafts((rows) => rows.map((row, rowIndex) =>
+                              rowIndex === index
+                                ? {
+                                    ...row,
+                                    body,
+                                    htmlPreview: body === row.source.body
+                                      ? row.source.body_html
+                                      : row.htmlPreview,
+                                    htmlPreviewStale: body !== row.source.body,
+                                  }
+                                : row
+                            ));
+                          }}
                         />
                       </label>
+                      <section className="draft-html-preview-panel">
+                        <div className="draft-html-preview-heading">
+                          <div>
+                            <span>Aperçu HTML envoyé</span>
+                            <small>Rendu généré par le serveur; le HTML n'est pas éditable dans le navigateur.</small>
+                          </div>
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={!draft.include || draft.htmlPreviewBusy || !draft.htmlPreviewStale}
+                            onClick={() => void refreshHtmlPreview(index)}
+                          >
+                            {draft.htmlPreviewBusy ? "Actualisation…" : "Actualiser l’aperçu HTML"}
+                          </button>
+                        </div>
+                        {draft.htmlPreviewStale ? (
+                          <p className="draft-html-preview-stale">
+                            Le texte a changé. Actualisez l’aperçu HTML avant de préparer le lot.
+                          </p>
+                        ) : draft.htmlPreview ? (
+                          <div
+                            className="draft-html-preview"
+                            data-testid="project-html-preview"
+                            dangerouslySetInnerHTML={{ __html: draft.htmlPreview }}
+                          />
+                        ) : (
+                          <p className="draft-html-preview-stale">
+                            Aucun rendu HTML généré pour ce message.
+                          </p>
+                        )}
+                      </section>
                     </article>
                   );
                 })}
@@ -440,6 +528,7 @@ export default function CommunicationsPage() {
                   busy
                   || selectedCount === 0
                   || hasBlockingDraft
+                  || hasStaleHtmlPreview
                 }
                 onClick={() => void prepare()}
               >
@@ -450,7 +539,9 @@ export default function CommunicationsPage() {
                   ? "Sélectionnez au moins un courriel pour préparer le lot."
                   : hasBlockingDraft
                     ? "Un courriel sélectionné contient un blocage de destinataire."
-                    : "Cette action persiste la révision. Elle n’envoie rien."}
+                    : hasStaleHtmlPreview
+                      ? "Actualisez l’aperçu HTML des messages modifiés avant de préparer le lot."
+                      : "Cette action persiste la révision. Elle n’envoie rien."}
               </small>
             </div>
           </>
