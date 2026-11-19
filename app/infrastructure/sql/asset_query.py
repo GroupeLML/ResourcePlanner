@@ -800,7 +800,7 @@ class SqlAssetPlanningQuery:
             candidate_end = (
                 current.end_date
                 if current is not None and current.end_date is not None
-                else candidate_start
+                else requirement.end_date
             )
             eligible_asset_ids_by_requirement[requirement.id] = self._eligible_asset_ids(
                 requirement=requirement,
