@@ -226,12 +226,22 @@ test("859 — besoins approuvés maître-détail, recherche, filtres et invalida
     await expect(reservedFilter).toHaveText("Réservé (2)");
 
     await unreservedFilter.click();
+    await reservedFilter.click();
     await master.locator('[data-requirement-id="REQ-859-A"]').click();
-    await expect(detail.locator('[data-requirement-id="REQ-859-A"]')).toBeVisible();
+    let refreshedDetailCard = detail.locator('[data-requirement-id="REQ-859-A"]');
+    await refreshedDetailCard.getByRole("combobox", { name: /Unité pour Nacelle 40/ }).selectOption("");
+    await refreshedDetailCard.getByRole("button", { name: "Libérer" }).click();
+    await expect(detail).toContainText("Aucun besoin d'actif sélectionné");
+    await expect(master.locator('[data-requirement-id="REQ-859-A"]')).toHaveCount(0);
+
+    await reservedFilter.click();
+    await master.locator('[data-requirement-id="REQ-859-A"]').click();
+    refreshedDetailCard = detail.locator('[data-requirement-id="REQ-859-A"]');
+    await refreshedDetailCard.getByRole("combobox", { name: /Unité pour Nacelle 40/ }).selectOption("ASSET-859-A");
     requestAVisible = false;
-    await page.reload();
-    await page.locator(".main-nav").getByRole("button", { name: /Planning opérationnel/i }).click();
-    await expect(page.getByTestId("approved-asset-detail")).toContainText("Aucun besoin d'actif sélectionné");
+    await refreshedDetailCard.getByRole("button", { name: "Enregistrer la réservation" }).click();
+    await expect(detail).toContainText("Aucun besoin d'actif sélectionné");
+    await expect(master.locator('[data-requirement-id="REQ-859-A"]')).toHaveCount(0);
 
     await page.setViewportSize({ width: 600, height: 900 });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
