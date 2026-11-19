@@ -2521,6 +2521,8 @@ export function updateDemandSiteContact(
   expectedVersion: number,
   siteContactName: string | null,
   siteContactPhone: string | null,
+  includeProjectManagerContactPhone: boolean,
+  projectManagerContactPhone: string | null,
 ) {
   return sendJson<DemandMutationResult>(
     `/api/v1/demands/${encodeURIComponent(number)}`,
@@ -2529,7 +2531,9 @@ export function updateDemandSiteContact(
       expected_version: expectedVersion,
       site_contact_name: siteContactName,
       site_contact_phone: siteContactPhone,
-      comment: "Contact chantier modifié via React V2",
+      include_project_manager_contact_phone: includeProjectManagerContactPhone,
+      project_manager_contact_phone: projectManagerContactPhone,
+      comment: "Contacts de communication modifiés via React V2",
     },
   );
 }
