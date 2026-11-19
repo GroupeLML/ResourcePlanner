@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import unittest
+
+from sqlalchemy import event
 
 from app.application.demand_planning_progress import project_demand_planning_progress
 from app.infrastructure.sql import (
@@ -10,9 +12,13 @@ from app.infrastructure.sql import (
     AssetAllocation,
     AssetRequirement,
     AssetType,
+    AppUser,
     Base,
     Project,
+    RequestApprovalRevision,
+    RequestCompletionReduction,
     RequestLine,
+    RequestRequirementPlanningIntent,
     Resource,
     ResourceRequirement,
     Shift,
@@ -249,6 +255,88 @@ class DemandPlanningProgressTests(unittest.TestCase):
                 )
             )
         self.assertEqual(self.progress(), "Planifié")
+
+    def test_zeroed_current_effective_need_is_not_a_planifiable_component(self) -> None:
+        with transactional_session(self.factory) as session:
+            request = session.query(WorkforceRequest).filter_by(
+                legacy_demand_number=self.number
+            ).one()
+            requirement = session.get(ResourceRequirement, "RR861-A")
+            assert requirement is not None
+            session.add(
+                AppUser(
+                    id="U861",
+                    display_name="Acteur 861",
+                    roles_json='["ADMIN"]',
+                )
+            )
+            session.add(
+                RequestApprovalRevision(
+                    id="REV861",
+                    workforce_request_id=request.id,
+                    request_version=1,
+                    approved_at=datetime.now(timezone.utc),
+                    payload_text="{}",
+                    authorization_fingerprint="861-zeroed",
+                )
+            )
+            requirement.approval_revision_id = "REV861"
+            requirement.approved_entry_key = "workforce:861"
+            session.flush()
+            session.add(
+                RequestRequirementPlanningIntent(
+                    id="INT861",
+                    slot_identity_key='["861","workforce:861",0]',
+                    workforce_request_id=request.id,
+                    approval_revision_id="REV861",
+                    approved_entry_key="workforce:861",
+                    slot_index=0,
+                    current_resource_requirement_id=requirement.id,
+                )
+            )
+            session.flush()
+            session.add(
+                RequestCompletionReduction(
+                    id="RED861",
+                    planning_intent_id="INT861",
+                    workforce_request_id=request.id,
+                    historical_approval_revision_id="REV861",
+                    approved_entry_key="workforce:861",
+                    resource_requirement_id=requirement.id,
+                    original_shift_id="SHIFT-HIST-861",
+                    shift_snapshot_text="{}",
+                    reduction_hours=Decimal("8"),
+                    effective_need_before=Decimal("8"),
+                    effective_need_after=Decimal("0"),
+                    actor_user_id="U861",
+                    command_id="861-zero-effective-need",
+                    reconciliation_state="ACTIVE",
+                )
+            )
+
+        self.assertIsNone(self.progress())
+
+    def test_demand_read_stays_within_two_select_projection_envelope(self) -> None:
+        statements: list[str] = []
+
+        def count_statement(_conn, _cursor, statement, _parameters, _context, _many):
+            statements.append(str(statement))
+
+        event.listen(self.engine, "before_cursor_execute", count_statement)
+        try:
+            with self.factory() as session:
+                rows = SqlPlannerQueryRepository(session).list_demands()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0].planning_progress, "À planifier")
+        finally:
+            event.remove(self.engine, "before_cursor_execute", count_statement)
+
+        selects = [
+            statement
+            for statement in statements
+            if statement.lstrip().upper().startswith("SELECT")
+        ]
+        self.assertLessEqual(len(selects), 2, selects)
 
     def test_demand_without_planifiable_components_projects_null(self) -> None:
         with transactional_session(self.factory) as session:
