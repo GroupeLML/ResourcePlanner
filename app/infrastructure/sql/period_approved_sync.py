@@ -1257,7 +1257,6 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         )
         obsolete = list(obsolete_rows)
         _assert_no_protected_terminalization(self._session, obsolete)
-        _assert_no_protected_terminalization(self._session, obsolete)
         for requirement in obsolete:
             if not self._preserve_zero_effective_terminal(requirement):
                 requirement.status = "Annulé"
@@ -1405,6 +1404,7 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         self._responsibility_revision_id = prepared.approval_revision_id
         self._restore_approved_responsibility_only = True
 
+        _assert_no_protected_terminalization(self._session, obsolete)
         for requirement in obsolete:
             if not self._preserve_zero_effective_terminal(requirement):
                 requirement.status = "Annulé"
