@@ -20,7 +20,9 @@ test("858 — besoins approuvés filtrent les unités occupées sans fuite CONTI
       const response = await route.fetch();
       const body = await response.json() as Record<string, any>;
       const start = String(body.start);
-      const end = String(body.end);
+      const approvedEndDate = new Date(`${start}T00:00:00Z`);
+      approvedEndDate.setUTCDate(approvedEndDate.getUTCDate() + 2);
+      const approvedEnd = approvedEndDate.toISOString().slice(0, 10);
       const baseRequirement = {
         origin: "REQUEST",
         request_id: "WR-858",
@@ -39,7 +41,7 @@ test("858 — besoins approuvés filtrent les unités occupées sans fuite CONTI
         asset_type_code: "VEH-858",
         asset_type_label: "Véhicule 858",
         start_date: start,
-        end_date: end,
+        end_date: approvedEnd,
         usage_hours: null,
         status: "À affecter",
         resource_period_mode: null,
