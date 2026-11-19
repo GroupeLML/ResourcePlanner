@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0036_communication_message_body_html"
+HEAD_REVISION = "0037_workforce_request_project_manager_phone"
 
 
 def alembic_config(database_path: Path) -> Config:
@@ -105,6 +105,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0034_request_shift_survivor_protections.py",
                 "0035_workforce_request_site_contact.py",
                 "0036_communication_message_body_html.py",
+                "0037_workforce_request_project_manager_phone.py",
             ],
         )
 
@@ -123,6 +124,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0036_communication_message_body_html",
                 "0035_workforce_request_site_contact",
                 "0034_request_shift_survivor_protections",
                 "0033_erp_sync_scheduler_observation",
