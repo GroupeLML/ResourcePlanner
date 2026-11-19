@@ -34,6 +34,7 @@ from app.infrastructure.sql import (
     Shift,
     SqlDemandRepository,
     SqlPeriodAwareApprovedDemandSyncAdapter,
+    SqlSegmentRepository,
     SqlPlannerQueryRepository,
     WorkforceRequest,
     WorkforceRequestHistory,
@@ -248,6 +249,99 @@ class DemandCancellationRequestTests(unittest.TestCase):
                 return request, int(planning_version or 0), int(shift_count or 0)
         finally:
             engine.dispose()
+
+    @staticmethod
+    def _install_human_survivor(database_url: str, *, terminal: bool = False) -> None:
+        engine = create_sql_engine(database_url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                requirement = session.get(ResourceRequirement, "REQ-HUMAN")
+                assert requirement is not None
+                if terminal:
+                    requirement.status = "Annulé"
+                revision = RequestApprovalRevision(
+                    id="REV-CANCEL-PROTECTED",
+                    workforce_request_id="D-HUMAN",
+                    request_version=4,
+                    approved_at=datetime.now(timezone.utc),
+                    authorization_fingerprint="8" * 64,
+                    payload_text='{"request": {}, "authorization": {"entries": []}}',
+                )
+                session.add(revision)
+                session.flush()
+                intent = RequestRequirementPlanningIntent(
+                    id="INT-CANCEL-PROTECTED",
+                    workforce_request_id="D-HUMAN",
+                    slot_identity_key='["CANCEL-PROTECTED"]',
+                    approved_entry_key='["CANCEL-PROTECTED"]',
+                    approval_revision_id=revision.id,
+                    slot_index=0,
+                    current_resource_requirement_id=requirement.id,
+                    intent_mode="AUTO",
+                    target_mode="EXPLICIT_RESOURCE",
+                    target_resource_id="R1",
+                )
+                session.add(intent)
+                session.flush()
+                reduction = RequestCompletionReduction(
+                    id="RED-CANCEL-PROTECTED",
+                    planning_intent_id=intent.id,
+                    workforce_request_id="D-HUMAN",
+                    historical_approval_revision_id=revision.id,
+                    approved_entry_key=intent.approved_entry_key,
+                    original_shift_id="SHIFT-REMOVED-BEFORE-CANCELLATION",
+                    shift_snapshot_text="{}",
+                    reduction_hours=8,
+                    effective_need_before=16,
+                    effective_need_after=8,
+                    actor_user_id="U-ADMIN",
+                    command_id="CMD-CANCEL-PROTECTED",
+                    reconciliation_state="ABSORBED",
+                )
+                session.add(reduction)
+                session.flush()
+                session.add(
+                    RequestShiftSurvivorProtection(
+                        id="SP-CANCEL-PROTECTED",
+                        planning_intent_id=intent.id,
+                        shift_id="SHIFT-HUMAN",
+                        original_shift_id="SHIFT-HUMAN",
+                        originating_reduction_id=reduction.id,
+                        active=True,
+                    )
+                )
+        finally:
+            engine.dispose()
+
+    def test_generic_request_segment_cancellation_rejects_protected_survivor(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            self._install_human_survivor(database_url)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        SqlSegmentRepository(session).update(
+                            "SEG-HUMAN",
+                            {"Statut": "Annulé"},
+                        )
+                    self.assertEqual(raised.exception.code, "reduction_rebase_required")
+                with factory() as session:
+                    requirement = session.get(ResourceRequirement, "REQ-HUMAN")
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert requirement is not None
+                    assert protection is not None
+                    self.assertEqual(requirement.status, "Planifié")
+                    self.assertIsNotNone(session.get(Shift, "SHIFT-HUMAN"))
+                    self.assertTrue(protection.active)
+                    self.assertEqual(protection.shift_id, "SHIFT-HUMAN")
+            finally:
+                engine.dispose()
 
     def test_real_materialization_distinguishes_human_asset_and_requirement_only(self) -> None:
         with TemporaryDirectory() as directory:
