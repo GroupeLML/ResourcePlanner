@@ -1779,7 +1779,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             True,
             synthetic_phone("0880"),
             True,
-            "  514-555-0880  ",
+            "  " + synthetic_phone("0880") + "  ",
         )
         same_body = build_project_confirmation_batch(same).drafts[0].body
         self.assertEqual(same_body.count(synthetic_phone("0880")), 1)
@@ -1856,7 +1856,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         restored = deserialize_project_projection(payload)
         self.assertEqual(restored.request_provenance_version, 2)
         self.assertIn(
-            f"Responsable projet\\nChargé Démo\\n{synthetic_phone('0831')}",
+            f"Responsable projet\nChargé Démo\n{synthetic_phone('0831')}",
             build_project_confirmation_batch(restored).drafts[0].body,
         )
 
