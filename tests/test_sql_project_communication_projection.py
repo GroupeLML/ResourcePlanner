@@ -891,6 +891,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             factory = create_session_factory(engine)
             phone = synthetic_phone("0871")
             try:
+                with factory() as session:
+                    before = self._service(session).project_preview(week_start=WEEK)
+                before_draft = before.drafts[0]
+
                 with factory.begin() as session:
                     contact = session.get(BusinessContact, "C-PM")
                     user = session.get(AppUser, "U-PM")
@@ -923,7 +927,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertNotIn("12345 - Jean Tremblay", draft.body_html or "")
                 self.assertEqual(
                     [row.email for row in draft.to_recipients],
-                    ["pm" + chr(64) + TEST_DOMAIN],
+                    [row.email for row in before_draft.to_recipients],
+                )
+                self.assertEqual(
+                    [row.email for row in draft.cc_recipients],
+                    [row.email for row in before_draft.cc_recipients],
                 )
             finally:
                 engine.dispose()
