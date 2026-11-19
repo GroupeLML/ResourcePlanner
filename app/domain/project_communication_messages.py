@@ -255,7 +255,7 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
 
 def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
     version = projection.request_provenance_version
-    if version not in (1, 2) or not projection.request_provenance_complete:
+    if version not in (1, 2, 3) or not projection.request_provenance_complete:
         raise ValueError("Version ou couverture de provenance chantier invalide")
 
     seen: set[str] = set()
@@ -291,7 +291,7 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                         for resource in task.resources
                     ):
                         raise ValueError("Ressource de provenance incohérente")
-                    if version == 2:
+                    if version in (2, 3):
                         standard_hours = assignment.standard_hours
                         if (
                             standard_hours is None
@@ -299,27 +299,47 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                             or float(standard_hours) < 0
                         ):
                             raise ValueError(
-                                "Heures standard v2 manquantes ou invalides"
+                                "Heures standard v2+ manquantes ou invalides"
                             )
                         if not isinstance(assignment.assets, tuple):
-                            raise ValueError("Actifs Shift v2 non explicites")
+                            raise ValueError("Actifs Shift v2+ non explicites")
                         if any(
                             not asset.association_kind
                             for asset in assignment.assets
                         ):
                             raise ValueError(
-                                "Provenance d'association d'actif v2 manquante"
+                                "Provenance d'association d'actif v2+ manquante"
                             )
                         hours_by_resource[assignment.resource_id] = round(
                             hours_by_resource.get(assignment.resource_id, 0.0)
                             + float(assignment.hours),
                             2,
                         )
+                    if version == 3:
+                        if (
+                            assignment.workforce_request_id is None
+                            and (
+                                assignment.include_project_manager_contact_phone
+                                or assignment.project_manager_contact_phone
+                            )
+                        ):
+                            raise ValueError(
+                                "Téléphone responsable projet sans provenance demande"
+                            )
+                        if (
+                            assignment.include_project_manager_contact_phone
+                            and not (
+                                assignment.project_manager_contact_phone or ""
+                            ).strip()
+                        ):
+                            raise ValueError(
+                                "Téléphone responsable projet sélectionné mais vide"
+                            )
                     actual.add(assignment.shift_id)
                     seen.add(assignment.shift_id)
                 if actual != expected:
                     raise ValueError("Couverture de provenance chantier incomplète")
-                if version == 2:
+                if version in (2, 3):
                     for resource in task.resources:
                         if round(float(resource.hours), 2) != hours_by_resource.get(
                             resource.resource_id,
@@ -441,6 +461,40 @@ def _project_v2_semantic_payload(
     )
 
 
+def _project_v3_semantic_payload(
+    project: ProjectCommunicationProject,
+) -> tuple[object, ...]:
+    manager_phone_semantics = []
+    for day in project.days:
+        for task in day.tasks:
+            for row in task.request_assignments:
+                manager_phone_semantics.append(
+                    (
+                        day.day.isoformat(),
+                        task.task_description.strip().casefold(),
+                        row.workforce_request_id,
+                        row.request_number,
+                        row.resource_id,
+                        bool(row.include_project_manager_contact_phone),
+                        (
+                            " ".join(
+                                (row.project_manager_contact_phone or "").split()
+                            )
+                            if row.include_project_manager_contact_phone
+                            else ""
+                        ),
+                        round(float(row.hours), 2),
+                    )
+                )
+    return (
+        _project_v2_semantic_payload(project),
+        (
+            "request_manager_phone_v3",
+            tuple(sorted(manager_phone_semantics, key=repr)),
+        ),
+    )
+
+
 def _fingerprint_payload(payload: object) -> str:
     encoded = json.dumps(
         payload,
@@ -457,7 +511,18 @@ def project_projection_fingerprint(
     if version is not None:
         _validate_provenance(projection)
 
-    if version == 2:
+    if version == 3:
+        payload = (
+            "project_provenance_v3",
+            projection.week_start.isoformat(),
+            projection.week_end.isoformat(),
+            tuple(
+                _project_v3_semantic_payload(project)
+                for project in projection.projects
+            ),
+            tuple(projection.diagnostics),
+        )
+    elif version == 2:
         payload = (
             "project_provenance_v2",
             projection.week_start.isoformat(),
@@ -898,6 +963,64 @@ def _contact_lines(project: ProjectCommunicationProject) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _normalized_manager_phone(value: str | None) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _manager_phone_lines(
+    project: ProjectCommunicationProject,
+) -> tuple[str, ...]:
+    groups = _project_request_groups(project)
+    selected: list[
+        tuple[
+            tuple[str | None, str | None],
+            str,
+            tuple[str, ...],
+        ]
+    ] = []
+    for key, rows in sorted(
+        groups.items(),
+        key=lambda pair: (pair[0][1] or "", pair[0][0] or ""),
+    ):
+        phones = tuple(
+            dict.fromkeys(
+                _normalized_manager_phone(
+                    assignment.project_manager_contact_phone
+                )
+                for _day, _task, assignment in rows
+                if assignment.include_project_manager_contact_phone
+                and _normalized_manager_phone(
+                    assignment.project_manager_contact_phone
+                )
+            )
+        )
+        if not phones:
+            continue
+        works = tuple(
+            dict.fromkeys(
+                value
+                for _day, task, _assignment in rows
+                if (value := _task_display(task))
+            )
+        )
+        for phone in phones:
+            selected.append((key, phone, works))
+
+    if not selected:
+        return ()
+    distinct = tuple(dict.fromkeys(phone for _key, phone, _works in selected))
+    if len(distinct) == 1:
+        return (distinct[0],)
+
+    values: list[str] = []
+    for key, phone, works in selected:
+        label = _request_label(key)
+        if works:
+            label += " — " + " / ".join(works)
+        values.append(f"{label} — {phone}")
+    return tuple(dict.fromkeys(values))
+
+
 def _shift_resource_line(
     assignment: ProjectCommunicationRequestAssignment,
     *,
@@ -1026,8 +1149,9 @@ def _project_semantic_message(
             _line("text", project.project_manager.display_name),
         )
     )
-    if project.project_manager_erp_phone:
-        lines.append(_line("text", project.project_manager_erp_phone))
+    manager_phone_lines = _manager_phone_lines(project)
+    for manager_phone_line in manager_phone_lines:
+        lines.append(_line("text", manager_phone_line))
 
     resolved_responsibles = _distinct_resolved_responsibles(project)
     if len(resolved_responsibles) == 1:
@@ -1366,14 +1490,18 @@ def compare_project_communication_projections(
 
     current_version = current.request_provenance_version
     previous_version = previous.request_provenance_version
-    if current_version not in (1, 2) or not current.request_provenance_complete:
+    if current_version not in (1, 2, 3) or not current.request_provenance_complete:
         raise ValueError("Projection courante sans provenance chantier complète")
     _validate_provenance(current)
-    if previous_version not in (None, 1, 2):
+    if previous_version not in (None, 1, 2, 3):
         raise ValueError("Version historique de provenance chantier non supportée")
     if previous_version is not None:
         _validate_provenance(previous)
-    if previous_version == 2 and current_version != 2:
+    if (
+        previous_version is not None
+        and current_version is not None
+        and current_version < previous_version
+    ):
         raise ValueError("Régression de capacité de provenance chantier interdite")
 
     before = {project.project_id: project for project in previous.projects}
@@ -1386,6 +1514,12 @@ def compare_project_communication_projections(
             changes.append(ProjectCommunicationChange(project_id, "added", None, new))
         elif new is None:
             changes.append(ProjectCommunicationChange(project_id, "removed", old, None))
+        elif current_version == 3 and previous_version in (None, 1, 2):
+            # Historical snapshots cannot prove equality for v3 request-phone facts.
+            changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
+        elif current_version == 3:
+            if _project_v3_semantic_payload(old) != _project_v3_semantic_payload(new):
+                changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
         elif current_version == 2 and previous_version in (None, 1):
             # Historical snapshots cannot prove equality for v2 Shift facts.
             changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
@@ -1468,13 +1602,23 @@ def serialize_project_projection(
                 for task in day["tasks"]:
                     task.pop("request_assignments", None)
     elif projection.request_provenance_version == 1:
-        # Preserve historical v1 JSON byte shape: v2 fields did not exist.
+        # Preserve historical v1 JSON byte shape: v2/v3 fields did not exist.
         for project in serialized["projects"]:
             for day in project["days"]:
                 for task in day["tasks"]:
                     for assignment in task.get("request_assignments") or ():
                         assignment.pop("assets", None)
                         assignment.pop("standard_hours", None)
+                        assignment.pop("include_project_manager_contact_phone", None)
+                        assignment.pop("project_manager_contact_phone", None)
+    elif projection.request_provenance_version == 2:
+        # Preserve historical v2 JSON byte shape: #880 request-phone facts did not exist.
+        for project in serialized["projects"]:
+            for day in project["days"]:
+                for task in day["tasks"]:
+                    for assignment in task.get("request_assignments") or ():
+                        assignment.pop("include_project_manager_contact_phone", None)
+                        assignment.pop("project_manager_contact_phone", None)
     return json.dumps(
         serialized,
         ensure_ascii=False,
@@ -1497,7 +1641,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
             for task in day.get("tasks") or ()
         ):
             raise ValueError("Snapshot chantier legacy incohérent")
-    elif provenance_version not in (1, 2) or provenance_complete is not True:
+    elif provenance_version not in (1, 2, 3) or provenance_complete is not True:
         raise ValueError("Version ou couverture de provenance chantier invalide")
 
     if provenance_version == 1:
@@ -1508,12 +1652,14 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                         if (
                             "assets" in assignment
                             or "standard_hours" in assignment
+                            or "include_project_manager_contact_phone" in assignment
+                            or "project_manager_contact_phone" in assignment
                         ):
                             raise ValueError(
                                 "Snapshot provenance v1 contient des faits v2"
                             )
 
-    if provenance_version == 2:
+    if provenance_version in (2, 3):
         for project in data.get("projects") or ():
             for day in project.get("days") or ():
                 for task in day.get("tasks") or ():
@@ -1525,17 +1671,52 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                             or assignment.get("standard_hours") is None
                         ):
                             raise ValueError(
-                                "Snapshot provenance v2 incomplet: actifs/heures standard absents"
+                                "Snapshot provenance v2+ incomplet: actifs/heures standard absents"
                             )
                         try:
                             standard_hours = float(assignment["standard_hours"])
                         except (TypeError, ValueError) as exc:
                             raise ValueError(
-                                "Snapshot provenance v2 invalide: heures standard non numériques"
+                                "Snapshot provenance v2+ invalide: heures standard non numériques"
                             ) from exc
                         if not math.isfinite(standard_hours) or standard_hours < 0:
                             raise ValueError(
-                                "Snapshot provenance v2 invalide: heures standard"
+                                "Snapshot provenance v2+ invalide: heures standard"
+                            )
+
+    if provenance_version == 2:
+        for project in data.get("projects") or ():
+            for day in project.get("days") or ():
+                for task in day.get("tasks") or ():
+                    for assignment in task.get("request_assignments") or ():
+                        if (
+                            "include_project_manager_contact_phone" in assignment
+                            or "project_manager_contact_phone" in assignment
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v2 contient des faits v3"
+                            )
+
+    if provenance_version == 3:
+        for project in data.get("projects") or ():
+            for day in project.get("days") or ():
+                for task in day.get("tasks") or ():
+                    for assignment in task.get("request_assignments") or ():
+                        if (
+                            "include_project_manager_contact_phone" not in assignment
+                            or "project_manager_contact_phone" not in assignment
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v3 incomplet: téléphone responsable projet absent"
+                            )
+                        if (
+                            bool(assignment["include_project_manager_contact_phone"])
+                            and not str(
+                                assignment.get("project_manager_contact_phone") or ""
+                            ).strip()
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v3 invalide: téléphone sélectionné vide"
                             )
 
     def participant(row):
@@ -1639,6 +1820,16 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 hours=float(value["hours"]),
                                 site_contact_name=value.get("site_contact_name"),
                                 site_contact_phone=value.get("site_contact_phone"),
+                                include_project_manager_contact_phone=(
+                                    bool(value["include_project_manager_contact_phone"])
+                                    if provenance_version == 3
+                                    else False
+                                ),
+                                project_manager_contact_phone=(
+                                    value.get("project_manager_contact_phone")
+                                    if provenance_version == 3
+                                    else None
+                                ),
                                 assets=tuple(
                                     ProjectCommunicationAsset(
                                         allocation_id=str(asset.get("allocation_id") or ""),
@@ -1651,13 +1842,13 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                     )
                                     for asset in (
                                         value["assets"]
-                                        if provenance_version == 2
+                                        if provenance_version in (2, 3)
                                         else value.get("assets") or ()
                                     )
                                 ),
                                 standard_hours=(
                                     float(value["standard_hours"])
-                                    if provenance_version == 2
+                                    if provenance_version in (2, 3)
                                     else (
                                         float(value["standard_hours"])
                                         if value.get("standard_hours") is not None
