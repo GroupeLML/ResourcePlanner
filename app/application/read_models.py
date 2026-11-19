@@ -118,6 +118,8 @@ class DemandReadModel:
     site_client: str | None = None
     site_contact_name: str | None = None
     site_contact_phone: str | None = None
+    include_project_manager_contact_phone: bool = False
+    project_manager_contact_phone: str | None = None
     location: str | None = None
     work_package_ref: str | None = None
     work_package_name: str | None = None
