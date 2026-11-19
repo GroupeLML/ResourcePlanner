@@ -260,6 +260,10 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
 
     seen: set[str] = set()
     for project in projection.projects:
+        if version == 3 and str(project.project_manager_erp_phone or "").strip():
+            raise ValueError(
+                "Téléphone ERP responsable projet interdit en provenance v3"
+            )
         for day in project.days:
             for task in day.tasks:
                 expected = {
@@ -316,6 +320,13 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                             2,
                         )
                     if version == 3:
+                        if not isinstance(
+                            assignment.include_project_manager_contact_phone,
+                            bool,
+                        ):
+                            raise ValueError(
+                                "Sélection téléphone responsable projet v3 doit être booléenne"
+                            )
                         if (
                             assignment.workforce_request_id is None
                             and (
@@ -1704,6 +1715,10 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
 
     if provenance_version == 3:
         for project in data.get("projects") or ():
+            if str(project.get("project_manager_erp_phone") or "").strip():
+                raise ValueError(
+                    "Snapshot provenance v3 invalide: téléphone ERP responsable projet interdit"
+                )
             for day in project.get("days") or ():
                 for task in day.get("tasks") or ():
                     for assignment in task.get("request_assignments") or ():
@@ -1714,8 +1729,15 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                             raise ValueError(
                                 "Snapshot provenance v3 incomplet: téléphone responsable projet absent"
                             )
+                        include_manager_phone = assignment[
+                            "include_project_manager_contact_phone"
+                        ]
+                        if not isinstance(include_manager_phone, bool):
+                            raise ValueError(
+                                "Snapshot provenance v3 invalide: sélection téléphone non booléenne"
+                            )
                         if (
-                            bool(assignment["include_project_manager_contact_phone"])
+                            include_manager_phone
                             and not str(
                                 assignment.get("project_manager_contact_phone") or ""
                             ).strip()
@@ -1826,7 +1848,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 site_contact_name=value.get("site_contact_name"),
                                 site_contact_phone=value.get("site_contact_phone"),
                                 include_project_manager_contact_phone=(
-                                    bool(value["include_project_manager_contact_phone"])
+                                    value["include_project_manager_contact_phone"]
                                     if provenance_version == 3
                                     else False
                                 ),
