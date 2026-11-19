@@ -104,6 +104,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         manager: EffectiveProjectManager | None,
         contacts: dict[str, BusinessContact],
         users_by_contact: dict[str, AppUser],
+        prefer_user_display_name: bool = False,
     ) -> ProjectCommunicationParticipant:
         diagnostics: list[str] = []
         if manager is None:
@@ -125,7 +126,8 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         linked_user = users_by_contact.get(contact_id) if contact_id else None
         manager_display_name = manager.display_name
         if (
-            linked_user is not None
+            prefer_user_display_name
+            and linked_user is not None
             and manager.app_user_id is not None
             and linked_user.id == manager.app_user_id
             and _text(linked_user.display_name)
@@ -615,6 +617,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 manager=project_managers.get(project.id),
                 contacts=contacts_by_id,
                 users_by_contact=users_by_contact,
+                prefer_user_display_name=True,
             )
             co_managers = tuple(
                 self._project_manager(
