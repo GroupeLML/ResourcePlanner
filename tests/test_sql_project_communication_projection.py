@@ -854,9 +854,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(len(preview.drafts), 1)
                 draft = preview.drafts[0]
                 self.assertIn(
-                    "Responsable projet\nJean Tremblay\n" + phone,
+                    "Responsable projet\nJean Tremblay",
                     draft.body,
                 )
+                self.assertNotIn(phone, draft.body)
                 self.assertNotIn("12345 - Jean Tremblay", draft.body)
                 self.assertIsNotNone(draft.body_html)
                 self.assertIn(">Jean Tremblay</div>", draft.body_html or "")
@@ -1081,9 +1082,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(len(projection.drafts), 1)
                 draft = projection.drafts[0]
                 self.assertIn(
-                    "Responsable projet\nAncien nom\n" + synthetic_phone("0100"),
+                    "Responsable projet\nAncien nom",
                     draft.body,
                 )
+                self.assertNotIn(synthetic_phone("0100"), draft.body)
                 self.assertNotIn("ERP source", draft.body)
                 self.assertFalse(draft.approvable)
                 self.assertIsNone(draft.to_recipient.email)
