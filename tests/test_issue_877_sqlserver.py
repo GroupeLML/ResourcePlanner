@@ -96,6 +96,7 @@ class Issue877SqlServerTests(unittest.TestCase):
                             "location": None,
                             "slot_count": 1,
                             "line_kind": "WORKFORCE",
+                            "confirmation": "Confirmée",
                             "required_resource_class": None,
                             "competency_ids": [],
                             "task_ref": None,
