@@ -163,6 +163,77 @@ class SqlMigrationTests(unittest.TestCase):
             ],
         )
 
+    def test_0037_request_manager_phone_defaults_existing_rows_to_opt_out(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "request-manager-phone.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "0036_communication_message_body_html")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "INSERT INTO projects (id, number, name, status) "
+                            "VALUES ('P-880-MIG', 'P-880-MIG', 'Migration 880', 'Actif')"
+                        )
+                    )
+                    connection.execute(
+                        text(
+                            "INSERT INTO workforce_requests "
+                            "(id, legacy_demand_number, project_id, description) "
+                            "VALUES ('D-880-MIG', 'DMO-880-MIG', 'P-880-MIG', 'Historique')"
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+            command.upgrade(config, "head")
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                columns = {
+                    row["name"]: row
+                    for row in inspect(engine).get_columns("workforce_requests")
+                }
+                self.assertIn("include_project_manager_contact_phone", columns)
+                self.assertFalse(
+                    columns["include_project_manager_contact_phone"]["nullable"]
+                )
+                self.assertIn("project_manager_contact_phone", columns)
+                self.assertTrue(columns["project_manager_contact_phone"]["nullable"])
+                with engine.begin() as connection:
+                    historical = connection.execute(
+                        text(
+                            "SELECT include_project_manager_contact_phone, "
+                            "project_manager_contact_phone "
+                            "FROM workforce_requests WHERE id = 'D-880-MIG'"
+                        )
+                    ).one()
+                    self.assertFalse(bool(historical.include_project_manager_contact_phone))
+                    self.assertIsNone(historical.project_manager_contact_phone)
+                    connection.execute(
+                        text(
+                            "UPDATE workforce_requests SET "
+                            "include_project_manager_contact_phone = 1, "
+                            "project_manager_contact_phone = '514-555-0880' "
+                            "WHERE id = 'D-880-MIG'"
+                        )
+                    )
+                    selected = connection.execute(
+                        text(
+                            "SELECT include_project_manager_contact_phone, "
+                            "project_manager_contact_phone "
+                            "FROM workforce_requests WHERE id = 'D-880-MIG'"
+                        )
+                    ).one()
+                    self.assertTrue(bool(selected.include_project_manager_contact_phone))
+                    self.assertEqual(
+                        selected.project_manager_contact_phone,
+                        "514-555-0880",
+                    )
+            finally:
+                engine.dispose()
+
     def test_0036_communication_message_html_is_nullable_and_preserves_existing_rows(self) -> None:
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "communication-html.db"
