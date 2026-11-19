@@ -51,7 +51,7 @@ from .operational_choice_models import (
     PlanningWorkQueueRestoration,
     RequestRequirementPlanningIntent,
 )
-from .retained_placement import dedupe_locked_allocations
+from .retained_placement import dedupe_locked_allocations, protected_shift_ids
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
@@ -1237,6 +1237,17 @@ class SqlApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 ),
             )
             keep_ids = {row.id for row in ranked[:desired]}
+            trimmed = [row for row in current if row.id not in keep_ids]
+            protected = protected_shift_ids(
+                self._session,
+                (row.id for row in trimmed),
+            )
+            if protected:
+                raise ApplicationConflictError(
+                    "La synchronisation legacy ne peut pas retirer un besoin REQUEST portant un quart survivant protégé.",
+                    code="reduction_rebase_required",
+                    context={"shift_ids": list(protected)},
+                )
             for requirement in current:
                 if requirement.id not in keep_ids:
                     requirement.status = "Annulé"

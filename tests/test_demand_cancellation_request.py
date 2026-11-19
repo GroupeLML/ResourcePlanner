@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,12 +24,17 @@ from app.infrastructure.sql import (
     CommandIdempotencyReceipt,
     PlanningMutationState,
     Project,
+    RequestApprovalRevision,
+    RequestCompletionReduction,
     RequestLine,
+    RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
     Resource,
     ResourceRequirement,
     Shift,
     SqlDemandRepository,
     SqlPeriodAwareApprovedDemandSyncAdapter,
+    SqlSegmentRepository,
     SqlPlannerQueryRepository,
     WorkforceRequest,
     WorkforceRequestHistory,
@@ -244,6 +249,99 @@ class DemandCancellationRequestTests(unittest.TestCase):
                 return request, int(planning_version or 0), int(shift_count or 0)
         finally:
             engine.dispose()
+
+    @staticmethod
+    def _install_human_survivor(database_url: str, *, terminal: bool = False) -> None:
+        engine = create_sql_engine(database_url)
+        factory = create_session_factory(engine)
+        try:
+            with factory.begin() as session:
+                requirement = session.get(ResourceRequirement, "REQ-HUMAN")
+                assert requirement is not None
+                if terminal:
+                    requirement.status = "Annulé"
+                revision = RequestApprovalRevision(
+                    id="REV-CANCEL-PROTECTED",
+                    workforce_request_id="D-HUMAN",
+                    request_version=4,
+                    approved_at=datetime.now(timezone.utc),
+                    authorization_fingerprint="8" * 64,
+                    payload_text='{"request": {}, "authorization": {"entries": []}}',
+                )
+                session.add(revision)
+                session.flush()
+                intent = RequestRequirementPlanningIntent(
+                    id="INT-CANCEL-PROTECTED",
+                    workforce_request_id="D-HUMAN",
+                    slot_identity_key='["CANCEL-PROTECTED"]',
+                    approved_entry_key='["CANCEL-PROTECTED"]',
+                    approval_revision_id=revision.id,
+                    slot_index=0,
+                    current_resource_requirement_id=requirement.id,
+                    intent_mode="AUTO",
+                    target_mode="EXPLICIT_RESOURCE",
+                    target_resource_id="R1",
+                )
+                session.add(intent)
+                session.flush()
+                reduction = RequestCompletionReduction(
+                    id="RED-CANCEL-PROTECTED",
+                    planning_intent_id=intent.id,
+                    workforce_request_id="D-HUMAN",
+                    historical_approval_revision_id=revision.id,
+                    approved_entry_key=intent.approved_entry_key,
+                    original_shift_id="SHIFT-REMOVED-BEFORE-CANCELLATION",
+                    shift_snapshot_text="{}",
+                    reduction_hours=8,
+                    effective_need_before=16,
+                    effective_need_after=8,
+                    actor_user_id="U-ADMIN",
+                    command_id="CMD-CANCEL-PROTECTED",
+                    reconciliation_state="ABSORBED",
+                )
+                session.add(reduction)
+                session.flush()
+                session.add(
+                    RequestShiftSurvivorProtection(
+                        id="SP-CANCEL-PROTECTED",
+                        planning_intent_id=intent.id,
+                        shift_id="SHIFT-HUMAN",
+                        original_shift_id="SHIFT-HUMAN",
+                        originating_reduction_id=reduction.id,
+                        active=True,
+                    )
+                )
+        finally:
+            engine.dispose()
+
+    def test_generic_request_segment_cancellation_rejects_protected_survivor(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            self._install_human_survivor(database_url)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    with self.assertRaises(ApplicationConflictError) as raised:
+                        SqlSegmentRepository(session).update(
+                            "SEG-HUMAN",
+                            {"Statut": "Annulé"},
+                        )
+                    self.assertEqual(raised.exception.code, "reduction_rebase_required")
+                with factory() as session:
+                    requirement = session.get(ResourceRequirement, "REQ-HUMAN")
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert requirement is not None
+                    assert protection is not None
+                    self.assertEqual(requirement.status, "Planifié")
+                    self.assertIsNotNone(session.get(Shift, "SHIFT-HUMAN"))
+                    self.assertTrue(protection.active)
+                    self.assertEqual(protection.shift_id, "SHIFT-HUMAN")
+            finally:
+                engine.dispose()
 
     def test_real_materialization_distinguishes_human_asset_and_requirement_only(self) -> None:
         with TemporaryDirectory() as directory:
@@ -584,6 +682,133 @@ class DemandCancellationRequestTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_accept_cancellation_retires_protected_survivor_before_shift_delete(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                requirement = session.get(ResourceRequirement, "REQ-HUMAN")
+                assert requirement is not None
+                requirement.status = "Annulé"
+                revision = RequestApprovalRevision(
+                    id="REV-CANCEL-PROTECTED",
+                    workforce_request_id="D-HUMAN",
+                    request_version=4,
+                    approved_at=datetime.now(timezone.utc),
+                    authorization_fingerprint="8" * 64,
+                    payload_text='{"request": {}, "authorization": {"entries": []}}',
+                )
+                session.add(revision)
+                session.flush()
+                intent = RequestRequirementPlanningIntent(
+                    id="INT-CANCEL-PROTECTED",
+                    workforce_request_id="D-HUMAN",
+                    slot_identity_key='["CANCEL-PROTECTED"]',
+                    approved_entry_key='["CANCEL-PROTECTED"]',
+                    approval_revision_id=revision.id,
+                    slot_index=0,
+                    current_resource_requirement_id=requirement.id,
+                    intent_mode="AUTO",
+                    target_mode="EXPLICIT_RESOURCE",
+                    target_resource_id="R1",
+                )
+                session.add(intent)
+                session.flush()
+                reduction = RequestCompletionReduction(
+                    id="RED-CANCEL-PROTECTED",
+                    planning_intent_id=intent.id,
+                    workforce_request_id="D-HUMAN",
+                    historical_approval_revision_id=revision.id,
+                    approved_entry_key=intent.approved_entry_key,
+                    original_shift_id="SHIFT-REMOVED-BEFORE-CANCELLATION",
+                    shift_snapshot_text="{}",
+                    reduction_hours=8,
+                    effective_need_before=16,
+                    effective_need_after=8,
+                    actor_user_id="U-ADMIN",
+                    command_id="CMD-CANCEL-PROTECTED",
+                    reconciliation_state="ACTIVE",
+                )
+                session.add(reduction)
+                session.flush()
+                session.add(
+                    RequestShiftSurvivorProtection(
+                        id="SP-CANCEL-PROTECTED",
+                        planning_intent_id=intent.id,
+                        shift_id="SHIFT-HUMAN",
+                        original_shift_id="SHIFT-HUMAN",
+                        originating_reduction_id=reduction.id,
+                        active=True,
+                    )
+                )
+            engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                requested = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/request-cancellation",
+                    json={"reason": "Incident #877", "expected_version": 4},
+                )
+                self.assertEqual(requested.status_code, 200, requested.text)
+                accepted = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/accept-cancellation",
+                    json={
+                        "cancellation_request_id": requested.json()[
+                            "cancellation_request_id"
+                        ],
+                        "comment": "Annulation protégée acceptée",
+                        "expected_version": 5,
+                        "expected_planning_version": 9,
+                    },
+                    headers={"Idempotency-Key": "accept-protected-877"},
+                )
+
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertEqual(accepted.json()["status"], "Annulée")
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    self.assertIsNotNone(protection)
+                    assert protection is not None
+                    self.assertFalse(protection.active)
+                    self.assertIsNone(protection.shift_id)
+                    self.assertIsNotNone(protection.retired_at)
+                    self.assertEqual(
+                        protection.retired_reason,
+                        "CANCELLATION_ACCEPTED",
+                    )
+                    self.assertEqual(
+                        protection.original_shift_id,
+                        "SHIFT-HUMAN",
+                    )
+                    self.assertEqual(
+                        protection.originating_reduction_id,
+                        "RED-CANCEL-PROTECTED",
+                    )
+                    self.assertEqual(
+                        protection.planning_intent_id,
+                        "INT-CANCEL-PROTECTED",
+                    )
+                    self.assertIsNone(session.get(Shift, "SHIFT-HUMAN"))
+                    requirement = session.get(ResourceRequirement, "REQ-HUMAN")
+                    request = session.get(WorkforceRequest, "D-HUMAN")
+                    assert requirement is not None
+                    assert request is not None
+                    self.assertEqual(requirement.status, "Annulé")
+                    self.assertEqual(request.status, "Annulée")
+                    self.assertEqual(request.cancellation_state, "ACCEPTED")
+            finally:
+                engine.dispose()
+
     def test_accept_cancellation_deletes_shift_owned_ad_hoc_asset_scope(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
@@ -850,6 +1075,165 @@ class DemandCancellationRequestTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_accept_cancellation_mixed_protected_unprotected_and_asset_scope_is_atomic(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            self._install_human_survivor(database_url)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                session.add(
+                    RequestLine(
+                        id="L-MIX-ASSET",
+                        workforce_request_id="D-HUMAN",
+                        position=1,
+                        kind="ASSET",
+                        desired_start=DAY,
+                        desired_end=DAY,
+                        estimated_hours=8,
+                        asset_type_id="AT1",
+                        active=True,
+                    )
+                )
+                session.add(
+                    Shift(
+                        id="SHIFT-HUMAN-UNPROTECTED",
+                        resource_requirement_id="REQ-HUMAN",
+                        resource_id="R1",
+                        work_date=DAY,
+                        hours=2,
+                        source="MANUAL",
+                        locked=False,
+                    )
+                )
+                session.add_all(
+                    [
+                        Asset(id="A-MIX-REQ", code="MIX-REQ", label="Mix request", asset_type_id="AT1"),
+                        Asset(id="A-MIX-SEG", code="MIX-SEG", label="Mix segment", asset_type_id="AT1"),
+                        Asset(id="A-MIX-ADHOC", code="MIX-ADHOC", label="Mix ad hoc", asset_type_id="AT1"),
+                    ]
+                )
+                session.flush()
+                session.add_all(
+                    [
+                        AssetRequirement(
+                            id="AREQ-MIX-REQ",
+                            project_id="P1",
+                            workforce_request_id="D-HUMAN",
+                            source_request_line_id="L-MIX-ASSET",
+                            approved_entry_key="LINE:L-MIX-ASSET",
+                            slot_index=0,
+                            origin="REQUEST",
+                            asset_type_id="AT1",
+                            start_date=DAY,
+                            end_date=DAY,
+                            status="Planifié",
+                        ),
+                        AssetRequirement(
+                            id="AREQ-MIX-SEG",
+                            project_id="P1",
+                            resource_requirement_id="REQ-HUMAN",
+                            origin="SEGMENT",
+                            asset_type_id="AT1",
+                            start_date=DAY,
+                            end_date=DAY,
+                            status="Planifié",
+                        ),
+                        AssetRequirement(
+                            id="AREQ-MIX-ADHOC",
+                            project_id="P1",
+                            shift_id="SHIFT-HUMAN",
+                            origin="SHIFT_AD_HOC",
+                            asset_type_id="AT1",
+                            start_date=DAY,
+                            end_date=DAY,
+                            status="Planifié",
+                        ),
+                    ]
+                )
+                session.flush()
+                session.add_all(
+                    [
+                        AssetAllocation(
+                            id="ALLOC-MIX-REQ",
+                            asset_requirement_id="AREQ-MIX-REQ",
+                            asset_id="A-MIX-REQ",
+                            start_date=DAY,
+                            end_date=DAY,
+                            source="MANUAL",
+                        ),
+                        AssetAllocation(
+                            id="ALLOC-MIX-SEG",
+                            asset_requirement_id="AREQ-MIX-SEG",
+                            asset_id="A-MIX-SEG",
+                            start_date=DAY,
+                            end_date=DAY,
+                            source="MANUAL",
+                        ),
+                        AssetAllocation(
+                            id="ALLOC-MIX-ADHOC",
+                            asset_requirement_id="AREQ-MIX-ADHOC",
+                            asset_id="A-MIX-ADHOC",
+                            start_date=DAY,
+                            end_date=DAY,
+                            source="MANUAL",
+                        ),
+                    ]
+                )
+            engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                requested = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/request-cancellation",
+                    json={"reason": "Mixed scope #877", "expected_version": 4},
+                )
+                self.assertEqual(requested.status_code, 200, requested.text)
+                accepted = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/accept-cancellation",
+                    json={
+                        "cancellation_request_id": requested.json()["cancellation_request_id"],
+                        "comment": "Mixed scope accepted",
+                        "expected_version": 5,
+                        "expected_planning_version": 9,
+                    },
+                    headers={"Idempotency-Key": "accept-mixed-877"},
+                )
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertEqual(accepted.json()["deleted_human_shifts"], 2)
+            self.assertEqual(accepted.json()["deleted_asset_allocations"], 3)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    self.assertIsNone(session.get(Shift, "SHIFT-HUMAN"))
+                    self.assertIsNone(session.get(Shift, "SHIFT-HUMAN-UNPROTECTED"))
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert protection is not None
+                    self.assertFalse(protection.active)
+                    self.assertIsNone(protection.shift_id)
+                    for allocation_id in (
+                        "ALLOC-MIX-REQ",
+                        "ALLOC-MIX-SEG",
+                        "ALLOC-MIX-ADHOC",
+                    ):
+                        self.assertIsNone(session.get(AssetAllocation, allocation_id))
+                    self.assertIsNone(session.get(AssetRequirement, "AREQ-MIX-SEG"))
+                    self.assertIsNone(session.get(AssetRequirement, "AREQ-MIX-ADHOC"))
+                    request_asset = session.get(AssetRequirement, "AREQ-MIX-REQ")
+                    assert request_asset is not None
+                    self.assertEqual(request_asset.status, "Annulé")
+                    self.assertIsNotNone(session.get(AssetAllocation, "ALLOC-ASSET"))
+            finally:
+                engine.dispose()
+
     def test_accept_cancellation_deletes_locked_asset_scope(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
@@ -902,6 +1286,7 @@ class DemandCancellationRequestTests(unittest.TestCase):
     def test_accept_replay_wins_before_stale_cas_and_records_once(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
+            self._install_human_survivor(database_url)
             app = create_api_app(
                 database_url,
                 auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
@@ -924,6 +1309,22 @@ class DemandCancellationRequestTests(unittest.TestCase):
                     json=body,
                     headers=headers,
                 )
+                self.assertEqual(first.status_code, 200, first.text)
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                with factory() as session:
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert protection is not None
+                    first_retired_at = protection.retired_at
+                    first_provenance = (
+                        protection.original_shift_id,
+                        protection.originating_reduction_id,
+                        protection.planning_intent_id,
+                    )
+                engine.dispose()
                 replay = client.post(
                     "/api/v1/demands/DMO-CANCEL-HUMAN/accept-cancellation",
                     json=body,
@@ -974,12 +1375,28 @@ class DemandCancellationRequestTests(unittest.TestCase):
                         )
                     )
                     self.assertEqual(int(receipt_count or 0), 1)
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert protection is not None
+                    self.assertFalse(protection.active)
+                    self.assertEqual(protection.retired_at, first_retired_at)
+                    self.assertEqual(
+                        (
+                            protection.original_shift_id,
+                            protection.originating_reduction_id,
+                            protection.planning_intent_id,
+                        ),
+                        first_provenance,
+                    )
             finally:
                 engine.dispose()
 
     def test_stale_request_version_rolls_back_planning_guard_and_cleanup(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
+            self._install_human_survivor(database_url)
             app = create_api_app(
                 database_url,
                 auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
@@ -1016,6 +1433,14 @@ class DemandCancellationRequestTests(unittest.TestCase):
                     self.assertEqual(request.aggregate_version, 5)
                     self.assertEqual(requirement.status, "Planifié")
                     self.assertIsNotNone(session.get(Shift, "SHIFT-HUMAN"))
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert protection is not None
+                    self.assertTrue(protection.active)
+                    self.assertEqual(protection.shift_id, "SHIFT-HUMAN")
+                    self.assertIsNone(protection.retired_at)
                     self.assertEqual(
                         int(session.get(PlanningMutationState, "GLOBAL").version),
                         9,
@@ -1042,6 +1467,7 @@ class DemandCancellationRequestTests(unittest.TestCase):
     def test_injected_audit_failure_rolls_back_entire_acceptance(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
+            self._install_human_survivor(database_url)
             app = create_api_app(
                 database_url,
                 auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
