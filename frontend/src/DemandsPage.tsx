@@ -270,6 +270,11 @@ function DemandCard({
         <span>{demand.desired_start || "Date à définir"}{demand.desired_end && demand.desired_end !== demand.desired_start ? ` → ${demand.desired_end}` : ""}</span>
         <span>{demand.line_mode ? `${(demand.lines ?? []).filter((line) => line.active).length} ligne(s)` : `${demand.resource_count || 1} ressource(s)`}</span>
         <span className={tentative ? "confirmation-tentative-text" : "confirmation-confirmed-text"}>{tentative ? "Tentative" : "Confirmée"}</span>
+        {!demand.terminal && demand.planning_progress && (
+          <span className="demand-planning-progress" data-testid="demand-card-planning-progress">
+            {demand.planning_progress}
+          </span>
+        )}
       </div>
       </button>
       {quickActions.length > 0 && (
@@ -1081,6 +1086,11 @@ export default function DemandsPage({
                         </div>
                       )}
                       <div className="demand-workflow-status-pill">{selectedDemand.status || "—"}</div>
+                      {!selectedDemand.terminal && selectedDemand.planning_progress && (
+                        <div className="demand-planning-progress-pill" data-testid="demand-header-planning-progress">
+                          {selectedDemand.planning_progress}
+                        </div>
+                      )}
                     </div>
                     <div className="demand-header-actions" data-testid="demand-header-actions">
                       <DemandWorkflowPage
