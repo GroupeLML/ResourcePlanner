@@ -739,6 +739,8 @@ export type DemandReadModel = {
   description: string | null;
   site_contact_name: string | null;
   site_contact_phone: string | null;
+  include_project_manager_contact_phone: boolean;
+  project_manager_contact_phone: string | null;
   site_client: string | null;
   location: string | null;
   work_package_ref: string | null;
@@ -1534,6 +1536,8 @@ export type DemandWrite = {
   description: string;
   site_contact_name?: string | null;
   site_contact_phone?: string | null;
+  include_project_manager_contact_phone?: boolean;
+  project_manager_contact_phone?: string | null;
   work_package_ref?: string | null;
   task_code?: string | null;
   confirmation?: "Tentative" | "Confirmée";
