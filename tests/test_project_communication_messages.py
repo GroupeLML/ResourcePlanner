@@ -1767,50 +1767,50 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
 
         none = current(False, None, False, None)
         none_body = build_project_confirmation_batch(none).drafts[0].body
-        self.assertNotIn("514-555-0880", none_body)
-        self.assertNotIn("514-555-0881", none_body)
+        self.assertNotIn(synthetic_phone("0880"), none_body)
+        self.assertNotIn(synthetic_phone("0881"), none_body)
 
-        one = current(True, "514-555-0880", False, "514-555-0999")
+        one = current(True, synthetic_phone("0880"), False, synthetic_phone("0999"))
         one_body = build_project_confirmation_batch(one).drafts[0].body
-        self.assertEqual(one_body.count("514-555-0880"), 1)
-        self.assertNotIn("514-555-0999", one_body)
+        self.assertEqual(one_body.count(synthetic_phone("0880")), 1)
+        self.assertNotIn(synthetic_phone("0999"), one_body)
 
         same = current(
             True,
-            "514-555-0880",
+            synthetic_phone("0880"),
             True,
             "  514-555-0880  ",
         )
         same_body = build_project_confirmation_batch(same).drafts[0].body
-        self.assertEqual(same_body.count("514-555-0880"), 1)
+        self.assertEqual(same_body.count(synthetic_phone("0880")), 1)
 
         different = current(
             True,
-            "514-555-0880",
+            synthetic_phone("0880"),
             True,
-            "514-555-0881",
+            synthetic_phone("0881"),
         )
         different_body = build_project_confirmation_batch(different).drafts[0].body
         self.assertIn(
-            "Demande DMO-1 — 210 Installation de poteaux — 514-555-0880",
+            f"Demande DMO-1 — 210 Installation de poteaux — {synthetic_phone('0880')}",
             different_body,
         )
         self.assertIn(
-            "Demande DMO-2 — 210 Installation de poteaux — 514-555-0881",
+            f"Demande DMO-2 — 210 Installation de poteaux — {synthetic_phone('0881')}",
             different_body,
         )
 
         one_fingerprint = project_projection_fingerprint(one)
-        changed_phone = current(True, "514-555-0882", False, "514-555-0999")
+        changed_phone = current(True, synthetic_phone("0882"), False, synthetic_phone("0999"))
         self.assertNotEqual(
             project_projection_fingerprint(changed_phone),
             one_fingerprint,
         )
         opted_out_stored_change = current(
             True,
-            "514-555-0880",
+            synthetic_phone("0880"),
             False,
-            "514-555-0777",
+            synthetic_phone("0777"),
         )
         self.assertEqual(
             project_projection_fingerprint(opted_out_stored_change),
@@ -1845,7 +1845,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             projects=(
                 replace(
                     project_row,
-                    project_manager_erp_phone="514-555-0831",
+                    project_manager_erp_phone=synthetic_phone("0831"),
                     days=(replace(day, tasks=(v2_task,)),),
                 ),
             ),
@@ -1856,7 +1856,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         restored = deserialize_project_projection(payload)
         self.assertEqual(restored.request_provenance_version, 2)
         self.assertIn(
-            "Responsable projet\nChargé Démo\n514-555-0831",
+            f"Responsable projet\\nChargé Démo\\n{synthetic_phone('0831')}",
             build_project_confirmation_batch(restored).drafts[0].body,
         )
 
