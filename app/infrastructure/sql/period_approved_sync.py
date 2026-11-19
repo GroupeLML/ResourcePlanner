@@ -62,15 +62,34 @@ from .operational_choice_models import (
     PLANNING_TARGET_EXPLICIT_RESOURCE,
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
 )
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .operational_contact_repository import SqlOperationalContactRepository
+from .retained_placement import protected_shift_ids
 from .segment_repository import SqlSegmentRepository
 from .segment_asset_guard import segment_asset_dependencies
 
 
 def _text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _assert_no_protected_terminalization(
+    session: Session,
+    requirements: Sequence[ResourceRequirement],
+) -> None:
+    requirement_ids = tuple(row.id for row in requirements)
+    shift_ids = protected_shift_ids(session, requirement_ids)
+    if shift_ids:
+        raise ApplicationConflictError(
+            "La réapprobation ne peut pas terminaliser un besoin REQUEST portant un quart survivant protégé.",
+            code="reduction_rebase_required",
+            context={
+                "requirement_ids": list(requirement_ids),
+                "shift_ids": list(shift_ids),
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,6 +601,12 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         current = self._active_requirements(request.id)
         links = self._requirement_links({row.id for row in current})
         by_period: dict[str, list[ResourceRequirement]] = defaultdict(list)
+        excluded_requirements = [
+            requirement
+            for requirement in current
+            if links.get(requirement.id) not in effective_ids
+        ]
+        _assert_no_protected_terminalization(self._session, excluded_requirements)
         for requirement in current:
             period_id = links.get(requirement.id)
             if period_id not in effective_ids:
@@ -638,6 +663,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                     ),
                 )
                 keep_ids = {row.id for row in ranked[:desired]}
+                trimmed = [row for row in rows if row.id not in keep_ids]
+                _assert_no_protected_terminalization(self._session, trimmed)
                 for requirement in rows:
                     if requirement.id not in keep_ids:
                         requirement.status = "Annulé"
@@ -1229,6 +1256,8 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             specs,
         )
         obsolete = list(obsolete_rows)
+        _assert_no_protected_terminalization(self._session, obsolete)
+        _assert_no_protected_terminalization(self._session, obsolete)
         for requirement in obsolete:
             if not self._preserve_zero_effective_terminal(requirement):
                 requirement.status = "Annulé"
@@ -1484,7 +1513,20 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 RequestRequirementPlanningIntent.placement_not_before_date.is_not(None),
             )
         ).all()
-        if not reduced_intents and not cutoff_intents:
+        protected_intents = self._session.scalars(
+            select(RequestRequirementPlanningIntent)
+            .join(
+                RequestShiftSurvivorProtection,
+                RequestShiftSurvivorProtection.planning_intent_id
+                == RequestRequirementPlanningIntent.id,
+            )
+            .where(
+                RequestRequirementPlanningIntent.workforce_request_id == request.id,
+                RequestShiftSurvivorProtection.active == true(),
+            )
+            .distinct()
+        ).all()
+        if not reduced_intents and not cutoff_intents and not protected_intents:
             return
 
         reference = self._session.get(RequestApprovalReference, request.id)
@@ -1611,6 +1653,48 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
                 raise ApplicationConflictError(
                     "La nouvelle autorisation change le sujet métier d'un slot portant un cutoff durable.",
                     code="placement_cutoff_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "approved_entry_key": intent.approved_entry_key,
+                        "slot_index": int(intent.slot_index),
+                    },
+                )
+
+        reduced_intent_ids = {intent.id for intent in reduced_intents}
+        for intent in protected_intents:
+            if intent.id in reduced_intent_ids:
+                continue
+            active_entry = active_entries.get(intent.approved_entry_key)
+            candidate_entry = candidate_entries.get(intent.approved_entry_key)
+            matching_specs = [
+                spec
+                for spec in candidate_specs
+                if spec.approved_entry_key == intent.approved_entry_key
+                and int(spec.slot_index) == int(intent.slot_index)
+            ]
+            if active_entry is None or candidate_entry is None or len(matching_specs) != 1:
+                raise ApplicationConflictError(
+                    "Un quart survivant protégé ne correspond plus à un slot autorisé stable et non ambigu.",
+                    code="reduction_rebase_required",
+                    context={
+                        "planning_intent_id": intent.id,
+                        "approved_entry_key": intent.approved_entry_key,
+                        "slot_index": int(intent.slot_index),
+                        "candidate_match_count": len(matching_specs),
+                    },
+                )
+            historical_fingerprint = reduction_subject_fingerprint(
+                request_context=active_request_context,
+                authorization_entry=active_entry,
+            )
+            candidate_fingerprint = reduction_subject_fingerprint(
+                request_context=candidate_request_context,
+                authorization_entry=candidate_entry,
+            )
+            if candidate_fingerprint != historical_fingerprint:
+                raise ApplicationConflictError(
+                    "La nouvelle autorisation change le sujet métier d'un slot portant un quart survivant protégé.",
+                    code="reduction_rebase_required",
                     context={
                         "planning_intent_id": intent.id,
                         "approved_entry_key": intent.approved_entry_key,
