@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.orm import Session
 
+from ...application.errors import ApplicationConflictError
 from ...application.read_models import SegmentReadModel
 from ...application.repository_ports import SegmentRepositoryPort
 from ...domain.confirmation import CONFIRMATION_CONFIRMED, normalize_confirmation
@@ -24,7 +25,7 @@ from .demand_period_models import WorkforceRequestPeriod, WorkforceRequestPeriod
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .operational_contact_repository import SqlOperationalContactRepository
 from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
-from .retained_placement import retained_coverage_hours
+from .retained_placement import protected_shift_ids, retained_coverage_hours
 from .operational_choice_models import (
     RequestCompletionReduction,
     RequestOperationalState,
@@ -743,6 +744,25 @@ class SqlSegmentRepository(SegmentRepositoryPort):
                 and _text(updates.get("Statut")) == "Annulé"
             ),
         )
+
+        if (
+            requirement.origin == ORIGIN_REQUEST
+            and "Statut" in updates
+            and _text(updates.get("Statut")) == "Annulé"
+        ):
+            survivor_shift_ids = protected_shift_ids(
+                self._session,
+                (requirement.id,),
+            )
+            if survivor_shift_ids:
+                raise ApplicationConflictError(
+                    "Un besoin REQUEST portant un quart survivant protégé ne peut pas être annulé par une mutation générique.",
+                    code="reduction_rebase_required",
+                    context={
+                        "requirement_id": requirement.id,
+                        "shift_ids": list(survivor_shift_ids),
+                    },
+                )
 
         if "NoDemande" in updates:
             requirement.workforce_request_id = request.id if request else None
