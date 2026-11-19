@@ -277,7 +277,7 @@ function pendingText(load: PendingDemandLoadReadModel) {
 }
 
 function projectManagerBadgeStyle(managerColorId: string | null | undefined) {
-  if (!managerColorId) return undefined;
+  if (!managerColorId || !/^[0-9a-f]{8,}$/i.test(managerColorId)) return undefined;
 
   const hue = Number.parseInt(managerColorId.slice(0, 8), 16) % 360;
   const saturation = 0.7;
@@ -433,8 +433,7 @@ function ShiftCard({
       data-allocation-id={shift.allocation_id}
       data-segment-id={shift.segment_id}
       onClick={(event) => {
-        // The manager marker is outside the main button, but the whole card
-        // must remain clickable for shift editing (including its padding).
+        // The whole card remains clickable for shift editing, including its padding.
         if (editable && !(event.target as HTMLElement).closest("button")) {
           onEdit?.(shift);
         }
