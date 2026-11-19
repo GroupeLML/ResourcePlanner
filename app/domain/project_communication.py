@@ -56,6 +56,8 @@ class ProjectCommunicationAssignment:
     request_number: str | None = None
     site_contact_name: str | None = None
     site_contact_phone: str | None = None
+    include_project_manager_contact_phone: bool = False
+    project_manager_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     standard_hours: float | None = None
     diagnostics: tuple[str, ...] = ()
@@ -95,6 +97,8 @@ class ProjectCommunicationRequestAssignment:
     hours: float
     site_contact_name: str | None
     site_contact_phone: str | None
+    include_project_manager_contact_phone: bool = False
+    project_manager_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     standard_hours: float | None = None
 
@@ -290,6 +294,10 @@ def build_project_communication_projection(
                 hours=row.hours,
                 site_contact_name=row.site_contact_name,
                 site_contact_phone=row.site_contact_phone,
+                include_project_manager_contact_phone=bool(
+                    row.include_project_manager_contact_phone
+                ),
+                project_manager_contact_phone=row.project_manager_contact_phone,
                 assets=tuple(row.assets),
                 standard_hours=row.standard_hours,
             )
