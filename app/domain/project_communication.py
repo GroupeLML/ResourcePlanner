@@ -212,6 +212,14 @@ def build_project_communication_projection(
                 raise ValueError("Actifs Shift v2+ non explicites")
     if request_provenance_version == 3:
         for row in assignments:
+            if not isinstance(row.include_project_manager_contact_phone, bool):
+                raise ValueError(
+                    "Sélection téléphone responsable projet v3 doit être booléenne"
+                )
+            if str(row.project_manager_erp_phone or "").strip():
+                raise ValueError(
+                    "Téléphone ERP responsable projet interdit en provenance v3"
+                )
             if row.workforce_request_id is None and (
                 row.include_project_manager_contact_phone
                 or row.project_manager_contact_phone
@@ -311,7 +319,7 @@ def build_project_communication_projection(
                 site_contact_name=row.site_contact_name,
                 site_contact_phone=row.site_contact_phone,
                 include_project_manager_contact_phone=(
-                    bool(row.include_project_manager_contact_phone)
+                    row.include_project_manager_contact_phone
                     if request_provenance_version == 3
                     else False
                 ),
