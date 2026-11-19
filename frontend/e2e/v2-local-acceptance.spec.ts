@@ -1147,7 +1147,24 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(draft.locator("textarea")).toHaveValue(new RegExp(testPhone()));
     await draft.locator(".draft-subject").fill("Confirmation E2E — P-251");
 
+    const prepareRequestPromise = page.waitForRequest((request) => (
+      request.method() === "POST"
+      && request.url().includes("/api/v1/communications/project-batches")
+    ));
     await page.getByRole("button", { name: "Préparer le lot" }).click();
+    const prepareRequest = await prepareRequestPromise;
+    const preparePayload = prepareRequest.postDataJSON() as {
+      reviews: Array<Record<string, unknown>>;
+    };
+    expect(preparePayload.reviews.length).toBeGreaterThan(0);
+    for (const review of preparePayload.reviews) {
+      expect(Object.keys(review).sort()).toEqual([
+        "body",
+        "include",
+        "message_key",
+        "subject",
+      ]);
+    }
     await expect(page.locator(".communications-notice")).toContainText("Lot projet préparé");
     await expect(addGeneratorCc).not.toBeChecked();
 
