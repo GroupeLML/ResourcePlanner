@@ -1127,6 +1127,7 @@ class DemandCancellationRequestTests(unittest.TestCase):
     def test_accept_replay_wins_before_stale_cas_and_records_once(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
+            self._install_human_survivor(database_url)
             app = create_api_app(
                 database_url,
                 auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
@@ -1149,6 +1150,22 @@ class DemandCancellationRequestTests(unittest.TestCase):
                     json=body,
                     headers=headers,
                 )
+                self.assertEqual(first.status_code, 200, first.text)
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                with factory() as session:
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert protection is not None
+                    first_retired_at = protection.retired_at
+                    first_provenance = (
+                        protection.original_shift_id,
+                        protection.originating_reduction_id,
+                        protection.planning_intent_id,
+                    )
+                engine.dispose()
                 replay = client.post(
                     "/api/v1/demands/DMO-CANCEL-HUMAN/accept-cancellation",
                     json=body,
@@ -1199,6 +1216,21 @@ class DemandCancellationRequestTests(unittest.TestCase):
                         )
                     )
                     self.assertEqual(int(receipt_count or 0), 1)
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert protection is not None
+                    self.assertFalse(protection.active)
+                    self.assertEqual(protection.retired_at, first_retired_at)
+                    self.assertEqual(
+                        (
+                            protection.original_shift_id,
+                            protection.originating_reduction_id,
+                            protection.planning_intent_id,
+                        ),
+                        first_provenance,
+                    )
             finally:
                 engine.dispose()
 
@@ -1241,6 +1273,14 @@ class DemandCancellationRequestTests(unittest.TestCase):
                     self.assertEqual(request.aggregate_version, 5)
                     self.assertEqual(requirement.status, "Planifié")
                     self.assertIsNotNone(session.get(Shift, "SHIFT-HUMAN"))
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert protection is not None
+                    self.assertTrue(protection.active)
+                    self.assertEqual(protection.shift_id, "SHIFT-HUMAN")
+                    self.assertIsNone(protection.retired_at)
                     self.assertEqual(
                         int(session.get(PlanningMutationState, "GLOBAL").version),
                         9,
@@ -1267,6 +1307,7 @@ class DemandCancellationRequestTests(unittest.TestCase):
     def test_injected_audit_failure_rolls_back_entire_acceptance(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
+            self._install_human_survivor(database_url)
             app = create_api_app(
                 database_url,
                 auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
