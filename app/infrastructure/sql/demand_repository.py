@@ -24,8 +24,10 @@ from ...domain.reservable_assets import AssetRequirementOrigin
 from .asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from .base import new_id, utc_now
 from .request_version import acquire_request_aggregate_version
+from .operational_choice_models import RequestRequirementPlanningIntent
 from .planning_intent_repository import current_effective_need_sql
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
+from .survivor_protection_repository import SqlRequestShiftSurvivorProtectionRepository
 from .resource_class_models import ResourceClassConfig
 from .models import (
     Competency,
@@ -1689,7 +1691,20 @@ class SqlDemandRepository(DemandRepositoryPort):
             self._session.delete(row)
         if segment_asset_requirements or ad_hoc_asset_requirements:
             self._session.flush()
+        survivor_protections = SqlRequestShiftSurvivorProtectionRepository(self._session)
         for row in human_shifts:
+            intent = self._session.scalar(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.current_resource_requirement_id
+                    == row.resource_requirement_id
+                )
+            )
+            if intent is not None:
+                survivor_protections.retire_deleted_shift(
+                    intent=intent,
+                    shift=row,
+                    reason="CANCELLATION_ACCEPTED",
+                )
             self._session.delete(row)
         if human_shifts:
             self._session.flush()
