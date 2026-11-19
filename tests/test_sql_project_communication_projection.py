@@ -92,6 +92,7 @@ class FakeSmtpDeliveryClient:
         self.attempt_bodies: list[str] = []
         self.attempt_html: list[str | None] = []
         self.attempt_cc: list[tuple[str, ...]] = []
+        self.attempt_to: list[tuple[str, ...]] = []
         self._failed_once = False
 
     def test_connection(self, configuration) -> None:
@@ -102,6 +103,7 @@ class FakeSmtpDeliveryClient:
         self.attempt_bodies.append(message.body)
         self.attempt_html.append(message.body_html)
         self.attempt_cc.append(tuple(message.cc_emails))
+        self.attempt_to.append(tuple(message.to_emails))
         if "2000" in message.subject and not self._failed_once:
             self._failed_once = True
             raise RuntimeError("synthetic smtp failure")
@@ -935,6 +937,213 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
             finally:
                 engine.dispose()
+
+    def test_879_never_logged_manager_uses_unique_resource_email_end_to_end(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            resource_email = "manual-pm" + chr(64) + TEST_DOMAIN
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    user = session.get(AppUser, "U-PM")
+                    assert user is not None
+                    # Simulate no AppUser/login identity for the ERP manager while
+                    # preserving the unrelated local account/contact fixture.
+                    user.employee_external_id = "OTHER-PM"
+                    session.add(
+                        Resource(
+                            id="R-PM-879",
+                            external_id="PM-1",
+                            name="Nom ressource sans autorité",
+                            email=resource_email,
+                            active=False,
+                            erp_active=False,
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                preview_payload = preview.json()
+                draft = preview_payload["drafts"][0]
+                self.assertTrue(draft["approvable"])
+                self.assertEqual(
+                    [row["email"] for row in draft["to_recipients"]],
+                    [resource_email],
+                )
+                self.assertFalse(
+                    any(
+                        row["code"] in {
+                            "PROJECT_MANAGER_EMAIL_MISSING",
+                            "PROJECT_TO_EMAIL_MISSING",
+                        }
+                        for row in draft["diagnostics"]
+                    )
+                )
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview_payload[
+                            "snapshot_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = prepared.json()["messages"][0]
+                self.assertEqual(message["to_emails"], [resource_email])
+                batch_id = prepared.json()["id"]
+
+                approved = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertEqual(transport.create_calls, 1)
+                self.assertEqual(
+                    transport.messages[0].to_emails,
+                    (resource_email,),
+                )
+
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+                mime = BytesParser(policy=policy.default).parsebytes(
+                    downloaded.content
+                )
+                self.assertEqual(mime["To"], resource_email)
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+                self.assertEqual(smtp.attempt_to, [(resource_email,)])
+
+    def test_879_business_contact_email_keeps_precedence_over_resource_email(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    session.add(
+                        Resource(
+                            id="R-PM-PRECEDENCE-879",
+                            external_id="PM-1",
+                            name="Même identité stable",
+                            email="resource-pm" + chr(64) + TEST_DOMAIN,
+                            active=True,
+                            erp_active=True,
+                        )
+                    )
+                with factory() as session:
+                    preview = self._service(session).project_preview(
+                        week_start=WEEK
+                    )
+            finally:
+                engine.dispose()
+
+        draft = preview.drafts[0]
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            ["pm" + chr(64) + TEST_DOMAIN],
+        )
+        self.assertTrue(draft.approvable)
+
+    def test_879_ambiguous_or_name_only_resource_identity_never_supplies_email(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    user = session.get(AppUser, "U-PM")
+                    assert user is not None
+                    user.employee_external_id = "OTHER-PM"
+                    session.add_all(
+                        [
+                            Resource(
+                                id="R-PM-AMB-1-879",
+                                external_id="PM-1",
+                                name="Un",
+                                email="amb-one" + chr(64) + TEST_DOMAIN,
+                                active=True,
+                                erp_active=True,
+                            ),
+                            Resource(
+                                id="R-PM-AMB-2-879",
+                                external_id="PM-1",
+                                name="Deux",
+                                email="amb-two" + chr(64) + TEST_DOMAIN,
+                                active=True,
+                                erp_active=True,
+                            ),
+                            Resource(
+                                id="R-PM-NAME-879",
+                                external_id="NOT-PM-879",
+                                name="Ancien nom",
+                                email="name-match" + chr(64) + TEST_DOMAIN,
+                                active=True,
+                                erp_active=True,
+                            ),
+                        ]
+                    )
+                with factory() as session:
+                    preview = self._service(session).project_preview(
+                        week_start=WEEK
+                    )
+            finally:
+                engine.dispose()
+
+        draft = preview.drafts[0]
+        self.assertFalse(draft.approvable)
+        self.assertIsNone(draft.to_recipient.email)
+        self.assertNotIn(
+            "name-match" + chr(64) + TEST_DOMAIN,
+            [row.email for row in draft.to_recipients],
+        )
+        self.assertTrue(
+            any(
+                row.code == "PROJECT_TO_EMAIL_MISSING"
+                for row in draft.diagnostics
+            )
+        )
 
     def test_831_missing_local_manager_contact_does_not_invent_recipient(self) -> None:
         with TemporaryDirectory() as directory:
