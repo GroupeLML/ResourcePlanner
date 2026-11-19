@@ -98,6 +98,16 @@ test("859 — besoins approuvés maître-détail, recherche, filtres et invalida
         asset_type_code: "GEN",
         asset_type_label: "Génératrice",
         usage_hours: null,
+        status: "À affecter",
+        allocation_id: null,
+        asset_id: null,
+        asset_code: null,
+        asset_label: null,
+        allocation_start_date: null,
+        allocation_end_date: null,
+        allocation_locked: false,
+        operator_resource_id: null,
+        operator_resource_name: null,
         eligible_asset_ids: [],
       };
       await route.fulfill({
@@ -168,7 +178,7 @@ test("859 — besoins approuvés maître-détail, recherche, filtres et invalida
     const panel = page.getByTestId("approved-asset-requirements");
     const master = panel.getByTestId("approved-asset-master-list");
     const detail = panel.getByTestId("approved-asset-detail");
-    const search = panel.getByRole("searchbox", { name: "Rechercher les besoins approuvés" });
+    const search = panel.getByRole("searchbox", { name: "Filtrer les besoins approuvés" });
     const unreservedFilter = panel.getByRole("button", { name: /À réserver \(/ });
     const reservedFilter = panel.getByRole("button", { name: /Réservé \(/ });
 
