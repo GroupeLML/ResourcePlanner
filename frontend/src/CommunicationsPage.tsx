@@ -57,6 +57,15 @@ type DraftState = ProjectCommunicationReview & {
   htmlPreviewStale: boolean;
   htmlPreviewBusy: boolean;
 };
+
+function projectCommunicationReview(draft: DraftState): ProjectCommunicationReview {
+  return {
+    message_key: draft.message_key,
+    include: draft.include,
+    subject: draft.subject,
+    body: draft.body,
+  };
+}
 type BatchAction = "approve" | "create-drafts" | "send-smtp" | "cancel" | "mark-communicated";
 
 export default function CommunicationsPage() {
@@ -108,7 +117,12 @@ export default function CommunicationsPage() {
         && preview.snapshot_fingerprint === row.snapshot_fingerprint
         && preview.add_generator_cc === row.add_generator_cc
         && preview.generator_identity_fingerprint === row.generator_identity_fingerprint
-        ? new Map(drafts.map(({ source: _source, ...review }) => [review.message_key, review]))
+        ? new Map(
+            drafts.map((draft) => {
+              const review = projectCommunicationReview(draft);
+              return [review.message_key, review] as const;
+            }),
+          )
         : new Map<string, ProjectCommunicationReview>();
       setPreview(row);
       setDrafts(
@@ -173,7 +187,7 @@ export default function CommunicationsPage() {
       await prepareProjectCommunicationBatch(
         preview.week_start,
         preview.snapshot_fingerprint,
-        drafts.map(({ source: _source, ...review }) => review),
+        drafts.map(projectCommunicationReview),
         preview.add_generator_cc,
         preview.generator_identity_fingerprint,
       );
