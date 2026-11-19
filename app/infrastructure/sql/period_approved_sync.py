@@ -1356,6 +1356,15 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
             request,
             current=current,
         )
+        _, protected_obsolete = self._plan_preparer.match_current(
+            request,
+            current,
+            prepared.specs,
+        )
+        _assert_no_protected_terminalization(
+            self._session,
+            protected_obsolete,
+        )
         self._plan_preparer.assert_locked_compatible(
             request,
             current,
@@ -1784,6 +1793,15 @@ class SqlPeriodAwareApprovedDemandSyncAdapter(ApprovedDemandSyncPort):
         prepared = self._plan_preparer.prepare(
             request,
             current=current_before,
+        )
+        _, protected_obsolete = self._plan_preparer.match_current(
+            request,
+            current_before,
+            prepared.specs,
+        )
+        _assert_no_protected_terminalization(
+            self._session,
+            protected_obsolete,
         )
         self._plan_preparer.assert_locked_compatible(
             request,
