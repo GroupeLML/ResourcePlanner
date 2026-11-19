@@ -705,7 +705,7 @@ class SqlAssetPlanningQuery:
             ).all()
         ) if visible_requirement_ids else ()
 
-        all_allocation_rows = tuple(
+        candidate_allocation_rows = tuple(
             self._session.execute(
                 select(
                     AssetAllocation,
@@ -727,6 +727,17 @@ class SqlAssetPlanningQuery:
                 .order_by(AssetAllocation.asset_id, AssetAllocation.start_date, AssetAllocation.id)
             ).all()
         )
+        candidate_allocations = tuple(row[0] for row in candidate_allocation_rows)
+        all_allocation_rows = tuple(
+            row
+            for row in candidate_allocation_rows
+            if _overlaps(
+                row[0].start_date,
+                row[0].end_date,
+                start,
+                end,
+            )
+        )
         all_allocations = tuple(row[0] for row in all_allocation_rows)
         continuous_unit_occupancy_hidden_asset_ids = {
             row[0].asset_id
@@ -735,7 +746,7 @@ class SqlAssetPlanningQuery:
             and row[2] == ResourcePeriodMode.CONTINUOUS.value
             and row[3] != "Annulé"
         }
-        unavailability_rows = tuple(
+        candidate_unavailability_rows = tuple(
             self._session.scalars(
                 select(AssetUnavailability)
                 .where(
@@ -746,6 +757,17 @@ class SqlAssetPlanningQuery:
             ).all()
         )
 
+        unavailability_rows = tuple(
+            row
+            for row in candidate_unavailability_rows
+            if _overlaps(
+                row.start_date,
+                row.end_date,
+                start,
+                end,
+            )
+        )
+
         visible_requirements_by_id = {
             row.id: row for row in visible_requirements
         }
@@ -753,16 +775,16 @@ class SqlAssetPlanningQuery:
             row.asset_requirement_id: row for row in visible_allocations
         }
         all_allocation_by_requirement = {
-            row.asset_requirement_id: row for row in all_allocations
+            row.asset_requirement_id: row for row in candidate_allocations
         }
         allocations_by_asset_lists: dict[str, list[AssetAllocation]] = {}
-        for row in all_allocations:
+        for row in candidate_allocations:
             allocations_by_asset_lists.setdefault(row.asset_id, []).append(row)
         allocations_by_asset = {
             key: tuple(values) for key, values in allocations_by_asset_lists.items()
         }
         unavailability_by_asset_lists: dict[str, list[AssetUnavailability]] = {}
-        for row in unavailability_rows:
+        for row in candidate_unavailability_rows:
             unavailability_by_asset_lists.setdefault(row.asset_id, []).append(row)
         candidate_unavailability_by_asset = {
             key: tuple(values)
