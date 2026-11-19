@@ -153,26 +153,34 @@ test("858 — besoins approuvés filtrent les unités occupées sans fuite CONTI
 
     const panel = page.getByTestId("approved-asset-requirements");
     await expect(panel).toBeVisible();
+    const master = panel.getByTestId("approved-asset-master-list");
+    const detail = panel.getByTestId("approved-asset-detail");
 
-    const requestCard = panel.locator('.asset-requirement-card[data-requirement-id="REQ-858"]');
+    await master.locator('[data-requirement-id="REQ-858"]').click();
+    let requestCard = detail.locator('.asset-requirement-card[data-requirement-id="REQ-858"]');
     await expect(requestCard).toContainText("DMO-2026-0858");
     await expect(requestCard).toContainText("8580");
-    const requestSelect = requestCard.getByRole("combobox", { name: /Unité pour Véhicule 858/ });
+    let requestSelect = requestCard.getByRole("combobox", { name: /Unité pour Véhicule 858/ });
     await expect(requestSelect.locator('option[value="FREE-858"]')).toHaveCount(1);
     await expect(requestSelect.locator('option[value="BLOCKED-858"]')).toHaveCount(0);
     await expect(requestCard).not.toContainText("PRIVATE");
     await expect(requestCard).not.toContainText("CONTINUOUS");
 
-    const currentCard = panel.locator('.asset-requirement-card[data-requirement-id="REQ-CURRENT-858"]');
+    await master.locator('[data-requirement-id="REQ-CURRENT-858"]').click();
+    const currentCard = detail.locator('.asset-requirement-card[data-requirement-id="REQ-CURRENT-858"]');
     const currentSelect = currentCard.getByRole("combobox", { name: /Unité pour Véhicule 858/ });
     await expect(currentSelect.locator('option[value="CURRENT-858"]')).toHaveCount(1);
     await expect(currentSelect).toHaveValue("CURRENT-858");
 
-    const zeroCard = panel.locator('.asset-requirement-card[data-requirement-id="REQ-ZERO-858"]');
+    await master.locator('[data-requirement-id="REQ-ZERO-858"]').click();
+    const zeroCard = detail.locator('.asset-requirement-card[data-requirement-id="REQ-ZERO-858"]');
     await expect(zeroCard).toBeVisible();
     await expect(zeroCard).toContainText("À réserver");
     await expect(zeroCard).toContainText("Aucune unité disponible pour cette période.");
 
+    await master.locator('[data-requirement-id="REQ-858"]').click();
+    requestCard = detail.locator('.asset-requirement-card[data-requirement-id="REQ-858"]');
+    requestSelect = requestCard.getByRole("combobox", { name: /Unité pour Véhicule 858/ });
     await requestSelect.selectOption("FREE-858");
     // Native date inputs are not role=textbox in every browser; use the stable aria-label instead.
     const dateEnd = requestCard.locator('input[aria-label^="Date fin réelle"]');

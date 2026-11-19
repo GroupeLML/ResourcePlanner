@@ -47,6 +47,14 @@ function diagnosticTone(code: string) {
   return "danger";
 }
 
+function normalizeSearchText(value: string | null | undefined) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("fr-CA")
+    .trim();
+}
+
 const QUALIFICATION_LABELS: Record<string, string> = {
   SATISFIED: "Qualification satisfaite",
   MISSING_OPERATOR: "Qualification manquante",
@@ -54,7 +62,7 @@ const QUALIFICATION_LABELS: Record<string, string> = {
   NO_OVERLAP: "Aucun chevauchement",
 };
 
-function AssetRequirementCard({
+function AssetRequirementDetail({
   requirement,
   snapshot,
   canManage,
@@ -469,22 +477,68 @@ export default function AssetPlanningPanel({
   const [unavailableEnd, setUnavailableEnd] = useState(snapshot.end);
   const [unavailableReason, setUnavailableReason] = useState("");
   const [approvedRequirementsExpanded, setApprovedRequirementsExpanded] = useState(true);
-  const [unreservedExpanded, setUnreservedExpanded] = useState(true);
-  const [reservedExpanded, setReservedExpanded] = useState(true);
+  const [approvedSearch, setApprovedSearch] = useState("");
+  const [approvedStatusFilter, setApprovedStatusFilter] = useState<"unreserved" | "reserved" | null>(null);
+  const [selectedRequirementId, setSelectedRequirementId] = useState<string | null>(null);
   const retryKeys = useRef(new Map<string, string>());
 
   const assetsById = useMemo(
     () => new Map(snapshot.assets.map((row) => [row.id, row])),
     [snapshot.assets],
   );
-  const unreservedRequirements = useMemo(
-    () => snapshot.asset_requirements.filter((row) => !row.asset_id),
-    [snapshot.asset_requirements],
+  const projectNameByNumber = useMemo(() => {
+    const names = new Map<string, string>();
+    snapshot.demands.forEach((demand) => {
+      if (demand.project_number && demand.project_name && !names.has(demand.project_number)) {
+        names.set(demand.project_number, demand.project_name);
+      }
+    });
+    return names;
+  }, [snapshot.demands]);
+  const searchedRequirements = useMemo(() => {
+    const query = normalizeSearchText(approvedSearch);
+    if (!query) return snapshot.asset_requirements;
+    return snapshot.asset_requirements.filter((requirement) => {
+      const projectName = requirement.project_number
+        ? projectNameByNumber.get(requirement.project_number)
+        : null;
+      return [
+        requirement.project_number,
+        projectName,
+        requirement.demand_number,
+        requirement.asset_type_code,
+        requirement.asset_type_label,
+      ].some((value) => normalizeSearchText(value).includes(query));
+    });
+  }, [snapshot.asset_requirements, approvedSearch, projectNameByNumber]);
+  const searchedUnreservedCount = useMemo(
+    () => searchedRequirements.filter((row) => !row.asset_id).length,
+    [searchedRequirements],
   );
-  const reservedRequirements = useMemo(
-    () => snapshot.asset_requirements.filter((row) => Boolean(row.asset_id)),
-    [snapshot.asset_requirements],
+  const searchedReservedCount = searchedRequirements.length - searchedUnreservedCount;
+  const visibleApprovedRequirements = useMemo(
+    () => searchedRequirements.filter((row) => (
+      approvedStatusFilter === "unreserved"
+        ? !row.asset_id
+        : approvedStatusFilter === "reserved"
+          ? Boolean(row.asset_id)
+          : true
+    )),
+    [searchedRequirements, approvedStatusFilter],
   );
+  const selectedRequirement = useMemo(
+    () => visibleApprovedRequirements.find((row) => row.requirement_id === selectedRequirementId) ?? null,
+    [visibleApprovedRequirements, selectedRequirementId],
+  );
+
+  useEffect(() => {
+    if (
+      selectedRequirementId
+      && !visibleApprovedRequirements.some((row) => row.requirement_id === selectedRequirementId)
+    ) {
+      setSelectedRequirementId(null);
+    }
+  }, [selectedRequirementId, visibleApprovedRequirements]);
 
   async function reserve(
     requirement: AssetRequirementPlanningReadModel,
@@ -753,7 +807,9 @@ export default function AssetPlanningPanel({
   }
 
   const activeAssets = snapshot.assets.filter((asset) => asset.active);
-  const unassigned = unreservedRequirements.length;
+  const unassigned = snapshot.asset_requirements.filter(
+    (requirement) => !requirement.asset_id,
+  ).length;
 
   return (
     <section className="asset-planning-panel" aria-label="Planning des actifs">
@@ -820,91 +876,108 @@ export default function AssetPlanningPanel({
           </div>
           {approvedRequirementsExpanded && (
             <div
-              className="asset-requirement-groups"
+              className="asset-approved-workspace"
               id="approved-asset-requirements-content"
               data-testid="approved-asset-requirements-content"
             >
-              <section className="asset-requirement-group" data-testid="unreserved-asset-requirements">
-                <div className="asset-requirement-group-heading">
-                  <strong>À réserver ({unreservedRequirements.length})</strong>
+              <div className="asset-approved-toolbar">
+                <label className="asset-approved-search">
+                  <span>Filtrer les besoins approuvés</span>
+                  <input
+                    type="search"
+                    aria-label="Filtrer les besoins approuvés"
+                    value={approvedSearch}
+                    onChange={(event) => setApprovedSearch(event.target.value)}
+                    placeholder="Projet, DMO, code ou type d’actif…"
+                  />
+                </label>
+                <div className="asset-approved-filters" aria-label="Filtrer les besoins approuvés">
                   <button
                     type="button"
-                    className="text-button"
-                    data-testid="unreserved-asset-requirements-toggle"
-                    aria-expanded={unreservedExpanded}
-                    aria-controls="unreserved-asset-requirements-content"
-                    onClick={() => setUnreservedExpanded((value) => !value)}
+                    className={approvedStatusFilter === "unreserved" ? "secondary-button is-active" : "secondary-button"}
+                    aria-pressed={approvedStatusFilter === "unreserved"}
+                    onClick={() => setApprovedStatusFilter((value) => value === "unreserved" ? null : "unreserved")}
                   >
-                    {unreservedExpanded ? "Réduire" : "Développer"}
+                    À réserver ({searchedUnreservedCount})
+                  </button>
+                  <button
+                    type="button"
+                    className={approvedStatusFilter === "reserved" ? "secondary-button is-active" : "secondary-button"}
+                    aria-pressed={approvedStatusFilter === "reserved"}
+                    onClick={() => setApprovedStatusFilter((value) => value === "reserved" ? null : "reserved")}
+                  >
+                    Réservé ({searchedReservedCount})
                   </button>
                 </div>
-                {unreservedExpanded && (
-                  <div
-                    className="asset-requirement-list"
-                    id="unreserved-asset-requirements-content"
-                    data-testid="unreserved-asset-requirements-content"
-                  >
-                    {unreservedRequirements.length === 0 ? (
-                      <div className="asset-empty">Aucun besoin à réserver dans cette fenêtre.</div>
-                    ) : unreservedRequirements.map((requirement) => (
-                    <AssetRequirementCard
-                      key={requirement.requirement_id}
-                      requirement={requirement}
-                      snapshot={snapshot}
-                      canManage={canManage}
-                      busy={
-                        busy === `reserve:${requirement.requirement_id}`
-                        || busy === `operator:${requirement.requirement_id}`
-                      }
-                      onReserve={(row, assetId, startDate, endDate) => void reserve(row, assetId, startDate, endDate)}
-                      onOperator={(row, resourceId) => void assignOperator(row, resourceId)}
-                      onOpenDemand={onOpenDemand}
-                    />
-                  ))}
-                  </div>
-                )}
-              </section>
+              </div>
 
-              <section className="asset-requirement-group" data-testid="reserved-asset-requirements">
-                <div className="asset-requirement-group-heading">
-                  <strong>Réservé ({reservedRequirements.length})</strong>
-                  <button
-                    type="button"
-                    className="text-button"
-                    data-testid="reserved-asset-requirements-toggle"
-                    aria-expanded={reservedExpanded}
-                    aria-controls="reserved-asset-requirements-content"
-                    onClick={() => setReservedExpanded((value) => !value)}
-                  >
-                    {reservedExpanded ? "Réduire" : "Développer"}
-                  </button>
+              <div className="asset-approved-master-detail">
+                <div
+                  className="asset-approved-master"
+                  role="listbox"
+                  aria-label="Besoins d’actifs approuvés"
+                  data-testid="approved-asset-master-list"
+                >
+                  {snapshot.asset_requirements.length === 0 ? (
+                    <div className="asset-empty">Aucun besoin approuvé dans cette fenêtre.</div>
+                  ) : visibleApprovedRequirements.length === 0 ? (
+                    <div className="asset-empty">Aucun besoin ne correspond à la recherche ou au filtre.</div>
+                  ) : visibleApprovedRequirements.map((requirement) => {
+                    const selected = requirement.requirement_id === selectedRequirementId;
+                    return (
+                      <button
+                        type="button"
+                        role="option"
+                        className={selected ? "asset-approved-master-item is-selected" : "asset-approved-master-item"}
+                        data-requirement-id={requirement.requirement_id}
+                        aria-selected={selected}
+                        onClick={() => setSelectedRequirementId(requirement.requirement_id)}
+                        key={requirement.requirement_id}
+                      >
+                        <span className="asset-approved-master-project">
+                          <strong>{requirement.project_number || "Sans projet"}</strong>
+                          <span className={requirement.asset_id ? "asset-status is-assigned" : "asset-status"}>
+                            {requirement.asset_id ? "Réservé" : "À réserver"}
+                          </span>
+                        </span>
+                        {requirement.demand_number && (
+                          <span className="asset-approved-master-demand">{requirement.demand_number}</span>
+                        )}
+                        <span className="asset-approved-master-type">
+                          {requirement.asset_type_code} — {requirement.asset_type_label}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-                {reservedExpanded && (
-                  <div
-                    className="asset-requirement-list"
-                    id="reserved-asset-requirements-content"
-                    data-testid="reserved-asset-requirements-content"
-                  >
-                    {reservedRequirements.length === 0 ? (
-                      <div className="asset-empty">Aucun besoin réservé dans cette fenêtre.</div>
-                    ) : reservedRequirements.map((requirement) => (
-                    <AssetRequirementCard
-                      key={requirement.requirement_id}
-                      requirement={requirement}
+
+                <div
+                  className="asset-approved-detail"
+                  role="region"
+                  aria-label="Détail du besoin d’actif sélectionné"
+                  data-testid="approved-asset-detail"
+                >
+                  {selectedRequirement ? (
+                    <AssetRequirementDetail
+                      key={selectedRequirement.requirement_id}
+                      requirement={selectedRequirement}
                       snapshot={snapshot}
                       canManage={canManage}
                       busy={
-                        busy === `reserve:${requirement.requirement_id}`
-                        || busy === `operator:${requirement.requirement_id}`
+                        busy === `reserve:${selectedRequirement.requirement_id}`
+                        || busy === `operator:${selectedRequirement.requirement_id}`
                       }
                       onReserve={(row, assetId, startDate, endDate) => void reserve(row, assetId, startDate, endDate)}
                       onOperator={(row, resourceId) => void assignOperator(row, resourceId)}
                       onOpenDemand={onOpenDemand}
                     />
-                  ))}
-                  </div>
-                )}
-              </section>
+                  ) : (
+                    <div className="asset-approved-detail-empty">
+                      Aucun besoin d'actif sélectionné
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </div>
