@@ -1826,6 +1826,77 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             project_projection_fingerprint(restored),
             project_projection_fingerprint(different),
         )
+        opted_out_with_stored_phone = current(
+            False,
+            synthetic_phone("0770"),
+            False,
+            synthetic_phone("0771"),
+        )
+        opted_out_body = build_project_confirmation_batch(
+            opted_out_with_stored_phone
+        ).drafts[0].body
+        self.assertNotIn(synthetic_phone("0770"), opted_out_body)
+        self.assertNotIn(synthetic_phone("0771"), opted_out_body)
+        self.assertEqual(
+            deserialize_project_projection(
+                serialize_project_projection(opted_out_with_stored_phone)
+            ),
+            opted_out_with_stored_phone,
+        )
+
+        malformed_nonboolean = json.loads(encoded)
+        malformed_nonboolean["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]["include_project_manager_contact_phone"] = "false"
+        with self.assertRaisesRegex(ValueError, "non booléenne"):
+            deserialize_project_projection(
+                json.dumps(malformed_nonboolean, ensure_ascii=False)
+            )
+
+        malformed_legacy_erp = json.loads(
+            serialize_project_projection(opted_out_with_stored_phone)
+        )
+        malformed_legacy_erp["projects"][0][
+            "project_manager_erp_phone"
+        ] = synthetic_phone("0831")
+        with self.assertRaisesRegex(ValueError, "téléphone ERP"):
+            deserialize_project_projection(
+                json.dumps(malformed_legacy_erp, ensure_ascii=False)
+            )
+
+        directly_malformed = replace(
+            different,
+            projects=(
+                replace(
+                    different.projects[0],
+                    days=(
+                        replace(
+                            different.projects[0].days[0],
+                            tasks=(
+                                replace(
+                                    different.projects[0].days[0].tasks[0],
+                                    request_assignments=(
+                                        replace(
+                                            different.projects[0]
+                                            .days[0]
+                                            .tasks[0]
+                                            .request_assignments[0],
+                                            include_project_manager_contact_phone="false",
+                                        ),
+                                        different.projects[0]
+                                        .days[0]
+                                        .tasks[0]
+                                        .request_assignments[1],
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "booléenne"):
+            serialize_project_projection(directly_malformed)
 
     def test_880_historical_v2_snapshot_keeps_831_phone_without_v3_enrichment(self) -> None:
         base = projection(project())
@@ -1859,6 +1930,7 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             f"Responsable projet\nChargé Démo\n{synthetic_phone('0831')}",
             build_project_confirmation_batch(restored).drafts[0].body,
         )
+        self.assertEqual(serialize_project_projection(restored), payload)
 
     def test_830_contact_add_change_clear_and_legacy_delta(self) -> None:
         base = projection(project())
