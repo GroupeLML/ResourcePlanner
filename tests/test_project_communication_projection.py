@@ -180,7 +180,7 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
             standard_hours=8.0,
             assets=(),
             include_project_manager_contact_phone=True,
-            project_manager_contact_phone="514-555-0880",
+            project_manager_contact_phone=synthetic_phone("0880"),
         )
         result = build_project_communication_projection(
             week_start=WEEK,
@@ -193,7 +193,7 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
         self.assertTrue(assignment.include_project_manager_contact_phone)
         self.assertEqual(
             assignment.project_manager_contact_phone,
-            "514-555-0880",
+            synthetic_phone("0880"),
         )
 
         with self.assertRaisesRegex(ValueError, "Heures standard"):
@@ -243,7 +243,7 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
             standard_hours=8.0,
             assets=(),
             include_project_manager_contact_phone=True,
-            project_manager_contact_phone="514-555-0880",
+            project_manager_contact_phone=synthetic_phone("0880"),
         )
         for version in (1, 2):
             with self.subTest(version=version):
