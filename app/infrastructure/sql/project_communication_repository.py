@@ -103,6 +103,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         *,
         manager: EffectiveProjectManager | None,
         contacts: dict[str, BusinessContact],
+        users_by_contact: dict[str, AppUser],
     ) -> ProjectCommunicationParticipant:
         diagnostics: list[str] = []
         if manager is None:
@@ -120,6 +121,16 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         diagnostics.extend(manager.diagnostics)
         contact_id = _text(manager.business_contact_id) or None
         contact = contacts.get(contact_id) if contact_id else None
+
+        linked_user = users_by_contact.get(contact_id) if contact_id else None
+        manager_display_name = manager.display_name
+        if (
+            linked_user is not None
+            and manager.app_user_id is not None
+            and linked_user.id == manager.app_user_id
+            and _text(linked_user.display_name)
+        ):
+            manager_display_name = _text(linked_user.display_name)
 
         if contact_id is None:
             diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_CONTACT_MISSING)
@@ -139,7 +150,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         return ProjectCommunicationParticipant(
             contact_id=contact_id,
             user_id=manager.app_user_id,
-            display_name=manager.display_name,
+            display_name=manager_display_name,
             email=email or None,
             phone=(_text(contact.phone) or None) if contact is not None else None,
             active=bool(
@@ -603,11 +614,13 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             manager = self._project_manager(
                 manager=project_managers.get(project.id),
                 contacts=contacts_by_id,
+                users_by_contact=users_by_contact,
             )
             co_managers = tuple(
                 self._project_manager(
                     manager=co_manager,
                     contacts=contacts_by_id,
+                    users_by_contact=users_by_contact,
                 )
                 for co_manager in project_co_managers.get(project.id, ())
             )
