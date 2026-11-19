@@ -1150,8 +1150,13 @@ def _project_semantic_message(
         )
     )
     manager_phone_lines = _manager_phone_lines(project)
-    for manager_phone_line in manager_phone_lines:
-        lines.append(_line("text", manager_phone_line))
+    if manager_phone_lines:
+        for manager_phone_line in manager_phone_lines:
+            lines.append(_line("text", manager_phone_line))
+    elif project.project_manager_erp_phone:
+        # Historical v2 snapshots may still contain the #831 ERP phone fact.
+        # Current live v3 projection never populates this field.
+        lines.append(_line("text", project.project_manager_erp_phone))
 
     resolved_responsibles = _distinct_resolved_responsibles(project)
     if len(resolved_responsibles) == 1:
