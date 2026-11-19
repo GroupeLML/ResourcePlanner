@@ -40,6 +40,18 @@ def test_859_search_uses_only_existing_snapshot_fields_and_is_accent_tolerant() 
     )[0]
 
 
+def test_859_global_unassigned_metric_uses_unfiltered_snapshot_population() -> None:
+    panel = PANEL.read_text(encoding="utf-8")
+
+    assert "const unassigned = snapshot.asset_requirements.filter(" in panel
+    assert "(requirement) => !requirement.asset_id" in panel
+    metric_block = panel.split("const unassigned =", 1)[1].split("return (", 1)[0]
+    assert "searchedRequirements" not in metric_block
+    assert "visibleApprovedRequirements" not in metric_block
+    assert "approvedStatusFilter" not in metric_block
+    assert "selectedRequirementId" not in metric_block
+
+
 def test_859_status_is_still_only_asset_id_and_counts_precede_status_filter() -> None:
     panel = PANEL.read_text(encoding="utf-8")
 
