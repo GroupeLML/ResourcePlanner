@@ -767,10 +767,22 @@ export default function DemandsPage({
         description: form.description.trim(),
         site_contact_name: form.site_contact_name.trim() || null,
         site_contact_phone: form.site_contact_phone.trim() || null,
-        include_project_manager_contact_phone:
-          form.include_project_manager_contact_phone,
-        project_manager_contact_phone:
-          form.project_manager_contact_phone.trim() || null,
+        ...(
+          creating
+          || form.include_project_manager_contact_phone !== Boolean(
+            selectedDemand?.include_project_manager_contact_phone,
+          )
+          || form.project_manager_contact_phone.trim() !== (
+            selectedDemand?.project_manager_contact_phone ?? ""
+          ).trim()
+            ? {
+                include_project_manager_contact_phone:
+                  form.include_project_manager_contact_phone,
+                project_manager_contact_phone:
+                  form.project_manager_contact_phone.trim() || null,
+              }
+            : {}
+        ),
         lines: lines.map(demandLineWrite),
         ...(selectedDemand ? { expected_version: selectedDemand.version } : {}),
       };
@@ -831,10 +843,22 @@ export default function DemandsPage({
         desired_start: form.desired_start,
         desired_end: form.desired_end || null,
         description: form.description.trim(),
-        include_project_manager_contact_phone:
-          form.include_project_manager_contact_phone,
-        project_manager_contact_phone:
-          form.project_manager_contact_phone.trim() || null,
+        ...(
+          creating
+          || form.include_project_manager_contact_phone !== Boolean(
+            selectedDemand?.include_project_manager_contact_phone,
+          )
+          || form.project_manager_contact_phone.trim() !== (
+            selectedDemand?.project_manager_contact_phone ?? ""
+          ).trim()
+            ? {
+                include_project_manager_contact_phone:
+                  form.include_project_manager_contact_phone,
+                project_manager_contact_phone:
+                  form.project_manager_contact_phone.trim() || null,
+              }
+            : {}
+        ),
         ...((creating
           || form.site_contact_name.trim() !== (selectedDemand?.site_contact_name ?? "").trim()
           || form.site_contact_phone.trim() !== (selectedDemand?.site_contact_phone ?? "").trim())
@@ -888,6 +912,10 @@ export default function DemandsPage({
         const contactFieldsChanged = (
           form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "").trim()
           || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "").trim()
+          || form.include_project_manager_contact_phone
+            !== Boolean(selectedDemand.include_project_manager_contact_phone)
+          || form.project_manager_contact_phone.trim()
+            !== (selectedDemand.project_manager_contact_phone ?? "").trim()
         );
         const result = onlyContactEdited
           ? await updateDemandSiteContact(
