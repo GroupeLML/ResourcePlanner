@@ -264,6 +264,7 @@ class EmergencyOverrideHttpTests(unittest.TestCase):
                     demand.json()["emergency_override_by"],
                     "coord-urgence",
                 )
+                self.assertIsNone(demand.json()["planning_progress"])
 
                 history = client.get(f"/api/v1/demands/{number}/history")
                 self.assertEqual(history.status_code, 200, history.text)
@@ -358,6 +359,7 @@ class EmergencyOverrideHttpTests(unittest.TestCase):
                 regularized = client.get(f"/api/v1/demands/{number}").json()
                 self.assertEqual(regularized["status"], "En planification")
                 self.assertFalse(regularized["emergency_override_active"])
+                self.assertEqual(regularized["planning_progress"], "Planifié")
 
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
