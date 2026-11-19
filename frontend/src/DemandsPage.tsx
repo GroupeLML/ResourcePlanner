@@ -902,12 +902,19 @@ export default function DemandsPage({
         const previousForm = formFromDemand(selectedDemand);
         const onlyContactEdited = (
           Object.keys(form).every((key) => (
-            key === "site_contact_name" || key === "site_contact_phone"
+            key === "site_contact_name"
+            || key === "site_contact_phone"
+            || key === "include_project_manager_contact_phone"
+            || key === "project_manager_contact_phone"
             || JSON.stringify(form[key as keyof FormState]) === JSON.stringify(previousForm[key as keyof FormState])
           ))
         ) && (
           form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "")
           || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "")
+          || form.include_project_manager_contact_phone
+            !== Boolean(selectedDemand.include_project_manager_contact_phone)
+          || form.project_manager_contact_phone.trim()
+            !== (selectedDemand.project_manager_contact_phone ?? "").trim()
         ) && !contextDirty && lineMode === Boolean(selectedDemand.line_mode);
         const contactFieldsChanged = (
           form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "").trim()
@@ -923,6 +930,8 @@ export default function DemandsPage({
               selectedDemand.version,
               form.site_contact_name.trim() || null,
               form.site_contact_phone.trim() || null,
+              form.include_project_manager_contact_phone,
+              form.project_manager_contact_phone.trim() || null,
             )
           : await updateDemand(
           selectedDemand.number,
