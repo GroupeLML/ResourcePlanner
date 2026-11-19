@@ -287,7 +287,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
 
     const requestMaster = master.locator('[data-requirement-id="AREQ-REQUEST-575E"]');
     await requestMaster.click();
-    await expect(requestMaster).toHaveAttribute("aria-pressed", "true");
+    await expect(requestMaster).toHaveAttribute("aria-selected", "true");
 
     let requestCard = detail.locator(
       '.asset-requirement-card[data-requirement-id="AREQ-REQUEST-575E"]',
