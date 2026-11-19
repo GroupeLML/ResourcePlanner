@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,7 +24,11 @@ from app.infrastructure.sql import (
     CommandIdempotencyReceipt,
     PlanningMutationState,
     Project,
+    RequestApprovalRevision,
+    RequestCompletionReduction,
     RequestLine,
+    RequestRequirementPlanningIntent,
+    RequestShiftSurvivorProtection,
     Resource,
     ResourceRequirement,
     Shift,
@@ -581,6 +585,133 @@ class DemandCancellationRequestTests(unittest.TestCase):
                             }
                         ],
                     )
+            finally:
+                engine.dispose()
+
+    def test_accept_cancellation_retires_protected_survivor_before_shift_delete(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                requirement = session.get(ResourceRequirement, "REQ-HUMAN")
+                assert requirement is not None
+                requirement.status = "Annulé"
+                revision = RequestApprovalRevision(
+                    id="REV-CANCEL-PROTECTED",
+                    workforce_request_id="D-HUMAN",
+                    request_version=4,
+                    approved_at=datetime.now(timezone.utc),
+                    authorization_fingerprint="8" * 64,
+                    payload_text='{"request": {}, "authorization": {"entries": []}}',
+                )
+                session.add(revision)
+                session.flush()
+                intent = RequestRequirementPlanningIntent(
+                    id="INT-CANCEL-PROTECTED",
+                    workforce_request_id="D-HUMAN",
+                    slot_identity_key='["CANCEL-PROTECTED"]',
+                    approved_entry_key='["CANCEL-PROTECTED"]',
+                    approval_revision_id=revision.id,
+                    slot_index=0,
+                    current_resource_requirement_id=requirement.id,
+                    intent_mode="AUTO",
+                    target_mode="EXPLICIT_RESOURCE",
+                    target_resource_id="R1",
+                )
+                session.add(intent)
+                session.flush()
+                reduction = RequestCompletionReduction(
+                    id="RED-CANCEL-PROTECTED",
+                    planning_intent_id=intent.id,
+                    workforce_request_id="D-HUMAN",
+                    historical_approval_revision_id=revision.id,
+                    approved_entry_key=intent.approved_entry_key,
+                    original_shift_id="SHIFT-REMOVED-BEFORE-CANCELLATION",
+                    shift_snapshot_text="{}",
+                    reduction_hours=8,
+                    effective_need_before=16,
+                    effective_need_after=8,
+                    actor_user_id="U-ADMIN",
+                    command_id="CMD-CANCEL-PROTECTED",
+                    reconciliation_state="ACTIVE",
+                )
+                session.add(reduction)
+                session.flush()
+                session.add(
+                    RequestShiftSurvivorProtection(
+                        id="SP-CANCEL-PROTECTED",
+                        planning_intent_id=intent.id,
+                        shift_id="SHIFT-HUMAN",
+                        original_shift_id="SHIFT-HUMAN",
+                        originating_reduction_id=reduction.id,
+                        active=True,
+                    )
+                )
+            engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                requested = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/request-cancellation",
+                    json={"reason": "Incident #877", "expected_version": 4},
+                )
+                self.assertEqual(requested.status_code, 200, requested.text)
+                accepted = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/accept-cancellation",
+                    json={
+                        "cancellation_request_id": requested.json()[
+                            "cancellation_request_id"
+                        ],
+                        "comment": "Annulation protégée acceptée",
+                        "expected_version": 5,
+                        "expected_planning_version": 9,
+                    },
+                    headers={"Idempotency-Key": "accept-protected-877"},
+                )
+
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertEqual(accepted.json()["status"], "Annulée")
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    self.assertIsNotNone(protection)
+                    assert protection is not None
+                    self.assertFalse(protection.active)
+                    self.assertIsNone(protection.shift_id)
+                    self.assertIsNotNone(protection.retired_at)
+                    self.assertEqual(
+                        protection.retired_reason,
+                        "CANCELLATION_ACCEPTED",
+                    )
+                    self.assertEqual(
+                        protection.original_shift_id,
+                        "SHIFT-HUMAN",
+                    )
+                    self.assertEqual(
+                        protection.originating_reduction_id,
+                        "RED-CANCEL-PROTECTED",
+                    )
+                    self.assertEqual(
+                        protection.planning_intent_id,
+                        "INT-CANCEL-PROTECTED",
+                    )
+                    self.assertIsNone(session.get(Shift, "SHIFT-HUMAN"))
+                    requirement = session.get(ResourceRequirement, "REQ-HUMAN")
+                    request = session.get(WorkforceRequest, "D-HUMAN")
+                    assert requirement is not None
+                    assert request is not None
+                    self.assertEqual(requirement.status, "Annulé")
+                    self.assertEqual(request.status, "Annulée")
+                    self.assertEqual(request.cancellation_state, "ACCEPTED")
             finally:
                 engine.dispose()
 
