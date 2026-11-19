@@ -2496,10 +2496,9 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   const refreshedAssetPanel = coordinator.page.locator(".asset-planning-panel");
   let conflictCard = refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first();
   await expect(conflictCard).toBeVisible();
-  await conflictCard.getByRole("combobox").first().selectOption(lift63Id);
-  await conflictCard.getByRole("button", { name: "Enregistrer la réservation" }).click();
-  await expect(refreshedAssetPanel.locator(".asset-planning-feedback")).toContainText("Actif déjà réservé");
-  await expect(refreshedAssetPanel.locator(".asset-planning-feedback")).toContainText("asset_double_booking");
+  const conflictUnitSelect = conflictCard.getByRole("combobox").first();
+  await expect(conflictUnitSelect.locator(`option[value="${lift63Id}"]`)).toHaveCount(0);
+  await expect(conflictUnitSelect.locator(`option[value="${lift65Id}"]`)).toHaveCount(1);
 
   conflictCard = refreshedAssetPanel.locator(".asset-requirement-card").filter({ hasText: conflictNumber }).first();
   await conflictCard.getByRole("combobox").first().selectOption(lift65Id);

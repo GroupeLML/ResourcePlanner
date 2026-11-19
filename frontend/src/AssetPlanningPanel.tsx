@@ -12,6 +12,7 @@ import {
   AssetOperatorCandidate,
   addAssetUnavailability,
   getAssetOperatorCandidates,
+  getAssetRequirementReservationCandidates,
   releaseProjectDirectReservation,
   releaseResourcePeriodReservation,
   releaseSegmentReservation,
@@ -75,31 +76,49 @@ function AssetRequirementCard({
   onOperator: (requirement: AssetRequirementPlanningReadModel, resourceId: string | null) => void;
   onOpenDemand?: (demandNumber: string) => void;
 }) {
-  const compatible = snapshot.assets.filter((asset) => (
-    asset.asset_type_id === requirement.asset_type_id
-    && (asset.active || asset.id === requirement.asset_id)
-  ));
+  const isRequest = requirement.origin === "REQUEST";
+  const isProjectDirect = requirement.origin === "PROJECT_DIRECT";
+  const isResourcePeriod = requirement.origin === "RESOURCE_PERIOD";
+  const isContinuous = isResourcePeriod && requirement.resource_period_mode === "CONTINUOUS";
+  const isSegment = requirement.origin === "SEGMENT";
+  const baselineReservationStart = requirement.allocation_start_date ?? requirement.start_date;
+  const baselineReservationEnd = isRequest
+    ? requirement.allocation_end_date ?? requirement.start_date
+    : requirement.allocation_end_date ?? requirement.end_date ?? "";
   const [selected, setSelected] = useState(requirement.asset_id ?? "");
-  const [reservationStart, setReservationStart] = useState(
-    requirement.allocation_start_date ?? requirement.start_date,
-  );
-  const [reservationEnd, setReservationEnd] = useState(
-    requirement.origin === "REQUEST"
-      ? requirement.allocation_end_date ?? requirement.start_date
-      : requirement.allocation_end_date ?? requirement.end_date ?? "",
-  );
+  const [reservationStart, setReservationStart] = useState(baselineReservationStart);
+  const [reservationEnd, setReservationEnd] = useState(baselineReservationEnd);
+  const [eligibleAssetIds, setEligibleAssetIds] = useState(requirement.eligible_asset_ids);
+  const [eligibilityLoading, setEligibilityLoading] = useState(false);
+  const [eligibilityError, setEligibilityError] = useState("");
   const [operatorSelected, setOperatorSelected] = useState(requirement.operator_resource_id ?? "");
   const [operatorCandidates, setOperatorCandidates] = useState<AssetOperatorCandidate[]>([]);
   const [candidateError, setCandidateError] = useState("");
+  const eligibleAssetIdSet = useMemo(
+    () => new Set(eligibleAssetIds),
+    [eligibleAssetIds],
+  );
+  const compatible = snapshot.assets.filter((asset) => (
+    asset.asset_type_id === requirement.asset_type_id
+    && (
+      isRequest
+        ? eligibleAssetIdSet.has(asset.id) || asset.id === requirement.asset_id
+        : asset.active || asset.id === requirement.asset_id
+    )
+  ));
+  const freshCandidateCount = snapshot.assets.filter((asset) => (
+    asset.active
+    && asset.asset_type_id === requirement.asset_type_id
+    && (!isRequest || eligibleAssetIdSet.has(asset.id))
+  )).length;
 
   useEffect(() => {
     setSelected(requirement.asset_id ?? "");
-    setReservationStart(requirement.allocation_start_date ?? requirement.start_date);
-    setReservationEnd(
-      requirement.origin === "REQUEST"
-        ? requirement.allocation_end_date ?? requirement.start_date
-        : requirement.allocation_end_date ?? requirement.end_date ?? "",
-    );
+    setReservationStart(baselineReservationStart);
+    setReservationEnd(baselineReservationEnd);
+    setEligibleAssetIds(requirement.eligible_asset_ids);
+    setEligibilityLoading(false);
+    setEligibilityError("");
   }, [
     requirement.requirement_id,
     requirement.asset_id,
@@ -108,6 +127,81 @@ function AssetRequirementCard({
     requirement.start_date,
     requirement.end_date,
     requirement.origin,
+    requirement.eligible_asset_ids,
+    baselineReservationStart,
+    baselineReservationEnd,
+  ]);
+
+  useEffect(() => {
+    if (!isRequest) return undefined;
+    if (
+      reservationStart === baselineReservationStart
+      && reservationEnd === baselineReservationEnd
+    ) {
+      setEligibleAssetIds(requirement.eligible_asset_ids);
+      setEligibilityLoading(false);
+      setEligibilityError("");
+      return undefined;
+    }
+    if (
+      !reservationStart
+      || !reservationEnd
+      || reservationStart > reservationEnd
+      || reservationStart < requirement.start_date
+      || (requirement.end_date != null && reservationEnd > requirement.end_date)
+    ) {
+      setEligibilityLoading(false);
+      setEligibilityError("Fenêtre de réservation invalide.");
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setEligibilityLoading(true);
+    setEligibilityError("");
+    void getAssetRequirementReservationCandidates(
+      requirement.requirement_id,
+      reservationStart,
+      reservationEnd,
+      controller.signal,
+    )
+      .then((payload) => {
+        setEligibleAssetIds(payload.eligible_asset_ids);
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) {
+          setEligibilityError(messageFromError(reason));
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setEligibilityLoading(false);
+      });
+    return () => controller.abort();
+  }, [
+    isRequest,
+    requirement.requirement_id,
+    requirement.start_date,
+    requirement.end_date,
+    requirement.eligible_asset_ids,
+    reservationStart,
+    reservationEnd,
+    baselineReservationStart,
+    baselineReservationEnd,
+  ]);
+
+  useEffect(() => {
+    if (
+      isRequest
+      && selected
+      && selected !== requirement.asset_id
+      && !eligibleAssetIdSet.has(selected)
+    ) {
+      setSelected("");
+    }
+  }, [
+    isRequest,
+    selected,
+    requirement.asset_id,
+    eligibleAssetIdSet,
   ]);
 
   useEffect(() => {
@@ -145,11 +239,11 @@ function AssetRequirementCard({
       )
     );
   const datesReady = !selected || Boolean(reservationStart && reservationEnd);
-  const isRequest = requirement.origin === "REQUEST";
-  const isProjectDirect = requirement.origin === "PROJECT_DIRECT";
-  const isResourcePeriod = requirement.origin === "RESOURCE_PERIOD";
-  const isContinuous = isResourcePeriod && requirement.resource_period_mode === "CONTINUOUS";
-  const isSegment = requirement.origin === "SEGMENT";
+  const selectedEligible = (
+    !isRequest
+    || !selected
+    || eligibleAssetIdSet.has(selected)
+  );
   const operatorEditable = isRequest || isProjectDirect || isSegment;
   const contextLabel = isProjectDirect
     ? `Projet ${requirement.project_number ?? requirement.project_id ?? "inconnu"}`
@@ -199,7 +293,11 @@ function AssetRequirementCard({
             disabled={!canManage || busy || isContinuous}
             aria-label={`Unité pour ${requirement.asset_type_label} ${requirement.demand_number}`}
           >
-            <option value="">Aucune réservation</option>
+            <option value="">
+              {isRequest && !requirement.asset_id && freshCandidateCount === 0
+                ? "Aucune unité disponible pour cette période."
+                : "Aucune réservation"}
+            </option>
             {compatible.map((asset) => (
               <option value={asset.id} key={asset.id}>
                 {asset.code} — {asset.label}{asset.active ? "" : " — inactive"}
@@ -207,6 +305,22 @@ function AssetRequirementCard({
             ))}
           </select>
         </label>
+        {isRequest && freshCandidateCount === 0 && (
+          <small className="asset-usage-budget">
+            Aucune unité disponible pour cette période.
+          </small>
+        )}
+        {isRequest && eligibilityLoading && (
+          <small className="asset-usage-budget">Actualisation des unités disponibles…</small>
+        )}
+        {isRequest && eligibilityError && (
+          <small role="alert">{eligibilityError}</small>
+        )}
+        {isRequest && selected && !selectedEligible && (
+          <small className="asset-usage-budget">
+            L’unité actuellement affichée n’est pas disponible pour cette nouvelle période.
+          </small>
+        )}
         {selected && (
           <>
             <label>
@@ -243,7 +357,14 @@ function AssetRequirementCard({
         <button
           type="button"
           className="secondary-button"
-          disabled={!canManage || busy || isContinuous || !reservationChanged || !datesReady}
+          disabled={
+            !canManage
+            || busy
+            || isContinuous
+            || !reservationChanged
+            || !datesReady
+            || (isRequest && (eligibilityLoading || Boolean(eligibilityError) || !selectedEligible))
+          }
           onClick={() => onReserve(
             requirement,
             selected || null,

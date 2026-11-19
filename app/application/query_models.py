@@ -565,6 +565,7 @@ class AssetRequirementReadModel:
     qualification_state: str = "SATISFIED"
     required_competency_ids: tuple[str, ...] = ()
     required_competency_names: tuple[str, ...] = ()
+    eligible_asset_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

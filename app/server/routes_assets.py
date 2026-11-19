@@ -7,7 +7,7 @@ from datetime import date
 import json
 from typing import Callable
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,6 +36,7 @@ from ..infrastructure.sql.asset_qualification import (
     required_competencies,
 )
 from ..infrastructure.sql.asset_service import SqlAssetService
+from ..infrastructure.sql.asset_query import SqlAssetPlanningQuery
 from ..infrastructure.sql.identity_models import AppUser
 from ..infrastructure.sql.planning_version import SqlPlanningMutationVersionRepository
 from ..infrastructure.sql.models import Resource
@@ -902,6 +903,42 @@ def build_asset_router(session_dependency: Callable[[], Iterator[Session]]) -> A
             expected_version=body.expected_planning_version,
             idempotency_key=idempotency_key,
         )
+
+    @router.get("/requirements/{identifier}/reservation-candidates")
+    def reservation_candidates(
+        identifier: str,
+        start_date: date,
+        end_date: date,
+        session: Session = Depends(session_dependency),
+    ) -> dict:
+        try:
+            eligible_asset_ids = SqlAssetPlanningQuery(
+                session
+            ).request_candidate_asset_ids(
+                requirement_id=identifier,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "asset_candidate_window_invalid",
+                    "message": "Fenêtre de réservation invalide pour ce besoin approuvé.",
+                },
+            ) from exc
+        if eligible_asset_ids is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "asset_requirement_not_found",
+                    "message": "Besoin d'actif approuvé introuvable.",
+                },
+            )
+        return {
+            "requirement_id": identifier,
+            "eligible_asset_ids": eligible_asset_ids,
+        }
 
     @router.get("/requirements/{identifier}/operator-candidates")
     def operator_candidates(

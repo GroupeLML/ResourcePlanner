@@ -137,6 +137,7 @@ test("575E relie navigation REQUEST et trois contextes de réservation directe",
         qualification_state: "SATISFIED",
         required_competency_ids: [],
         required_competency_names: [],
+        eligible_asset_ids: ["ASSET-575E"],
       };
       const reservedNeed = {
         ...requestNeed,
