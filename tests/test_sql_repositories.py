@@ -261,6 +261,85 @@ class SqlRepositoryTests(unittest.TestCase):
                 )
             self.assertEqual(repository.get(number).version, version + 1)
 
+    def test_880_request_manager_phone_defaults_validates_and_round_trips_without_reapproval(self) -> None:
+        planning = _Planning()
+        sync = _ApprovedSync()
+        with transactional_session(self.factory) as session:
+            repository = SqlDemandRepository(session, actor_name="Jean")
+            service = DemandService(repository, planning, sync, current_user="Jean")
+            number = service.create(
+                {
+                    "NumeroProjet": "P-1",
+                    "DateDebutSouhaitee": date(2026, 8, 26),
+                    "Description": "Installation",
+                    "NombreRessources": 1,
+                    "TempsEstimeHeures": 8,
+                },
+                submit=True,
+            )
+            created = repository.get(number)
+            assert created is not None
+            self.assertFalse(created.include_project_manager_contact_phone)
+            self.assertIsNone(created.project_manager_contact_phone)
+
+            service.approve(number, "OK")
+            approved = repository.get(number)
+            assert approved is not None
+            version = approved.version
+            planning_calls = planning.calls
+            sync_calls = tuple(sync.calls)
+
+            self.assertFalse(
+                service.modify_command(
+                    DemandUpdateCommand(
+                        number=number,
+                        expected_version=version,
+                        include_project_manager_contact_phone=True,
+                        project_manager_contact_phone="514-555-0880",
+                    )
+                )
+            )
+            enabled = repository.get(number)
+            assert enabled is not None
+            self.assertEqual(enabled.status, "En planification")
+            self.assertTrue(enabled.include_project_manager_contact_phone)
+            self.assertEqual(
+                enabled.project_manager_contact_phone,
+                "514-555-0880",
+            )
+            self.assertEqual(planning.calls, planning_calls)
+            self.assertEqual(tuple(sync.calls), sync_calls)
+
+            with self.assertRaisesRegex(
+                ApplicationValidationError,
+                "numéro de contact du responsable projet",
+            ):
+                service.modify_command(
+                    DemandUpdateCommand(
+                        number=number,
+                        expected_version=enabled.version,
+                        include_project_manager_contact_phone=True,
+                        project_manager_contact_phone=None,
+                    )
+                )
+
+            self.assertFalse(
+                service.modify_command(
+                    DemandUpdateCommand(
+                        number=number,
+                        expected_version=enabled.version,
+                        include_project_manager_contact_phone=False,
+                    )
+                )
+            )
+            disabled = repository.get(number)
+            assert disabled is not None
+            self.assertFalse(disabled.include_project_manager_contact_phone)
+            self.assertEqual(
+                disabled.project_manager_contact_phone,
+                "514-555-0880",
+            )
+
     def test_demand_line_projection_resolves_asset_business_labels_for_mixed_request(self) -> None:
         with transactional_session(self.factory) as session:
             session.add(
