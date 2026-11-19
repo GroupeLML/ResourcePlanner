@@ -1075,6 +1075,149 @@ class DemandCancellationRequestTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_accept_cancellation_mixed_protected_unprotected_and_asset_scope_is_atomic(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            self._install_human_survivor(database_url)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            with factory.begin() as session:
+                session.add(
+                    Shift(
+                        id="SHIFT-HUMAN-UNPROTECTED",
+                        resource_requirement_id="REQ-HUMAN",
+                        resource_id="R1",
+                        work_date=DAY,
+                        hours=2,
+                        source="MANUAL",
+                        locked=False,
+                    )
+                )
+                session.add_all(
+                    [
+                        Asset(id="A-MIX-REQ", code="MIX-REQ", label="Mix request", asset_type_id="AT1"),
+                        Asset(id="A-MIX-SEG", code="MIX-SEG", label="Mix segment", asset_type_id="AT1"),
+                        Asset(id="A-MIX-ADHOC", code="MIX-ADHOC", label="Mix ad hoc", asset_type_id="AT1"),
+                    ]
+                )
+                session.flush()
+                session.add_all(
+                    [
+                        AssetRequirement(
+                            id="AREQ-MIX-REQ",
+                            project_id="P1",
+                            workforce_request_id="D-HUMAN",
+                            origin="REQUEST",
+                            asset_type_id="AT1",
+                            start_date=DAY,
+                            end_date=DAY,
+                            status="Planifié",
+                        ),
+                        AssetRequirement(
+                            id="AREQ-MIX-SEG",
+                            project_id="P1",
+                            resource_requirement_id="REQ-HUMAN",
+                            origin="SEGMENT",
+                            asset_type_id="AT1",
+                            start_date=DAY,
+                            end_date=DAY,
+                            status="Planifié",
+                        ),
+                        AssetRequirement(
+                            id="AREQ-MIX-ADHOC",
+                            project_id="P1",
+                            shift_id="SHIFT-HUMAN",
+                            origin="SHIFT_AD_HOC",
+                            asset_type_id="AT1",
+                            start_date=DAY,
+                            end_date=DAY,
+                            status="Planifié",
+                        ),
+                    ]
+                )
+                session.flush()
+                session.add_all(
+                    [
+                        AssetAllocation(
+                            id="ALLOC-MIX-REQ",
+                            asset_requirement_id="AREQ-MIX-REQ",
+                            asset_id="A-MIX-REQ",
+                            start_date=DAY,
+                            end_date=DAY,
+                            source="MANUAL",
+                        ),
+                        AssetAllocation(
+                            id="ALLOC-MIX-SEG",
+                            asset_requirement_id="AREQ-MIX-SEG",
+                            asset_id="A-MIX-SEG",
+                            start_date=DAY,
+                            end_date=DAY,
+                            source="MANUAL",
+                        ),
+                        AssetAllocation(
+                            id="ALLOC-MIX-ADHOC",
+                            asset_requirement_id="AREQ-MIX-ADHOC",
+                            asset_id="A-MIX-ADHOC",
+                            start_date=DAY,
+                            end_date=DAY,
+                            source="MANUAL",
+                        ),
+                    ]
+                )
+            engine.dispose()
+
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app, raise_server_exceptions=False) as client:
+                requested = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/request-cancellation",
+                    json={"reason": "Mixed scope #877", "expected_version": 4},
+                )
+                self.assertEqual(requested.status_code, 200, requested.text)
+                accepted = client.post(
+                    "/api/v1/demands/DMO-CANCEL-HUMAN/accept-cancellation",
+                    json={
+                        "cancellation_request_id": requested.json()["cancellation_request_id"],
+                        "comment": "Mixed scope accepted",
+                        "expected_version": 5,
+                        "expected_planning_version": 9,
+                    },
+                    headers={"Idempotency-Key": "accept-mixed-877"},
+                )
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertEqual(accepted.json()["deleted_human_shifts"], 2)
+            self.assertEqual(accepted.json()["deleted_asset_allocations"], 3)
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    self.assertIsNone(session.get(Shift, "SHIFT-HUMAN"))
+                    self.assertIsNone(session.get(Shift, "SHIFT-HUMAN-UNPROTECTED"))
+                    protection = session.get(
+                        RequestShiftSurvivorProtection,
+                        "SP-CANCEL-PROTECTED",
+                    )
+                    assert protection is not None
+                    self.assertFalse(protection.active)
+                    self.assertIsNone(protection.shift_id)
+                    for allocation_id in (
+                        "ALLOC-MIX-REQ",
+                        "ALLOC-MIX-SEG",
+                        "ALLOC-MIX-ADHOC",
+                    ):
+                        self.assertIsNone(session.get(AssetAllocation, allocation_id))
+                    self.assertIsNone(session.get(AssetRequirement, "AREQ-MIX-SEG"))
+                    self.assertIsNone(session.get(AssetRequirement, "AREQ-MIX-ADHOC"))
+                    request_asset = session.get(AssetRequirement, "AREQ-MIX-REQ")
+                    assert request_asset is not None
+                    self.assertEqual(request_asset.status, "Annulé")
+                    self.assertIsNotNone(session.get(AssetAllocation, "ALLOC-ASSET"))
+            finally:
+                engine.dispose()
+
     def test_accept_cancellation_deletes_locked_asset_scope(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
