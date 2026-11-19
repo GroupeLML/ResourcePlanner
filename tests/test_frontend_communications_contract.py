@@ -60,6 +60,22 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertNotIn("Répertoire explicite", page)
         self.assertNotIn("contact-row", page)
 
+    def test_871_html_preview_is_server_generated_and_text_review_remains_authority(self) -> None:
+        page = PAGE.read_text(encoding="utf-8")
+        api = API.read_text(encoding="utf-8")
+
+        self.assertIn("renderProjectCommunicationReviewHtml", api)
+        self.assertIn("/api/v1/communications/project-preview-html", api)
+        self.assertIn('JSON.stringify({ body })', api)
+        self.assertIn("dangerouslySetInnerHTML", page)
+        self.assertIn('data-testid="project-html-preview"', page)
+        self.assertIn("Actualiser l’aperçu HTML", page)
+        self.assertIn("htmlPreviewStale", page)
+        self.assertIn("hasStaleHtmlPreview", page)
+        self.assertIn("renderProjectCommunicationReviewHtml(current.body)", page)
+        self.assertIn("value={draft.body}", page)
+        self.assertNotIn("body_html:", page)
+
     def test_api_targets_only_project_v2_controlled_routes(self) -> None:
         api = API.read_text(encoding="utf-8")
         self.assertIn("/api/v1/communications/project-preview", api)
