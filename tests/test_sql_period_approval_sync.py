@@ -300,6 +300,164 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
                 previous_revision_id,
             )
 
+    def test_modern_obsolete_protected_line_removal_refuses_and_rolls_back(self) -> None:
+        line_a_id = "L-877-OBSOLETE-A"
+        line_b_id = "L-877-OBSOLETE-B"
+
+        with self.factory.begin() as session:
+            request = session.get(WorkforceRequest, "D1")
+            assert request is not None
+            request.line_mode = True
+            session.add_all(
+                [
+                    RequestLine(
+                        id=line_a_id,
+                        workforce_request_id="D1",
+                        position=0,
+                        kind="WORKFORCE",
+                        slot_count=1,
+                        desired_start=D1,
+                        desired_end=D1,
+                        estimated_hours=Decimal("8.00"),
+                        confirmation="Confirmée",
+                        active=True,
+                    ),
+                    RequestLine(
+                        id=line_b_id,
+                        workforce_request_id="D1",
+                        position=1,
+                        kind="WORKFORCE",
+                        slot_count=1,
+                        desired_start=D2,
+                        desired_end=D2,
+                        estimated_hours=Decimal("8.00"),
+                        confirmation="Confirmée",
+                        active=True,
+                    ),
+                ]
+            )
+            session.flush()
+
+            SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved("DEM-1")
+            current = {
+                row.source_request_line_id: row
+                for row in self._active_requirements(session)
+            }
+            self.assertEqual(set(current), {line_a_id, line_b_id})
+            protected_requirement = current[line_a_id]
+            sibling_requirement = current[line_b_id]
+            protected_intent, protected_shift, protection = self._protect_requirement(
+                session,
+                protected_requirement,
+                reduction_state="ABSORBED",
+            )
+            sibling_intent = session.scalar(
+                select(RequestRequirementPlanningIntent).where(
+                    RequestRequirementPlanningIntent.current_resource_requirement_id
+                    == sibling_requirement.id
+                )
+            )
+            assert sibling_intent is not None
+            approval_reference = session.get(RequestApprovalReference, "D1")
+            assert approval_reference is not None
+            previous_revision_id = approval_reference.active_revision_id
+            protected_requirement_id = protected_requirement.id
+            protected_requirement_status = protected_requirement.status
+            protected_intent_id = protected_intent.id
+            protected_shift_id = protected_shift.id
+            protection_id = protection.id
+            sibling_requirement_id = sibling_requirement.id
+            sibling_requirement_status = sibling_requirement.status
+            sibling_intent_id = sibling_intent.id
+
+        with self.assertRaises(ApplicationConflictError) as raised:
+            with self.factory.begin() as session:
+                protected_line = session.get(RequestLine, line_a_id)
+                sibling_line = session.get(RequestLine, line_b_id)
+                assert protected_line is not None
+                assert sibling_line is not None
+                protected_line.active = False
+                self.assertTrue(sibling_line.active)
+                session.flush()
+                SqlPeriodAwareApprovedDemandSyncAdapter(session).sync_approved(
+                    "DEM-1"
+                )
+
+        self.assertEqual(raised.exception.code, "reduction_rebase_required")
+
+        with self.factory() as session:
+            approval_reference = session.get(RequestApprovalReference, "D1")
+            protected_line = session.get(RequestLine, line_a_id)
+            sibling_line = session.get(RequestLine, line_b_id)
+            protected_requirement = session.get(
+                ResourceRequirement,
+                protected_requirement_id,
+            )
+            sibling_requirement = session.get(
+                ResourceRequirement,
+                sibling_requirement_id,
+            )
+            protected_intent = session.get(
+                RequestRequirementPlanningIntent,
+                protected_intent_id,
+            )
+            sibling_intent = session.get(
+                RequestRequirementPlanningIntent,
+                sibling_intent_id,
+            )
+            protected_shift = session.get(Shift, protected_shift_id)
+            protection = session.get(
+                RequestShiftSurvivorProtection,
+                protection_id,
+            )
+
+            assert approval_reference is not None
+            assert protected_line is not None
+            assert sibling_line is not None
+            assert protected_requirement is not None
+            assert sibling_requirement is not None
+            assert protected_intent is not None
+            assert sibling_intent is not None
+            assert protected_shift is not None
+            assert protection is not None
+
+            self.assertEqual(
+                approval_reference.active_revision_id,
+                previous_revision_id,
+            )
+            self.assertTrue(protected_line.active)
+            self.assertTrue(sibling_line.active)
+            self.assertEqual(
+                protected_requirement.status,
+                protected_requirement_status,
+            )
+            self.assertNotEqual(protected_requirement.status, "Annulé")
+            self.assertEqual(
+                protected_shift.resource_requirement_id,
+                protected_requirement_id,
+            )
+            self.assertTrue(protection.active)
+            self.assertEqual(protection.shift_id, protected_shift_id)
+            self.assertEqual(
+                protected_intent.current_resource_requirement_id,
+                protected_requirement_id,
+            )
+            self.assertEqual(
+                sibling_requirement.status,
+                sibling_requirement_status,
+            )
+            self.assertEqual(
+                sibling_intent.current_resource_requirement_id,
+                sibling_requirement_id,
+            )
+            active_ids = {
+                row.id for row in self._active_requirements(session)
+            }
+            self.assertEqual(
+                active_ids,
+                {protected_requirement_id, sibling_requirement_id},
+            )
+
     def test_cumulative_period_and_selected_alternative_are_both_effective(self) -> None:
         with transactional_session(self.factory) as session:
             definitions = (
