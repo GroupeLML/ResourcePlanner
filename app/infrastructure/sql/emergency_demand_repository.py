@@ -25,6 +25,7 @@ class SqlEmergencyDemandRepository(SqlDemandRepository):
         competency_ids: tuple[str, ...] = (),
         lines: tuple[DemandLineReadModel, ...] = (),
         completion_facts: DemandCompletionFacts | None = None,
+        planning_progress: str | None = None,
     ) -> DemandReadModel:
         base = super()._read_model(
             request,
@@ -34,6 +35,7 @@ class SqlEmergencyDemandRepository(SqlDemandRepository):
             competency_ids,
             lines,
             completion_facts,
+            planning_progress,
         )
         return replace(
             base,
