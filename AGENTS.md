@@ -747,7 +747,7 @@ Do not mix unrelated cleanup into the same PR.
 
 ### Merge policy
 
-Under the default manual Product Owner workflow, the Product Owner evaluates the evidence and authorizes or declines merge, but the **human repository operator performs the actual GitHub merge manually**. After the operator reports that merge, the Product Owner verifies the merged state against GitHub evidence and completes the required issue/roadmap reconciliation from section 19. The DEV agent, DevCockpit and the supported browser extension have no implicit authority to initiate a merge in this default manual workflow.
+Under the default manual Product Owner workflow, the Product Owner evaluates the evidence and authorizes or declines merge, but the **human repository operator performs the actual GitHub merge manually**. When all required gates are satisfied and the Product Owner issues merge authorization for an exact PR head, the Product Owner must also transition that PR from **Draft** to **Ready for review** as part of the same authorization handoff. The human repository operator then performs the actual merge manually. If the PR head changes after authorization, the prior merge authorization is void and the Product Owner must re-evaluate the new exact head before marking or re-confirming it Ready for review. After the operator reports that merge, the Product Owner verifies the merged state against GitHub evidence and completes the required issue/roadmap reconciliation from section 19. The DEV agent, DevCockpit and the supported browser extension have no implicit authority to initiate a merge in this default manual workflow.
 
 Using DevCockpit or the supported browser extension does **not** by itself enable automated merging. Any automated merge capability requires a separate explicit authorization or an approved automation policy; it must not be inferred from green CI, completed review, PR readiness, or browser-assisted handoffs.
 
@@ -765,6 +765,8 @@ PR complete
 → if green and review is required: Product Owner obtains the review
 → Product Owner performs the Production Merge Risk Assessment from section 3C
 → Product Owner decides whether to merge
+→ if merge is authorized, Product Owner marks the exact authorized PR head Ready for review
+→ human repository operator performs the manual merge
 ```
 
 When DevCockpit/browser-extension orchestration is explicitly active and the WorkItem is eligible for automated merge under the configured policy, it may use the existing auto-merge flow:
