@@ -227,6 +227,34 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
                 ),
                 request_provenance_version=3,
             )
+        with self.assertRaisesRegex(ValueError, "booléenne"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(
+                    replace(
+                        valid,
+                        shift_id="S-NONBOOL",
+                        include_project_manager_contact_phone="false",
+                    ),
+                ),
+                request_provenance_version=3,
+            )
+        with self.assertRaisesRegex(ValueError, "Téléphone ERP"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(
+                    replace(
+                        valid,
+                        shift_id="S-ERP-PHONE",
+                        include_project_manager_contact_phone=False,
+                        project_manager_contact_phone=synthetic_phone("0888"),
+                        project_manager_erp_phone=synthetic_phone("0831"),
+                    ),
+                ),
+                request_provenance_version=3,
+            )
         with self.assertRaisesRegex(ValueError, "non prise en charge"):
             build_project_communication_projection(
                 week_start=WEEK,
