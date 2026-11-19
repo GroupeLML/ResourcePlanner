@@ -8,6 +8,37 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReactDemandsContractTests(unittest.TestCase):
+
+    def test_861_planning_progress_is_a_separate_non_terminal_axis(self) -> None:
+        source = (ROOT / "frontend" / "src" / "DemandsPage.tsx").read_text(
+            encoding="utf-8"
+        )
+        api = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'planning_progress?: "À planifier" | "En planification" | "Planifié" | null',
+            api,
+        )
+        self.assertIn('data-testid="demand-card-planning-progress"', source)
+        self.assertIn('data-testid="demand-header-planning-progress"', source)
+        self.assertIn("!demand.terminal && demand.planning_progress", source)
+        self.assertIn(
+            "!selectedDemand.terminal && selectedDemand.planning_progress",
+            source,
+        )
+        self.assertIn(
+            '<div className="demand-workflow-status-pill">{selectedDemand.status || "—"}</div>',
+            source,
+        )
+        self.assertIn(
+            'selectedDemand.status === "En planification"',
+            source,
+        )
+        self.assertNotIn(
+            "selectedDemand.planning_progress ===",
+            source,
+        )
+
     def test_shell_routes_demands_view_to_real_workspace(self) -> None:
         app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
         workspace = (ROOT / "frontend" / "src" / "DemandsWorkspace.tsx").read_text(
