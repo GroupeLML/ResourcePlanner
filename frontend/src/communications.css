@@ -415,3 +415,44 @@
 .smtp-send-button {
   background: #0b6b58 !important;
 }
+
+
+.draft-html-preview-panel {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border-color, #d7dce3);
+  border-radius: 0.55rem;
+  background: var(--surface-soft, #f8f9fb);
+}
+
+.draft-html-preview-heading {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.draft-html-preview-heading > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.draft-html-preview-heading small,
+.draft-html-preview-stale {
+  color: var(--text-muted, #5f6876);
+}
+
+.draft-html-preview {
+  overflow-wrap: anywhere;
+  padding: 0.85rem;
+  border: 1px solid var(--border-color, #d7dce3);
+  border-radius: 0.4rem;
+  background: var(--surface, #fff);
+}
+
+@media (max-width: 720px) {
+  .draft-html-preview-heading {
+    flex-direction: column;
+  }
+}
