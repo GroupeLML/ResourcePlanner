@@ -26,6 +26,7 @@ class ApprovedAssetCandidateEligibilityTests(unittest.TestCase):
             for asset_id, type_id in [
                 ("FREE", "TYPE-VEHICLE"), ("ACTIVE", "TYPE-VEHICLE"),
                 ("ENDED", "TYPE-VEHICLE"), ("FUTURE", "TYPE-VEHICLE"),
+                ("FUTURE-AFTER", "TYPE-VEHICLE"),
                 ("REVOKE", "TYPE-VEHICLE"), ("TRANSFER", "TYPE-VEHICLE"),
                 ("BOUNDED", "TYPE-VEHICLE"), ("PROJECT", "TYPE-VEHICLE"),
                 ("SEGMENT", "TYPE-VEHICLE"), ("CURRENT", "TYPE-VEHICLE"),
@@ -39,8 +40,9 @@ class ApprovedAssetCandidateEligibilityTests(unittest.TestCase):
                 self._request("REQ-CURRENT", "TYPE-VEHICLE"),
                 self._request("REQ-TOOL", "TYPE-TOOL"),
                 self._occupied_requirement("CONT-ACTIVE", AssetRequirementOrigin.RESOURCE_PERIOD, DAY - timedelta(days=10), None, mode=ResourcePeriodMode.CONTINUOUS.value, resource="PRIVATE-ACTIVE"),
-                self._occupied_requirement("CONT-ENDED", AssetRequirementOrigin.RESOURCE_PERIOD, DAY - timedelta(days=10), DAY - timedelta(days=1), mode=ResourcePeriodMode.CONTINUOUS.value, resource="PRIVATE-ENDED"),
+                self._occupied_requirement("CONT-ENDED", AssetRequirementOrigin.RESOURCE_PERIOD, DAY - timedelta(days=30), DAY - timedelta(days=21), mode=ResourcePeriodMode.CONTINUOUS.value, resource="PRIVATE-ENDED"),
                 self._occupied_requirement("CONT-FUTURE", AssetRequirementOrigin.RESOURCE_PERIOD, DAY + timedelta(days=5), None, mode=ResourcePeriodMode.CONTINUOUS.value, resource="PRIVATE-FUTURE"),
+                self._occupied_requirement("CONT-FUTURE-AFTER", AssetRequirementOrigin.RESOURCE_PERIOD, DAY + timedelta(days=21), None, mode=ResourcePeriodMode.CONTINUOUS.value, resource="PRIVATE-FUTURE-AFTER"),
                 self._occupied_requirement("CONT-REVOKE", AssetRequirementOrigin.RESOURCE_PERIOD, DAY - timedelta(days=10), DAY + timedelta(days=2), mode=ResourcePeriodMode.CONTINUOUS.value, resource="PRIVATE-REVOKE"),
                 self._occupied_requirement("CONT-TRANSFER-OLD", AssetRequirementOrigin.RESOURCE_PERIOD, DAY - timedelta(days=10), DAY + timedelta(days=4), mode=ResourcePeriodMode.CONTINUOUS.value, resource="PRIVATE-R1"),
                 self._occupied_requirement("CONT-TRANSFER-NEW", AssetRequirementOrigin.RESOURCE_PERIOD, DAY + timedelta(days=5), None, mode=ResourcePeriodMode.CONTINUOUS.value, resource="PRIVATE-R2"),
@@ -52,8 +54,9 @@ class ApprovedAssetCandidateEligibilityTests(unittest.TestCase):
 
             allocations = [
                 ("CONT-ACTIVE", "ACTIVE", DAY - timedelta(days=10), None, "PRIVATE-ACTIVE"),
-                ("CONT-ENDED", "ENDED", DAY - timedelta(days=10), DAY - timedelta(days=1), "PRIVATE-ENDED"),
+                ("CONT-ENDED", "ENDED", DAY - timedelta(days=30), DAY - timedelta(days=21), "PRIVATE-ENDED"),
                 ("CONT-FUTURE", "FUTURE", DAY + timedelta(days=5), None, "PRIVATE-FUTURE"),
+                ("CONT-FUTURE-AFTER", "FUTURE-AFTER", DAY + timedelta(days=21), None, "PRIVATE-FUTURE-AFTER"),
                 ("CONT-REVOKE", "REVOKE", DAY - timedelta(days=10), DAY + timedelta(days=2), "PRIVATE-REVOKE"),
                 ("CONT-TRANSFER-OLD", "TRANSFER", DAY - timedelta(days=10), DAY + timedelta(days=4), "PRIVATE-R1"),
                 ("CONT-TRANSFER-NEW", "TRANSFER", DAY + timedelta(days=5), None, "PRIVATE-R2"),
@@ -133,6 +136,7 @@ class ApprovedAssetCandidateEligibilityTests(unittest.TestCase):
         self.assertIn("FREE", today)
         self.assertIn("ENDED", today)
         self.assertIn("FUTURE", today)
+        self.assertIn("FUTURE-AFTER", today)
         for blocked in ("ACTIVE", "REVOKE", "TRANSFER", "BOUNDED", "PROJECT", "SEGMENT"):
             self.assertNotIn(blocked, today)
 
@@ -164,6 +168,9 @@ class ApprovedAssetCandidateEligibilityTests(unittest.TestCase):
         self.assertIn("REQ", by_id)
         self.assertNotIn("CONT-ACTIVE", by_id)
         self.assertNotIn("ACTIVE", by_id["REQ"].eligible_asset_ids)
+        self.assertNotIn("FUTURE", by_id["REQ"].eligible_asset_ids)
+        self.assertIn("ENDED", by_id["REQ"].eligible_asset_ids)
+        self.assertIn("FUTURE-AFTER", by_id["REQ"].eligible_asset_ids)
         self.assertIn("FREE", by_id["REQ"].eligible_asset_ids)
         self.assertFalse(hasattr(by_id["REQ"], "conflicting_allocation_ids"))
         self.assertFalse(hasattr(by_id["REQ"], "continuous_beneficiary_id"))
