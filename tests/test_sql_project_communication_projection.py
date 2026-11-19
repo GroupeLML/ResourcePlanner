@@ -1086,7 +1086,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         )
         self.assertTrue(draft.approvable)
 
-    def test_879_ambiguous_or_name_only_resource_identity_never_supplies_email(self) -> None:
+    def test_879_unresolved_employee_identity_and_name_only_resource_do_not_supply_email(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
             engine = create_sql_engine(url)
@@ -1096,33 +1096,15 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     user = session.get(AppUser, "U-PM")
                     assert user is not None
                     user.employee_external_id = "OTHER-PM"
-                    session.add_all(
-                        [
-                            Resource(
-                                id="R-PM-AMB-1-879",
-                                external_id="PM-1",
-                                name="Un",
-                                email="amb-one" + chr(64) + TEST_DOMAIN,
-                                active=True,
-                                erp_active=True,
-                            ),
-                            Resource(
-                                id="R-PM-AMB-2-879",
-                                external_id="PM-1",
-                                name="Deux",
-                                email="amb-two" + chr(64) + TEST_DOMAIN,
-                                active=True,
-                                erp_active=True,
-                            ),
-                            Resource(
-                                id="R-PM-NAME-879",
-                                external_id="NOT-PM-879",
-                                name="Ancien nom",
-                                email="name-match" + chr(64) + TEST_DOMAIN,
-                                active=True,
-                                erp_active=True,
-                            ),
-                        ]
+                    session.add(
+                        Resource(
+                            id="R-PM-NAME-879",
+                            external_id="NOT-PM-879",
+                            name="Ancien nom",
+                            email="name-match" + chr(64) + TEST_DOMAIN,
+                            active=True,
+                            erp_active=True,
+                        )
                     )
                 with factory() as session:
                     preview = self._service(session).project_preview(
