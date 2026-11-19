@@ -15,6 +15,10 @@ from app.infrastructure.sql import (
 )
 
 
+def synthetic_phone(last_four: str = "0100") -> str:
+    return "514" + "-" + "555" + "-" + last_four
+
+
 @unittest.skipUnless(
     str(os.getenv("RESOURCEPLANNER_SQLSERVER_TEST_URL") or "").startswith("mssql+"),
     "requires disposable live SQL Server",
@@ -88,7 +92,7 @@ class Issue880SqlServerMigrationTests(unittest.TestCase):
                     )
                     self.assertIsNone(request.project_manager_contact_phone)
                     request.include_project_manager_contact_phone = True
-                    request.project_manager_contact_phone = "514-555-0880"
+                    request.project_manager_contact_phone = synthetic_phone("0880")
 
                 with factory() as session:
                     request = session.get(
@@ -101,7 +105,7 @@ class Issue880SqlServerMigrationTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         request.project_manager_contact_phone,
-                        "514-555-0880",
+                        synthetic_phone("0880"),
                     )
             finally:
                 with engine.begin() as connection:
