@@ -261,6 +261,7 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
                 desired_start=D1,
                 desired_end=D1,
                 estimated_hours=Decimal("8.00"),
+                confirmation="Confirmée",
                 active=True,
             )
             session.add(line)
@@ -283,7 +284,7 @@ class SqlPeriodApprovalSyncTests(unittest.TestCase):
             self.assertEqual(preserved.shift_id, first_shift_id)
 
             previous_revision_id = session.get(RequestApprovalReference, "D1").active_revision_id
-            line.active = False
+            line.desired_end = D2
             session.flush()
             with self.assertRaises(ApplicationConflictError) as raised:
                 sync.sync_approved("DEM-1")
