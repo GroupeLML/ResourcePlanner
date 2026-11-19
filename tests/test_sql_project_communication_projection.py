@@ -1142,6 +1142,14 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                     ):
                                         assignment.pop("assets", None)
                                         assignment.pop("standard_hours", None)
+                                        assignment.pop(
+                                            "include_project_manager_contact_phone",
+                                            None,
+                                        )
+                                        assignment.pop(
+                                            "project_manager_contact_phone",
+                                            None,
+                                        )
                         legacy_json = json.dumps(
                             legacy,
                             ensure_ascii=False,
