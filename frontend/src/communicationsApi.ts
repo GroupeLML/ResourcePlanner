@@ -112,6 +112,10 @@ export type ProjectCommunicationReview = {
   body: string;
 };
 
+export type ProjectCommunicationReviewHtmlPreview = {
+  body_html: string;
+};
+
 export type CommunicationDraftDownload = {
   blob: Blob;
   filename: string;
@@ -146,6 +150,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export function getProjectCommunicationPreview(weekStart: string, addGeneratorCc = false) {
   return request<ProjectCommunicationPreview>(
     `/api/v1/communications/project-preview?week_start=${encodeURIComponent(weekStart)}&add_generator_cc=${addGeneratorCc}`,
+  );
+}
+
+export function renderProjectCommunicationReviewHtml(body: string) {
+  return request<ProjectCommunicationReviewHtmlPreview>(
+    "/api/v1/communications/project-preview-html",
+    {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    },
   );
 }
 

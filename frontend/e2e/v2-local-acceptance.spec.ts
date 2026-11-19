@@ -1147,7 +1147,24 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(draft.locator("textarea")).toHaveValue(new RegExp(testPhone()));
     await draft.locator(".draft-subject").fill("Confirmation E2E — P-251");
 
+    const prepareRequestPromise = page.waitForRequest((request) => (
+      request.method() === "POST"
+      && request.url().includes("/api/v1/communications/project-batches")
+    ));
     await page.getByRole("button", { name: "Préparer le lot" }).click();
+    const prepareRequest = await prepareRequestPromise;
+    const preparePayload = prepareRequest.postDataJSON() as {
+      reviews: Array<Record<string, unknown>>;
+    };
+    expect(preparePayload.reviews.length).toBeGreaterThan(0);
+    for (const review of preparePayload.reviews) {
+      expect(Object.keys(review).sort()).toEqual([
+        "body",
+        "include",
+        "message_key",
+        "subject",
+      ]);
+    }
     await expect(page.locator(".communications-notice")).toContainText("Lot projet préparé");
     await expect(addGeneratorCc).not.toBeChecked();
 
@@ -2858,6 +2875,23 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
     await expect(body).toHaveValue(/Travaux planifiés/);
     await expect(body).toHaveValue(/Alice/);
     await expect(body).toHaveValue(/1 h/);
+
+    const htmlPreview = draft.getByTestId("project-html-preview");
+    await expect(htmlPreview).toBeVisible();
+    const responsibleLabel = htmlPreview
+      .locator("strong > u")
+      .filter({ hasText: "Responsable projet" });
+    await expect(responsibleLabel).toBeVisible();
+    const emphasis = await responsibleLabel.evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      return {
+        fontWeight: style.fontWeight,
+        textDecorationLine: style.textDecorationLine,
+      };
+    });
+    expect(Number.parseInt(emphasis.fontWeight, 10)).toBeGreaterThanOrEqual(600);
+    expect(emphasis.textDecorationLine).toContain("underline");
+
     const previewText = await body.inputValue();
     expect(previewText).not.toContain("Actif :");
     const aliceLine = previewText
@@ -2876,6 +2910,21 @@ test("#794/708B schedule communication preview hides Quick Shift provenance and 
       new RegExp("\\([^)]*" + expectedAssetCode + "[^)]*\\)"),
     );
     expect(aliceLine!).not.toContain("()");
+
+    const editedBody = previewText.replace(
+      "Travaux planifiés",
+      "Travaux planifiés révisés",
+    );
+    await body.fill(editedBody);
+    await expect(draft.getByTestId("project-html-preview")).toHaveCount(0);
+    const refreshHtml = draft.getByRole("button", {
+      name: "Actualiser l’aperçu HTML",
+    });
+    await expect(refreshHtml).toBeEnabled();
+    await refreshHtml.click();
+    const refreshedHtml = draft.getByTestId("project-html-preview");
+    await expect(refreshedHtml).toBeVisible();
+    await expect(refreshedHtml).toContainText("Travaux planifiés révisés");
   } finally {
     if (allocationId) {
       const cleanup = await page.request.delete(

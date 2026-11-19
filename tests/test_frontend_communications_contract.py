@@ -60,6 +60,39 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertNotIn("Répertoire explicite", page)
         self.assertNotIn("contact-row", page)
 
+    def test_871_html_preview_is_server_generated_and_text_review_remains_authority(self) -> None:
+        page = PAGE.read_text(encoding="utf-8")
+        api = API.read_text(encoding="utf-8")
+
+        self.assertIn("renderProjectCommunicationReviewHtml", api)
+        self.assertIn("/api/v1/communications/project-preview-html", api)
+        self.assertIn('JSON.stringify({ body })', api)
+        self.assertIn("dangerouslySetInnerHTML", page)
+        self.assertIn('data-testid="project-html-preview"', page)
+        self.assertIn("Actualiser l’aperçu HTML", page)
+        self.assertIn("htmlPreviewStale", page)
+        self.assertIn("hasStaleHtmlPreview", page)
+        self.assertIn("renderProjectCommunicationReviewHtml(current.body)", page)
+        self.assertIn("value={draft.body}", page)
+        self.assertNotIn("body_html:", page)
+
+    def test_871_preparation_serializes_only_canonical_review_fields(self) -> None:
+        page = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "function projectCommunicationReview(draft: DraftState): ProjectCommunicationReview",
+            page,
+        )
+        self.assertIn("message_key: draft.message_key", page)
+        self.assertIn("include: draft.include", page)
+        self.assertIn("subject: draft.subject", page)
+        self.assertIn("body: draft.body", page)
+        self.assertIn("drafts.map(projectCommunicationReview)", page)
+        self.assertNotIn(
+            "drafts.map(({ source: _source, ...review }) => review)",
+            page,
+        )
+
     def test_api_targets_only_project_v2_controlled_routes(self) -> None:
         api = API.read_text(encoding="utf-8")
         self.assertIn("/api/v1/communications/project-preview", api)

@@ -83,6 +83,11 @@ class ProjectCommunicationDraftDownload:
     content: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectCommunicationReviewHtmlPreview:
+    body_html: str
+
+
 _DOWNLOAD_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _GENERATOR_EMAIL_PATTERN = re.compile(r"^[^@\s<>;,]+@[^@\s<>;,]+\.[^@\s<>;,]+$")
 
@@ -353,6 +358,18 @@ class ProjectCommunicationService:
             add_generator_cc=add_generator_cc,
             generator_identity_fingerprint=generator_identity,
         )
+
+    @staticmethod
+    def review_html_preview(*, body: str) -> ProjectCommunicationReviewHtmlPreview:
+        try:
+            return ProjectCommunicationReviewHtmlPreview(
+                body_html=render_project_review_html(str(body)),
+            )
+        except ValueError as exc:
+            raise ApplicationValidationError(
+                str(exc),
+                code="project_communication_review_template_invalid",
+            ) from exc
 
     @staticmethod
     def _reviewed_draft(
