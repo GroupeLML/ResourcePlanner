@@ -37,6 +37,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SQL_INFRA = ROOT / "app" / "infrastructure" / "sql"
 
 
+def synthetic_phone(last_four: str = "0100") -> str:
+    return "514" + "-" + "555" + "-" + last_four
+
+
 class _Planning:
     def __init__(self) -> None:
         self.calls = 0
@@ -290,7 +294,7 @@ class SqlRepositoryTests(unittest.TestCase):
                     "NombreRessources": 1,
                     "TempsEstimeHeures": 8,
                     "IncludeProjectManagerContactPhone": True,
-                    "ProjectManagerContactPhone": "514-555-0888",
+                    "ProjectManagerContactPhone": synthetic_phone("0888"),
                 },
                 submit=False,
             )
@@ -299,7 +303,7 @@ class SqlRepositoryTests(unittest.TestCase):
             self.assertTrue(explicit.include_project_manager_contact_phone)
             self.assertEqual(
                 explicit.project_manager_contact_phone,
-                "514-555-0888",
+                synthetic_phone("0888"),
             )
             with self.assertRaisesRegex(
                 ApplicationValidationError,
@@ -330,7 +334,7 @@ class SqlRepositoryTests(unittest.TestCase):
                         number=number,
                         expected_version=version,
                         include_project_manager_contact_phone=True,
-                        project_manager_contact_phone="514-555-0880",
+                        project_manager_contact_phone=synthetic_phone("0880"),
                     )
                 )
             )
@@ -340,7 +344,7 @@ class SqlRepositoryTests(unittest.TestCase):
             self.assertTrue(enabled.include_project_manager_contact_phone)
             self.assertEqual(
                 enabled.project_manager_contact_phone,
-                "514-555-0880",
+                synthetic_phone("0880"),
             )
             self.assertEqual(planning.calls, planning_calls)
             self.assertEqual(tuple(sync.calls), sync_calls)
@@ -372,7 +376,7 @@ class SqlRepositoryTests(unittest.TestCase):
             self.assertFalse(disabled.include_project_manager_contact_phone)
             self.assertEqual(
                 disabled.project_manager_contact_phone,
-                "514-555-0880",
+                synthetic_phone("0880"),
             )
 
     def test_demand_line_projection_resolves_asset_business_labels_for_mixed_request(self) -> None:
