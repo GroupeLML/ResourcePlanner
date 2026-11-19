@@ -500,9 +500,11 @@ class Issue877SqlServerTests(unittest.TestCase):
                 return "success", None
 
             with ThreadPoolExecutor(max_workers=2) as executor:
+                accept_future = executor.submit(accept)
+                resync_future = executor.submit(resync)
                 outcomes = (
-                    executor.submit(accept).result(timeout=30),
-                    executor.submit(resync).result(timeout=30),
+                    accept_future.result(timeout=30),
+                    resync_future.result(timeout=30),
                 )
 
             self.assertEqual(sorted(row[0] for row in outcomes), ["conflict", "success"])
