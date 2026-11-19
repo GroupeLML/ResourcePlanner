@@ -1083,6 +1083,19 @@ class DemandCancellationRequestTests(unittest.TestCase):
             factory = create_session_factory(engine)
             with factory.begin() as session:
                 session.add(
+                    RequestLine(
+                        id="L-MIX-ASSET",
+                        workforce_request_id="D-HUMAN",
+                        position=1,
+                        kind="ASSET",
+                        desired_start=DAY,
+                        desired_end=DAY,
+                        estimated_hours=8,
+                        asset_type_id="AT1",
+                        active=True,
+                    )
+                )
+                session.add(
                     Shift(
                         id="SHIFT-HUMAN-UNPROTECTED",
                         resource_requirement_id="REQ-HUMAN",
@@ -1107,8 +1120,8 @@ class DemandCancellationRequestTests(unittest.TestCase):
                             id="AREQ-MIX-REQ",
                             project_id="P1",
                             workforce_request_id="D-HUMAN",
-                            source_request_line_id="L-HUMAN",
-                            approved_entry_key="LINE:L-HUMAN",
+                            source_request_line_id="L-MIX-ASSET",
+                            approved_entry_key="LINE:L-MIX-ASSET",
                             slot_index=0,
                             origin="REQUEST",
                             asset_type_id="AT1",
