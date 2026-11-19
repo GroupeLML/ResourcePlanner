@@ -76,6 +76,33 @@ def retained_counted_shifts(
     )
 
 
+
+def protected_shift_ids(
+    session: Session,
+    requirement_ids: Iterable[str],
+) -> tuple[str, ...]:
+    """Return live Shift IDs carrying active #793 survivor protection."""
+
+    ids = tuple(dict.fromkeys(str(value) for value in requirement_ids if str(value)))
+    if not ids:
+        return ()
+    return tuple(
+        session.scalars(
+            select(Shift.id)
+            .where(
+                Shift.resource_requirement_id.in_(ids),
+                exists(
+                    select(1).where(
+                        RequestShiftSurvivorProtection.shift_id == Shift.id,
+                        RequestShiftSurvivorProtection.active == true(),
+                    )
+                ),
+            )
+            .order_by(Shift.id)
+        ).all()
+    )
+
+
 def retained_coverage_hours(
     session: Session,
     requirement_id: str,
