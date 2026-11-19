@@ -14,10 +14,7 @@ from ...application.demand_completion import (
     DemandCompletionFacts,
     project_effective_demand_state,
 )
-from ...application.demand_planning_progress import (
-    PlanningComponentCoverage,
-    project_demand_planning_progress,
-)
+from ...application.demand_planning_progress import project_demand_planning_progress
 from ...application.errors import ApplicationConflictError, ApplicationValidationError
 from ...application.query_models import DemandCancellationMaterializationReadModel
 from ...application.read_models import DemandLineReadModel, DemandReadModel
@@ -27,7 +24,7 @@ from ...domain.reservable_assets import AssetRequirementOrigin
 from .asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from .base import new_id, utc_now
 from .request_version import acquire_request_aggregate_version
-from .planning_intent_repository import SqlRequestRequirementPlanningIntentRepository
+from .planning_intent_repository import current_effective_need_sql
 from .planning_window_override_repository import SqlPlanningWindowOverrideRepository
 from .resource_class_models import ResourceClassConfig
 from .models import (
@@ -180,120 +177,6 @@ class SqlDemandRepository(DemandRepositoryPort):
             completion_facts or DemandCompletionFacts(),
         )
 
-    def _planning_progress_by_request(
-        self,
-        request_ids: Sequence[str],
-    ) -> dict[str, str | None]:
-        """Project #861 progression from active approved components in bounded batches."""
-
-        identifiers = tuple(dict.fromkeys(str(value) for value in request_ids if str(value)))
-        if not identifiers:
-            return {}
-
-        components: dict[str, list[PlanningComponentCoverage]] = {
-            identifier: [] for identifier in identifiers
-        }
-        requirement_rows: list[tuple[str, str, object]] = []
-        for offset in range(0, len(identifiers), 900):
-            request_batch = identifiers[offset : offset + 900]
-            requirement_rows.extend(
-                self._session.execute(
-                    select(
-                        ResourceRequirement.id,
-                        ResourceRequirement.workforce_request_id,
-                        ResourceRequirement.planned_hours,
-                    ).where(
-                        ResourceRequirement.workforce_request_id.in_(request_batch),
-                        ResourceRequirement.origin == "REQUEST",
-                        ResourceRequirement.status != "Annulé",
-                    )
-                ).all()
-            )
-
-        fallback_hours = {
-            str(requirement_id): planned_hours
-            for requirement_id, _request_id, planned_hours in requirement_rows
-        }
-        effective_need_by_requirement: dict[str, Decimal] = {}
-        fallback_items = tuple(fallback_hours.items())
-        intent_repository = SqlRequestRequirementPlanningIntentRepository(self._session)
-        for offset in range(0, len(fallback_items), 900):
-            effective_need_by_requirement.update(
-                intent_repository.current_effective_need_by_requirement(
-                    dict(fallback_items[offset : offset + 900])
-                )
-            )
-
-        coverage_by_requirement: dict[str, Decimal] = {}
-        requirement_ids = tuple(fallback_hours)
-        for offset in range(0, len(requirement_ids), 900):
-            requirement_batch = requirement_ids[offset : offset + 900]
-            for requirement_id, covered_hours in self._session.execute(
-                select(
-                    Shift.resource_requirement_id,
-                    func.coalesce(func.sum(Shift.hours), 0),
-                )
-                .where(
-                    Shift.resource_requirement_id.in_(requirement_batch),
-                    (Shift.allocation_type.is_(None))
-                    | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
-                )
-                .group_by(Shift.resource_requirement_id)
-            ).all():
-                coverage_by_requirement[str(requirement_id)] = Decimal(
-                    str(covered_hours or 0)
-                )
-
-        for requirement_id, request_id, _planned_hours in requirement_rows:
-            effective_need = effective_need_by_requirement.get(
-                str(requirement_id),
-                Decimal("0"),
-            )
-            if effective_need <= 0:
-                continue
-            covered = coverage_by_requirement.get(str(requirement_id), Decimal("0"))
-            state: PlanningComponentCoverage
-            if covered <= 0:
-                state = "uncovered"
-            elif covered >= effective_need:
-                state = "full"
-            else:
-                state = "partial"
-            components[str(request_id)].append(state)
-
-        for offset in range(0, len(identifiers), 900):
-            request_batch = identifiers[offset : offset + 900]
-            asset_rows = self._session.execute(
-                select(
-                    AssetRequirement.id,
-                    AssetRequirement.workforce_request_id,
-                    func.count(AssetAllocation.id),
-                )
-                .outerjoin(
-                    AssetAllocation,
-                    AssetAllocation.asset_requirement_id == AssetRequirement.id,
-                )
-                .where(
-                    AssetRequirement.workforce_request_id.in_(request_batch),
-                    AssetRequirement.origin == AssetRequirementOrigin.REQUEST.value,
-                    AssetRequirement.status != "Annulé",
-                )
-                .group_by(
-                    AssetRequirement.id,
-                    AssetRequirement.workforce_request_id,
-                )
-            ).all()
-            for _requirement_id, request_id, allocation_count in asset_rows:
-                if request_id:
-                    components[str(request_id)].append(
-                        "full" if int(allocation_count or 0) > 0 else "uncovered"
-                    )
-
-        return {
-            request_id: project_demand_planning_progress(states)
-            for request_id, states in components.items()
-        }
-
     def _aggregate_children(
         self,
         request_ids: Sequence[str],
@@ -313,6 +196,7 @@ class SqlDemandRepository(DemandRepositoryPort):
         request_competency = aliased(WorkforceRequestCompetency)
         line_competency = aliased(RequestLineCompetency)
         proposed_resource = aliased(Resource)
+        progress_requirement = aliased(ResourceRequirement)
 
         human_shift_count = (
             select(func.count(Shift.id))
@@ -403,6 +287,50 @@ class SqlDemandRepository(DemandRepositoryPort):
                 | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
             )
             .correlate(ResourceRequirement)
+            .scalar_subquery()
+        )
+        progress_shift_hours = (
+            select(func.coalesce(func.sum(Shift.hours), 0))
+            .where(
+                Shift.resource_requirement_id == progress_requirement.id,
+                (Shift.allocation_type.is_(None))
+                | (Shift.allocation_type != MISSING_ALLOCATION_TYPE),
+            )
+            .correlate(progress_requirement)
+            .scalar_subquery()
+        )
+        progress_effective_need = current_effective_need_sql(
+            progress_requirement.id,
+            progress_requirement.planned_hours,
+        )
+        active_progress_requirement = (
+            (progress_requirement.workforce_request_id == WorkforceRequest.id)
+            & (progress_requirement.origin == "REQUEST")
+            & (progress_requirement.status != "Annulé")
+            & (progress_effective_need > 0)
+        )
+        planning_human_requirement_count = (
+            select(func.count(progress_requirement.id))
+            .where(active_progress_requirement)
+            .correlate(WorkforceRequest)
+            .scalar_subquery()
+        )
+        planning_human_uncovered_count = (
+            select(func.count(progress_requirement.id))
+            .where(
+                active_progress_requirement,
+                progress_shift_hours <= 0,
+            )
+            .correlate(WorkforceRequest)
+            .scalar_subquery()
+        )
+        planning_human_full_count = (
+            select(func.count(progress_requirement.id))
+            .where(
+                active_progress_requirement,
+                progress_shift_hours >= progress_effective_need,
+            )
+            .correlate(WorkforceRequest)
             .scalar_subquery()
         )
         human_requirement_count = (
@@ -507,6 +435,9 @@ class SqlDemandRepository(DemandRepositoryPort):
                 active_asset_requirement_count,
                 uncovered_asset_requirement_count,
                 current_or_future_asset_allocation_count,
+                planning_human_requirement_count,
+                planning_human_uncovered_count,
+                planning_human_full_count,
             )
             .select_from(WorkforceRequest)
             .outerjoin(
@@ -549,6 +480,7 @@ class SqlDemandRepository(DemandRepositoryPort):
         ] = {}
         cancellation_counts: dict[str, tuple[int, int, int, int]] = {}
         completion_facts: dict[str, DemandCompletionFacts] = {}
+        planning_progress: dict[str, str | None] = {}
 
         for (
             request_id,
@@ -567,6 +499,9 @@ class SqlDemandRepository(DemandRepositoryPort):
             asset_requirement_total,
             uncovered_asset_requirement_total,
             current_or_future_asset_allocation_total,
+            planning_human_requirement_total,
+            planning_human_uncovered_total,
+            planning_human_full_total,
         ) in rows:
             cancellation_counts.setdefault(
                 request_id,
@@ -594,6 +529,19 @@ class SqlDemandRepository(DemandRepositoryPort):
                     ),
                 ),
             )
+            if request_id not in planning_progress:
+                human_total = int(planning_human_requirement_total or 0)
+                human_uncovered = int(planning_human_uncovered_total or 0)
+                human_full = int(planning_human_full_total or 0)
+                asset_total = int(asset_requirement_total or 0)
+                asset_uncovered = int(uncovered_asset_requirement_total or 0)
+                states = (
+                    ("full",) * (human_full + asset_total - asset_uncovered)
+                    + ("uncovered",) * (human_uncovered + asset_uncovered)
+                    + ("partial",)
+                    * max(human_total - human_full - human_uncovered, 0)
+                )
+                planning_progress[request_id] = project_demand_planning_progress(states)
             if request_competency_id is not None:
                 request_competencies.setdefault(request_id, set()).add(
                     request_competency_id
@@ -765,7 +713,7 @@ class SqlDemandRepository(DemandRepositoryPort):
             },
             cancellation_counts,
             completion_facts,
-            self._planning_progress_by_request(identifiers),
+            planning_progress,
         )
 
     def _row_query(self):
