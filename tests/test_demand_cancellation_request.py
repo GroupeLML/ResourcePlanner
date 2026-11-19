@@ -1107,6 +1107,9 @@ class DemandCancellationRequestTests(unittest.TestCase):
                             id="AREQ-MIX-REQ",
                             project_id="P1",
                             workforce_request_id="D-HUMAN",
+                            source_request_line_id="L-HUMAN",
+                            approved_entry_key="LINE:L-HUMAN",
+                            slot_index=0,
                             origin="REQUEST",
                             asset_type_id="AT1",
                             start_date=DAY,
@@ -1380,6 +1383,7 @@ class DemandCancellationRequestTests(unittest.TestCase):
     def test_stale_request_version_rolls_back_planning_guard_and_cleanup(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
+            self._install_human_survivor(database_url)
             app = create_api_app(
                 database_url,
                 auth_resolver=TEST_CANCELLATION_ADMIN_AUTH_RESOLVER,
