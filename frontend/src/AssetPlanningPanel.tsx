@@ -807,7 +807,9 @@ export default function AssetPlanningPanel({
   }
 
   const activeAssets = snapshot.assets.filter((asset) => asset.active);
-  const unassigned = unreservedRequirements.length;
+  const unassigned = snapshot.asset_requirements.filter(
+    (requirement) => !requirement.asset_id,
+  ).length;
 
   return (
     <section className="asset-planning-panel" aria-label="Planning des actifs">
