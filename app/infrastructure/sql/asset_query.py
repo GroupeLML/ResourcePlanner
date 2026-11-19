@@ -21,9 +21,11 @@ from ...application.query_models import (
 )
 from ...domain.approval_envelope import approval_envelope_from_snapshot_payload
 from ...domain.reservable_assets import (
+    AssetOccupation,
     AssetRequirementOrigin,
     ResourcePeriodMode,
     continuous_assignment_state,
+    overlapping_asset_occupations,
 )
 from .approval_revision_models import (
     APPROVAL_REFERENCE_CAPTURED,
@@ -81,6 +83,146 @@ class SqlAssetPlanningQuery:
             )
         )
 
+    @staticmethod
+    def _eligible_asset_ids(
+        *,
+        requirement: AssetRequirement,
+        start_date: date,
+        end_date: date,
+        asset_rows: Sequence[Asset],
+        active_type_ids: set[str],
+        allocations_by_asset: dict[str, tuple[AssetAllocation, ...]],
+        unavailability_by_asset: dict[str, tuple[AssetUnavailability, ...]],
+        ignore_allocation_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """Project privacy-safe new-candidate eligibility from physical occupancy."""
+
+        eligible: list[str] = []
+        for asset in asset_rows:
+            if (
+                not asset.active
+                or asset.asset_type_id != requirement.asset_type_id
+                or asset.asset_type_id not in active_type_ids
+            ):
+                continue
+            candidate = AssetOccupation(
+                "__candidate__",
+                asset.id,
+                start_date,
+                end_date,
+            )
+            existing = tuple(
+                AssetOccupation(
+                    row.id,
+                    row.asset_id,
+                    row.start_date,
+                    row.end_date,
+                    row.locked,
+                )
+                for row in allocations_by_asset.get(asset.id, ())
+                if row.id != ignore_allocation_id
+            )
+            if overlapping_asset_occupations(candidate, existing):
+                continue
+            if any(
+                _overlaps(
+                    start_date,
+                    end_date,
+                    unavailable.start_date,
+                    unavailable.end_date,
+                )
+                for unavailable in unavailability_by_asset.get(asset.id, ())
+            ):
+                continue
+            eligible.append(asset.id)
+        return tuple(eligible)
+
+    def request_candidate_asset_ids(
+        self,
+        *,
+        requirement_id: str,
+        start_date: date,
+        end_date: date,
+    ) -> tuple[str, ...] | None:
+        """Return only public asset IDs eligible for one visible REQUEST need/window."""
+
+        requirement = self._session.get(AssetRequirement, requirement_id)
+        if (
+            requirement is None
+            or requirement.origin != AssetRequirementOrigin.REQUEST.value
+            or requirement.status == "Annulé"
+        ):
+            return None
+        if (
+            start_date > end_date
+            or start_date < requirement.start_date
+            or requirement.end_date is None
+            or end_date > requirement.end_date
+        ):
+            raise ValueError("asset_candidate_window_invalid")
+
+        asset_rows = tuple(
+            self._session.scalars(
+                select(Asset)
+                .where(Asset.asset_type_id == requirement.asset_type_id)
+                .order_by(Asset.code, Asset.id)
+            ).all()
+        )
+        asset_type = self._session.get(AssetType, requirement.asset_type_id)
+        active_type_ids = (
+            {requirement.asset_type_id}
+            if asset_type is not None and asset_type.active
+            else set()
+        )
+        current_allocation = self._session.scalar(
+            select(AssetAllocation).where(
+                AssetAllocation.asset_requirement_id == requirement.id
+            )
+        )
+        allocations = tuple(
+            self._session.scalars(
+                select(AssetAllocation).where(
+                    AssetAllocation.start_date <= end_date,
+                    or_(
+                        AssetAllocation.end_date.is_(None),
+                        AssetAllocation.end_date >= start_date,
+                    ),
+                )
+            ).all()
+        )
+        allocations_by_asset: dict[str, list[AssetAllocation]] = {}
+        for row in allocations:
+            allocations_by_asset.setdefault(row.asset_id, []).append(row)
+        unavailable = tuple(
+            self._session.scalars(
+                select(AssetUnavailability).where(
+                    AssetUnavailability.start_date <= end_date,
+                    AssetUnavailability.end_date >= start_date,
+                )
+            ).all()
+        )
+        unavailability_by_asset: dict[str, list[AssetUnavailability]] = {}
+        for row in unavailable:
+            unavailability_by_asset.setdefault(row.asset_id, []).append(row)
+
+        return self._eligible_asset_ids(
+            requirement=requirement,
+            start_date=start_date,
+            end_date=end_date,
+            asset_rows=asset_rows,
+            active_type_ids=active_type_ids,
+            allocations_by_asset={
+                key: tuple(values) for key, values in allocations_by_asset.items()
+            },
+            unavailability_by_asset={
+                key: tuple(values)
+                for key, values in unavailability_by_asset.items()
+            },
+            ignore_allocation_id=(
+                current_allocation.id if current_allocation is not None else None
+            ),
+        )
+
     def _qualification(
         self,
         *,
@@ -102,6 +244,7 @@ class SqlAssetPlanningQuery:
         requirements: Sequence[AssetRequirement],
         *,
         qualification_cache: dict[tuple[str, str | None], AssetQualification] | None = None,
+        eligible_asset_ids_by_requirement: dict[str, tuple[str, ...]] | None = None,
     ) -> tuple[AssetRequirementReadModel, ...]:
         rows = tuple(requirements)
         if not rows:
@@ -272,6 +415,11 @@ class SqlAssetPlanningQuery:
                     qualification_state=qualification.state,
                     required_competency_ids=qualification.required_competency_ids,
                     required_competency_names=qualification.required_competency_names,
+                    eligible_asset_ids=(
+                        eligible_asset_ids_by_requirement.get(row.id, ())
+                        if eligible_asset_ids_by_requirement is not None
+                        else ()
+                    ),
                 )
             )
         return tuple(result)
@@ -528,6 +676,23 @@ class SqlAssetPlanningQuery:
             )
 
         visible_requirement_ids = {row.id for row in visible_requirements}
+        request_requirements = tuple(
+            row
+            for row in visible_requirements
+            if row.origin == AssetRequirementOrigin.REQUEST.value
+            and row.end_date is not None
+        )
+        candidate_scope_start = min(
+            (row.start_date for row in request_requirements),
+            default=start,
+        )
+        candidate_scope_end = max(
+            (row.end_date for row in request_requirements if row.end_date is not None),
+            default=end,
+        )
+        occupancy_scope_start = min(start, candidate_scope_start)
+        occupancy_scope_end = max(end, candidate_scope_end)
+
         visible_allocations = tuple(
             self._session.scalars(
                 select(AssetAllocation)
@@ -553,8 +718,11 @@ class SqlAssetPlanningQuery:
                     AssetRequirement.id == AssetAllocation.asset_requirement_id,
                 )
                 .where(
-                    AssetAllocation.start_date <= end,
-                    or_(AssetAllocation.end_date.is_(None), AssetAllocation.end_date >= start),
+                    AssetAllocation.start_date <= occupancy_scope_end,
+                    or_(
+                        AssetAllocation.end_date.is_(None),
+                        AssetAllocation.end_date >= occupancy_scope_start,
+                    ),
                 )
                 .order_by(AssetAllocation.asset_id, AssetAllocation.start_date, AssetAllocation.id)
             ).all()
@@ -571,8 +739,8 @@ class SqlAssetPlanningQuery:
             self._session.scalars(
                 select(AssetUnavailability)
                 .where(
-                    AssetUnavailability.start_date <= end,
-                    AssetUnavailability.end_date >= start,
+                    AssetUnavailability.start_date <= occupancy_scope_end,
+                    AssetUnavailability.end_date >= occupancy_scope_start,
                 )
                 .order_by(AssetUnavailability.asset_id, AssetUnavailability.start_date, AssetUnavailability.id)
             ).all()
@@ -584,6 +752,44 @@ class SqlAssetPlanningQuery:
         visible_allocation_by_requirement = {
             row.asset_requirement_id: row for row in visible_allocations
         }
+        all_allocation_by_requirement = {
+            row.asset_requirement_id: row for row in all_allocations
+        }
+        allocations_by_asset_lists: dict[str, list[AssetAllocation]] = {}
+        for row in all_allocations:
+            allocations_by_asset_lists.setdefault(row.asset_id, []).append(row)
+        allocations_by_asset = {
+            key: tuple(values) for key, values in allocations_by_asset_lists.items()
+        }
+        unavailability_by_asset_lists: dict[str, list[AssetUnavailability]] = {}
+        for row in unavailability_rows:
+            unavailability_by_asset_lists.setdefault(row.asset_id, []).append(row)
+        candidate_unavailability_by_asset = {
+            key: tuple(values)
+            for key, values in unavailability_by_asset_lists.items()
+        }
+        active_type_ids = {row.id for row in type_rows if row.active}
+        eligible_asset_ids_by_requirement: dict[str, tuple[str, ...]] = {}
+        for requirement in request_requirements:
+            current = all_allocation_by_requirement.get(requirement.id)
+            candidate_start = (
+                current.start_date if current is not None else requirement.start_date
+            )
+            candidate_end = (
+                current.end_date
+                if current is not None and current.end_date is not None
+                else candidate_start
+            )
+            eligible_asset_ids_by_requirement[requirement.id] = self._eligible_asset_ids(
+                requirement=requirement,
+                start_date=candidate_start,
+                end_date=candidate_end,
+                asset_rows=asset_rows,
+                active_type_ids=active_type_ids,
+                allocations_by_asset=allocations_by_asset,
+                unavailability_by_asset=candidate_unavailability_by_asset,
+                ignore_allocation_id=current.id if current is not None else None,
+            )
         qualification_cache: dict[
             tuple[str, str | None], AssetQualification
         ] = evaluate_asset_qualifications(
@@ -599,6 +805,7 @@ class SqlAssetPlanningQuery:
         visible_requirement_models = self._requirement_models(
             visible_requirements,
             qualification_cache=qualification_cache,
+            eligible_asset_ids_by_requirement=eligible_asset_ids_by_requirement,
         )
         visible_requirement_models_by_id = {
             row.requirement_id: row for row in visible_requirement_models
