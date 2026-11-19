@@ -2426,7 +2426,11 @@ test("asset UX creates Nacelle #63 and links only real operator allocations on h
   const secondAllocated = approvedDetail.locator(
     `.asset-requirement-card[data-requirement-id="${secondRequirementId}"]`,
   );
-  await expect(secondAllocated.locator(".asset-current-allocation strong")).toContainText("Nacelle #64");
+  const secondCurrentAllocation = secondAllocated
+    .locator(".asset-current-allocation")
+    .filter({ hasText: "NAC-64" })
+    .first();
+  await expect(secondCurrentAllocation).toContainText("Nacelle #64");
   const operatorSelect = secondAllocated.getByLabel("Opérateur");
   await expect(operatorSelect.locator('option[value="R-ALICE"]')).toBeAttached();
   await operatorSelect.selectOption("R-ALICE");
