@@ -104,6 +104,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         manager: EffectiveProjectManager | None,
         contacts: dict[str, BusinessContact],
         users_by_contact: dict[str, AppUser],
+        resources_by_employee: dict[str, Resource],
         prefer_user_display_name: bool = False,
     ) -> ProjectCommunicationParticipant:
         diagnostics: list[str] = []
@@ -145,10 +146,22 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         ):
             diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_INACTIVE)
 
-        email = _text(contact.email) if contact is not None else ""
+        employee_external_id = _text(manager.employee_external_id)
+        resource = (
+            resources_by_employee.get(employee_external_id)
+            if employee_external_id
+            else None
+        )
+        # Existing BusinessContact email remains authoritative. Resource.email is
+        # only a stable-employee fallback, so a manually maintained address can
+        # be used without requiring an AppUser/login record.
+        contact_email = _text(contact.email) if contact is not None else ""
+        resource_email = _text(resource.email) if resource is not None else ""
+        email = contact_email or resource_email
         if not email:
             diagnostics.append(DIAGNOSTIC_PROJECT_MANAGER_EMAIL_MISSING)
 
+        has_resource_email_fallback = bool(not contact_email and resource_email)
         return ProjectCommunicationParticipant(
             contact_id=contact_id,
             user_id=manager.app_user_id,
@@ -156,10 +169,12 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             email=email or None,
             phone=(_text(contact.phone) or None) if contact is not None else None,
             active=bool(
-                contact is not None
-                and contact.active
-                and manager.user_active is not False
+                manager.user_active is not False
                 and manager.contact_active is not False
+                and (
+                    (contact is not None and contact.active)
+                    or has_resource_email_fallback
+                )
             ),
             diagnostics=_unique(diagnostics),
         )
@@ -526,30 +541,47 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             project_id: projection.co_managers
             for project_id, projection in project_manager_projections.items()
         }
-        # ADR-017 identifies the canonical principal through ERP EmployeID.
-        # Resource is only an ERP-phone read model here, never manager authority:
-        # do not require local planning activation or use names/contact emails.
+        # ADR-017 identifies manager identity independently from communication
+        # metadata. Resource may supply contact metadata only when that already
+        # resolved stable employee identity maps to exactly one Resource. Never
+        # infer identity from names or email values, and never make Resource a
+        # project-manager authority.
+        all_project_managers = [
+            manager
+            for manager in project_managers.values()
+            if manager is not None
+        ]
+        for managers in project_co_managers.values():
+            all_project_managers.extend(managers)
         employee_ids = {
             _text(manager.employee_external_id)
-            for manager in project_managers.values()
-            if manager is not None and _text(manager.employee_external_id)
+            for manager in all_project_managers
+            if _text(manager.employee_external_id)
         }
+        resources_by_employee_rows: dict[str, list[Resource]] = {}
         phones_by_employee: dict[str, list[str | None]] = {}
         # Bound the IN-list for SQL Server parameter limits.
         ordered_employee_ids = sorted(employee_ids)
         for offset in range(0, len(ordered_employee_ids), 900):
             subset = ordered_employee_ids[offset:offset + 900]
-            for external_id, erp_phone in self._session.execute(
-                select(Resource.external_id, Resource.erp_phone)
-                .where(Resource.external_id.in_(subset))
+            for resource_row in self._session.scalars(
+                select(Resource).where(Resource.external_id.in_(subset))
             ).all():
-                key = _text(external_id)
+                key = _text(resource_row.external_id)
                 if key in employee_ids:
+                    resources_by_employee_rows.setdefault(key, []).append(
+                        resource_row
+                    )
                     phones_by_employee.setdefault(key, []).append(
-                        _text(erp_phone) or None
+                        _text(resource_row.erp_phone) or None
                     )
         # Duplicate Resource identities are ambiguous, even when their phone
         # values happen to agree: never choose an arbitrary row.
+        canonical_resources_by_employee = {
+            employee_id: resources[0]
+            for employee_id, resources in resources_by_employee_rows.items()
+            if len(resources) == 1
+        }
         canonical_erp_phones = {
             employee_id: phones[0]
             for employee_id, phones in phones_by_employee.items()
@@ -617,6 +649,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 manager=project_managers.get(project.id),
                 contacts=contacts_by_id,
                 users_by_contact=users_by_contact,
+                resources_by_employee=canonical_resources_by_employee,
                 prefer_user_display_name=True,
             )
             co_managers = tuple(
@@ -624,6 +657,7 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     manager=co_manager,
                     contacts=contacts_by_id,
                     users_by_contact=users_by_contact,
+                    resources_by_employee=canonical_resources_by_employee,
                 )
                 for co_manager in project_co_managers.get(project.id, ())
             )
