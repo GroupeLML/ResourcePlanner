@@ -73,7 +73,8 @@ def test_859_accessibility_and_responsive_contract() -> None:
     assert 'role="option"' in panel
     assert "aria-selected={selected}" in panel
     assert 'aria-label="Détail du besoin d’actif sélectionné"' in panel
-    assert "Rechercher les besoins approuvés" in panel
+    assert 'aria-label="Filtrer les besoins approuvés"' in panel
+    assert "Rechercher les besoins approuvés" not in panel
     assert ".asset-approved-master-item:focus-visible" in styles
     assert "@media (max-width: 720px)" in styles
     assert ".asset-approved-master-detail { grid-template-columns: 1fr; }" in styles
