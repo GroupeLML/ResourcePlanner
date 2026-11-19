@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date
 from decimal import Decimal
 import json
 import os
+from threading import Event, Lock
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -464,7 +465,65 @@ class Issue877SqlServerTests(unittest.TestCase):
         finally:
             engine.dispose()
 
+    def _run_planning_cas_overlap(self, winner, loser):
+        original_acquire = SqlPlanningMutationVersionRepository.acquire
+        first_acquired = Event()
+        second_entered = Event()
+        release_first = Event()
+        counter_lock = Lock()
+        call_count = 0
+
+        def coordinated_acquire(repository, expected_version=None):
+            nonlocal call_count
+            with counter_lock:
+                call_count += 1
+                position = call_count
+                if position == 2:
+                    second_entered.set()
+
+            acquired = original_acquire(repository, expected_version)
+            if position == 1:
+                first_acquired.set()
+                if not release_first.wait(timeout=10):
+                    raise AssertionError(
+                        "Le gagnant #877 n'a pas été libéré dans le délai borné."
+                    )
+            return acquired
+
+        with patch.object(
+            SqlPlanningMutationVersionRepository,
+            "acquire",
+            new=coordinated_acquire,
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                winner_future = executor.submit(winner)
+                self.assertTrue(
+                    first_acquired.wait(timeout=10),
+                    "Le gagnant n'a pas acquis le vrai CAS Planning.",
+                )
+                loser_future = executor.submit(loser)
+                try:
+                    self.assertTrue(
+                        second_entered.wait(timeout=10),
+                        "Le perdant n'a pas tenté le vrai CAS Planning.",
+                    )
+                    done, _ = wait((loser_future,), timeout=0.5)
+                    self.assertFalse(
+                        done,
+                        "Le perdant a terminé avant libération du CAS gagnant; "
+                        "la contention SQL Server n'a pas été prouvée.",
+                    )
+                finally:
+                    release_first.set()
+
+                return (
+                    winner_future.result(timeout=30),
+                    loser_future.result(timeout=30),
+                )
+
     def test_cancellation_vs_resync_serializes_without_resurrection_or_invalid_terminal_work(self) -> None:
+        # Scenario 1: resync owns the real Planning CAS first; cancellation must
+        # block behind it and then fail exactly on the stale expected version.
         ids = self._seed()
         engine = create_sql_engine(DATABASE_URL)
         factory = create_session_factory(engine)
@@ -474,23 +533,7 @@ class Issue877SqlServerTests(unittest.TestCase):
                 cycle_id = self._request_cancellation(client, ids)
             planning_version = self._planning_version(factory)
 
-            def accept() -> tuple[str, str | None]:
-                with TestClient(app, raise_server_exceptions=False) as client:
-                    response = client.post(
-                        f"/api/v1/demands/{ids['number']}/accept-cancellation",
-                        json={
-                            "cancellation_request_id": cycle_id,
-                            "comment": "Race cancellation",
-                            "expected_version": 2,
-                            "expected_planning_version": planning_version,
-                        },
-                        headers={"Idempotency-Key": f"race-877-{ids['marker']}"},
-                    )
-                if response.status_code == 200:
-                    return "success", None
-                return "conflict", response.json().get("error", {}).get("code")
-
-            def resync() -> tuple[str, str | None]:
+            def resync_winner() -> tuple[str, str | None]:
                 try:
                     with factory.begin() as session:
                         SqlPeriodAwareApprovedDemandSyncAdapter(
@@ -500,38 +543,166 @@ class Issue877SqlServerTests(unittest.TestCase):
                     return "conflict", exc.code
                 return "success", None
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                accept_future = executor.submit(accept)
-                resync_future = executor.submit(resync)
-                outcomes = (
-                    accept_future.result(timeout=30),
-                    resync_future.result(timeout=30),
+            def cancellation_loser() -> tuple[int, str | None]:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    response = client.post(
+                        f"/api/v1/demands/{ids['number']}/accept-cancellation",
+                        json={
+                            "cancellation_request_id": cycle_id,
+                            "comment": "Race cancellation après resync",
+                            "expected_version": 2,
+                            "expected_planning_version": planning_version,
+                        },
+                        headers={
+                            "Idempotency-Key": f"race-resync-wins-{ids['marker']}"
+                        },
+                    )
+                payload = response.json()
+                return (
+                    response.status_code,
+                    payload.get("error", {}).get("code")
+                    if isinstance(payload, dict)
+                    else None,
                 )
 
-            self.assertEqual(sorted(row[0] for row in outcomes), ["conflict", "success"])
+            resync_outcome, cancellation_outcome = self._run_planning_cas_overlap(
+                resync_winner,
+                cancellation_loser,
+            )
+            self.assertEqual(resync_outcome, ("success", None))
+            self.assertEqual(
+                cancellation_outcome,
+                (409, "planning_version_conflict"),
+            )
+
             with factory() as session:
                 request = session.get(WorkforceRequest, ids["request"])
                 requirement = session.get(ResourceRequirement, ids["requirement"])
-                protection = session.get(RequestShiftSurvivorProtection, ids["protection"])
+                intent = session.get(RequestRequirementPlanningIntent, ids["intent"])
+                protection = session.get(
+                    RequestShiftSurvivorProtection,
+                    ids["protection"],
+                )
+                shift = session.get(Shift, ids["shift"])
                 assert request is not None
                 assert requirement is not None
+                assert intent is not None
                 assert protection is not None
-                shift = session.get(Shift, ids["shift"])
-                if request.cancellation_state == "ACCEPTED":
-                    self.assertEqual(request.status, "Annulée")
-                    self.assertEqual(requirement.status, "Annulé")
-                    self.assertIsNone(shift)
-                    self.assertFalse(protection.active)
-                    self.assertIsNone(protection.shift_id)
-                else:
-                    self.assertEqual(request.cancellation_state, "PENDING")
-                    self.assertNotEqual(requirement.status, "Annulé")
-                    self.assertIsNotNone(shift)
-                    self.assertTrue(protection.active)
-                    self.assertEqual(protection.shift_id, ids["shift"])
+                assert shift is not None
+                self.assertEqual(request.status, "En planification")
+                self.assertEqual(request.cancellation_state, "PENDING")
+                self.assertEqual(requirement.status, "Planifié")
+                self.assertEqual(shift.resource_requirement_id, requirement.id)
+                self.assertTrue(protection.active)
+                self.assertEqual(protection.shift_id, shift.id)
+                self.assertEqual(protection.original_shift_id, ids["shift"])
+                self.assertEqual(
+                    protection.originating_reduction_id,
+                    ids["reduction"],
+                )
+                self.assertEqual(protection.planning_intent_id, ids["intent"])
+                self.assertEqual(
+                    intent.current_resource_requirement_id,
+                    requirement.id,
+                )
                 self.assertFalse(
                     requirement.status == "Annulé" and shift is not None,
-                    "Committed Annulé + live Shift is forbidden for REQUEST requirements.",
+                    "Committed Annulé + live Shift is forbidden.",
+                )
+                self.assertEqual(
+                    SqlPlanningMutationVersionRepository(session).current_version(),
+                    planning_version + 1,
+                )
+        finally:
+            engine.dispose()
+
+        # Scenario 2: cancellation owns the real Planning CAS first; resync must
+        # wait for that transaction and then reject rematerialization specifically
+        # because the committed demand is cancelled.
+        ids = self._seed()
+        engine = create_sql_engine(DATABASE_URL)
+        factory = create_session_factory(engine)
+        try:
+            app = create_api_app(DATABASE_URL, auth_resolver=self._auth(ids["actor"]))
+            with TestClient(app, raise_server_exceptions=False) as client:
+                cycle_id = self._request_cancellation(client, ids)
+            planning_version = self._planning_version(factory)
+
+            def cancellation_winner() -> tuple[int, str | None]:
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    response = client.post(
+                        f"/api/v1/demands/{ids['number']}/accept-cancellation",
+                        json={
+                            "cancellation_request_id": cycle_id,
+                            "comment": "Race cancellation gagnante",
+                            "expected_version": 2,
+                            "expected_planning_version": planning_version,
+                        },
+                        headers={
+                            "Idempotency-Key": f"race-cancel-wins-{ids['marker']}"
+                        },
+                    )
+                payload = response.json()
+                return (
+                    response.status_code,
+                    payload.get("error", {}).get("code")
+                    if isinstance(payload, dict)
+                    else None,
+                )
+
+            def resync_loser() -> tuple[str, str | None]:
+                try:
+                    with factory.begin() as session:
+                        SqlPeriodAwareApprovedDemandSyncAdapter(
+                            session
+                        ).sync_operational_choices(ids["number"])
+                except ApplicationConflictError as exc:
+                    return "conflict", exc.code
+                return "success", None
+
+            cancellation_outcome, resync_outcome = self._run_planning_cas_overlap(
+                cancellation_winner,
+                resync_loser,
+            )
+            self.assertEqual(cancellation_outcome, (200, None))
+            self.assertEqual(
+                resync_outcome,
+                ("conflict", "cancelled_demand_materialization_forbidden"),
+            )
+
+            with factory() as session:
+                request = session.get(WorkforceRequest, ids["request"])
+                requirement = session.get(ResourceRequirement, ids["requirement"])
+                intent = session.get(RequestRequirementPlanningIntent, ids["intent"])
+                protection = session.get(
+                    RequestShiftSurvivorProtection,
+                    ids["protection"],
+                )
+                shift = session.get(Shift, ids["shift"])
+                assert request is not None
+                assert requirement is not None
+                assert intent is not None
+                assert protection is not None
+                self.assertEqual(request.status, "Annulée")
+                self.assertEqual(request.cancellation_state, "ACCEPTED")
+                self.assertEqual(requirement.status, "Annulé")
+                self.assertIsNone(shift)
+                self.assertFalse(protection.active)
+                self.assertIsNone(protection.shift_id)
+                self.assertIsNotNone(protection.retired_at)
+                self.assertEqual(protection.original_shift_id, ids["shift"])
+                self.assertEqual(
+                    protection.originating_reduction_id,
+                    ids["reduction"],
+                )
+                self.assertEqual(protection.planning_intent_id, ids["intent"])
+                self.assertEqual(
+                    intent.current_resource_requirement_id,
+                    requirement.id,
+                )
+                self.assertFalse(
+                    protection.active and protection.shift_id is None,
+                    "Une protection active ne peut pas être orpheline.",
                 )
                 self.assertEqual(
                     SqlPlanningMutationVersionRepository(session).current_version(),
