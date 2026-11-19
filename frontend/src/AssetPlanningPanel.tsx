@@ -911,7 +911,7 @@ export default function AssetPlanningPanel({
               <div className="asset-approved-master-detail">
                 <div
                   className="asset-approved-master"
-                  role="list"
+                  role="listbox"
                   aria-label="Besoins d’actifs approuvés"
                   data-testid="approved-asset-master-list"
                 >
@@ -924,11 +924,10 @@ export default function AssetPlanningPanel({
                     return (
                       <button
                         type="button"
-                        role="listitem"
+                        role="option"
                         className={selected ? "asset-approved-master-item is-selected" : "asset-approved-master-item"}
                         data-requirement-id={requirement.requirement_id}
-                        aria-current={selected ? "true" : undefined}
-                        aria-pressed={selected}
+                        aria-selected={selected}
                         onClick={() => setSelectedRequirementId(requirement.requirement_id)}
                         key={requirement.requirement_id}
                       >
