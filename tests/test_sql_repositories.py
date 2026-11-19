@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 
 from app.application.demand_service import DemandService
 from app.application.commands.demand import DemandUpdateCommand
-from app.application.errors import ApplicationConflictError
+from app.application.errors import ApplicationConflictError, ApplicationValidationError
 from app.application.segment_service import SegmentService
 from app.infrastructure.sql import (
     Asset,
