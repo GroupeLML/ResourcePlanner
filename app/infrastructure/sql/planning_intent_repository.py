@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import case, exists, func, select
 from sqlalchemy.orm import Session
 
 from ...domain.effective_need import resolve_effective_slot_need
@@ -16,6 +16,28 @@ from .operational_choice_models import (
     RequestCompletionReduction,
     RequestRequirementPlanningIntent,
 )
+
+
+def current_effective_need_sql(requirement_id, fallback_hours):
+    """Canonical ADR-034 effective-need SQL expression for a current requirement."""
+
+    zeroed = exists(
+        select(RequestCompletionReduction.id)
+        .select_from(RequestRequirementPlanningIntent)
+        .join(
+            RequestCompletionReduction,
+            RequestCompletionReduction.planning_intent_id
+            == RequestRequirementPlanningIntent.id,
+        )
+        .where(
+            RequestRequirementPlanningIntent.current_resource_requirement_id
+            == requirement_id,
+            RequestCompletionReduction.reconciliation_state == "ACTIVE",
+            RequestCompletionReduction.effective_need_after <= 0,
+            RequestCompletionReduction.effective_need_before == fallback_hours,
+        )
+    )
+    return case((zeroed, 0), else_=fallback_hours)
 
 
 def stable_planning_slot_key(
