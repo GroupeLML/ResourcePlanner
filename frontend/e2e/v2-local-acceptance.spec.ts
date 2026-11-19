@@ -1108,6 +1108,20 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await closeContext(admin.context);
 
     const { context, page } = await openAs(browser, "COORDINATOR");
+
+    await openDemandDetail(page, demandNumber);
+    const requestEditor = page.locator(".demand-editor-form");
+    const managerPhoneOption = requestEditor.getByRole("checkbox", {
+      name: "Include project manager's contact number",
+    });
+    const managerPhoneInput = requestEditor
+      .locator("label")
+      .filter({ hasText: "Include project manager's contact number" })
+      .locator('input[type="tel"]');
+    await expect(managerPhoneOption).not.toBeChecked();
+    await expect(managerPhoneInput).toHaveValue("");
+    await expect(managerPhoneInput).toBeDisabled();
+
     await navigateMain(page, "Communications");
     await expect(page.getByRole("heading", { name: "Communications de planification" })).toBeVisible();
     await expect(page.getByText("Destinataires gérés dans Utilisateurs")).toBeVisible();
@@ -1143,6 +1157,30 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("alice"));
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("bob"));
     await expect(draft.getByText("Courriel manquant")).toHaveCount(0);
+    await expect(draft.locator("textarea")).toHaveValue(/Chargé de projet Démo/);
+    await expect(draft.locator("textarea")).not.toHaveValue(new RegExp(testPhone()));
+
+    await navigateMain(page, "Demandes");
+    await openDemandDetail(page, demandNumber);
+    const optedInEditor = page.locator(".demand-editor-form");
+    const optedInCheckbox = optedInEditor.getByRole("checkbox", {
+      name: "Include project manager's contact number",
+    });
+    const optedInPhone = optedInEditor
+      .locator("label")
+      .filter({ hasText: "Include project manager's contact number" })
+      .locator('input[type="tel"]');
+    await optedInCheckbox.check();
+    await expect(optedInPhone).toBeEnabled();
+    await optedInPhone.fill(testPhone());
+    await optedInEditor.getByRole("button", { name: "Enregistrer les modifications" }).click();
+    await expect(
+      page.locator(".demand-notice").filter({ hasText: "Modification enregistrée." }),
+    ).toBeVisible();
+
+    await navigateMain(page, "Communications");
+    await page.getByLabel("Semaine du").fill(d1);
+    await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
     await expect(draft.locator("textarea")).toHaveValue(/Chargé de projet Démo/);
     await expect(draft.locator("textarea")).toHaveValue(new RegExp(testPhone()));
     await draft.locator(".draft-subject").fill("Confirmation E2E — P-251");
