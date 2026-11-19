@@ -51,7 +51,7 @@ from .operational_choice_models import (
     PlanningWorkQueueRestoration,
     RequestRequirementPlanningIntent,
 )
-from .retained_placement import dedupe_locked_allocations
+from .retained_placement import dedupe_locked_allocations, protected_shift_ids
 from .segment_asset_guard import assert_segment_asset_mutation_compatible
 from .planning_version import SqlPlanningMutationVersionRepository
 from .segment_repository import SqlSegmentRepository
