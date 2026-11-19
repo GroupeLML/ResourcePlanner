@@ -173,9 +173,17 @@ test("859 — besoins approuvés maître-détail, recherche, filtres et invalida
     const reservedFilter = panel.getByRole("button", { name: /Réservé \(/ });
 
     await expect(detail).toContainText("Aucun besoin d'actif sélectionné");
-    await expect(master.locator('[data-requirement-id="REQ-859-A"]')).toContainText("5189");
-    await expect(master.locator('[data-requirement-id="REQ-859-A"]')).toContainText("DMO-2026-0112");
-    await expect(master.locator('[data-requirement-id="REQ-859-A"]')).toContainText("CN40 — Nacelle 40'");
+    const hierarchyRow = master.locator('[data-requirement-id="REQ-859-A"]');
+    await expect(hierarchyRow).toContainText("5189");
+    await expect(hierarchyRow).toContainText("DMO-2026-0112");
+    await expect(hierarchyRow).toContainText("CN40 — Nacelle 40'");
+    const hierarchySizes = await hierarchyRow.evaluate((element) => ({
+      project: Number.parseFloat(getComputedStyle(element.querySelector(".asset-approved-master-project strong")!).fontSize),
+      demand: Number.parseFloat(getComputedStyle(element.querySelector(".asset-approved-master-demand")!).fontSize),
+      type: Number.parseFloat(getComputedStyle(element.querySelector(".asset-approved-master-type")!).fontSize),
+    }));
+    expect(hierarchySizes.project).toBeGreaterThan(hierarchySizes.type);
+    expect(hierarchySizes.type).toBeGreaterThan(hierarchySizes.demand);
     await expect(master.locator('[data-requirement-id="REQ-859-C"]')).toContainText("6000");
     await expect(master.locator('[data-requirement-id="REQ-859-C"]')).not.toContainText("DMO");
 
