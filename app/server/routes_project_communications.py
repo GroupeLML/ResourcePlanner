@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..application.communications import CommunicationBatchRecord
 from ..application.project_communications import (
+    ProjectCommunicationReviewHtmlPreview,
     ProjectCommunicationReviewInput,
     ProjectCommunicationService,
     ProjectCommunicationWorkflowPreview,
@@ -26,6 +27,12 @@ class ProjectReviewBody(BaseModel):
     include: bool = True
     subject: str | None = None
     body: str | None = None
+
+
+class ProjectReviewHtmlPreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    body: str
 
 
 class PrepareProjectBatchBody(BaseModel):
@@ -67,6 +74,13 @@ def build_project_communication_router(
             add_generator_cc=add_generator_cc,
             generator_principal=getattr(request.state, "auth_principal", None),
         )
+
+    @router.post("/project-preview-html")
+    def project_preview_html(
+        body: ProjectReviewHtmlPreviewBody,
+        service: ProjectCommunicationService = Depends(dependency),
+    ) -> ProjectCommunicationReviewHtmlPreview:
+        return service.review_html_preview(body=body.body)
 
     @router.post("/project-batches", status_code=201)
     def prepare_project_batch(
