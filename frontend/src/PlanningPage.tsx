@@ -276,26 +276,64 @@ function pendingText(load: PendingDemandLoadReadModel) {
   ].filter(Boolean).join(" "));
 }
 
+function projectManagerBadgeStyle(managerColorId: string | null | undefined) {
+  if (!managerColorId) return undefined;
+
+  const hue = Number.parseInt(managerColorId.slice(0, 8), 16) % 360;
+  const saturation = 0.7;
+  const lightness = 0.34;
+  const chroma = (1 - Math.abs(2 * lightness - 1)) * saturation;
+  const x = chroma * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const offset = lightness - chroma / 2;
+  const [red, green, blue] =
+    hue < 60 ? [chroma, x, 0]
+      : hue < 120 ? [x, chroma, 0]
+        : hue < 180 ? [0, chroma, x]
+          : hue < 240 ? [0, x, chroma]
+            : hue < 300 ? [x, 0, chroma]
+              : [chroma, 0, x];
+  const linear = [red, green, blue].map((channel) => {
+    const value = channel + offset;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  const lightContrast = 1.05 / (luminance + 0.05);
+  const darkContrast = (luminance + 0.05) / 0.05;
+
+  return {
+    backgroundColor: `hsl(${hue} 70% 34%)`,
+    color: lightContrast >= darkContrast ? "#ffffff" : "#111827",
+  };
+}
+
 function ProjectLabel({
   number,
   name,
-  managerColor,
+  managerColorId,
+  managerLabel,
 }: {
   number: string | null;
   name: string | null;
-  managerColor?: string | null;
+  managerColorId?: string | null;
+  managerLabel?: string | null;
 }) {
+  const projectNumber = number || "Projet";
+  const managerStyle = projectManagerBadgeStyle(managerColorId);
+  const managerTitle = managerLabel
+    ? `Projet ${projectNumber} — Responsable : ${managerLabel}`
+    : undefined;
+
   return (
     <>
       <div className="shift-project-number">
-        <strong>{number || "Projet"}</strong>
-        {managerColor && (
-          <i
-            className="shift-pm-dot"
-            aria-hidden="true"
-            style={{ backgroundColor: managerColor }}
-          />
-        )}
+        <span
+          className={`shift-project-badge ${managerStyle ? "has-manager-color" : "is-neutral"}`}
+          style={managerStyle}
+          title={managerTitle}
+          aria-label={managerTitle || `Projet ${projectNumber}`}
+        >
+          <strong>{projectNumber}</strong>
+        </span>
       </div>
       {name && <span>{name}</span>}
     </>
@@ -352,11 +390,9 @@ function ShiftCard({
     ).values(),
   );
   const assetDiagnostics = shift.asset_diagnostics ?? [];
-  const managerColorId = shift.project_manager_color_id;
-  // The server hashes a canonical identity, never a name, to produce this token.
-  const managerColor = managerColorId
-    ? `hsl(${Number.parseInt(managerColorId.slice(0, 8), 16) % 360} 70% 34%)`
-    : null;
+  // Scope-neighbor visibility intentionally suppresses manager identity/color.
+  const managerColorId = !scopeNeighbor ? shift.project_manager_color_id : null;
+  const managerColorLabel = !scopeNeighbor ? shift.project_manager_color_label : null;
   const meta = [
     shift.allocation_type,
     shift.source !== "AUTO" && !scopeNeighbor ? shift.source : null,
@@ -385,7 +421,7 @@ function ShiftCard({
     ...assetDiagnostics.map((code) => `⚠ ${shiftAssetDiagnosticLabel(code)}`),
     shift.project_name,
     shift.demand_number ? `Demande ${shift.demand_number}` : null,
-    shift.project_manager ? `Responsable: ${shift.project_manager}` : null,
+    managerColorLabel ? `Responsable: ${managerColorLabel}` : null,
     shift.requester ? `Demandeur: ${shift.requester}` : null,
     shift.note,
   ].filter(Boolean).join("\n");
@@ -431,7 +467,8 @@ function ShiftCard({
             <ProjectLabel
               number={shift.project_number}
               name={shift.project_name}
-              managerColor={!scopeNeighbor ? managerColor : null}
+              managerColorId={managerColorId}
+              managerLabel={managerColorLabel}
             />
           </div>
           <strong className="shift-hours">{hours(shift.hours)} h</strong>
