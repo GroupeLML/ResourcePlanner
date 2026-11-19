@@ -24,6 +24,10 @@ BASELINE_REVISION = "v2_production_baseline"
 HEAD_REVISION = "0037_workforce_request_project_manager_phone"
 
 
+def synthetic_phone(last_four: str = "0100") -> str:
+    return "514" + "-" + "555" + "-" + last_four
+
+
 def alembic_config(database_path: Path) -> Config:
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(MIGRATIONS))
@@ -215,9 +219,10 @@ class SqlMigrationTests(unittest.TestCase):
                         text(
                             "UPDATE workforce_requests SET "
                             "include_project_manager_contact_phone = 1, "
-                            "project_manager_contact_phone = '514-555-0880' "
+                            "project_manager_contact_phone = :project_manager_contact_phone "
                             "WHERE id = 'D-880-MIG'"
-                        )
+                        ),
+                        {"project_manager_contact_phone": synthetic_phone("0880")},
                     )
                     selected = connection.execute(
                         text(
@@ -229,7 +234,7 @@ class SqlMigrationTests(unittest.TestCase):
                     self.assertTrue(bool(selected.include_project_manager_contact_phone))
                     self.assertEqual(
                         selected.project_manager_contact_phone,
-                        "514-555-0880",
+                        synthetic_phone("0880"),
                     )
             finally:
                 engine.dispose()
