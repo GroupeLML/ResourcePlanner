@@ -119,7 +119,10 @@ export default function CommunicationsPage() {
       const previous = preview?.week_start === row.week_start
         && preview.snapshot_fingerprint === row.snapshot_fingerprint
         && preview.mode === row.mode
-        && preview.baseline_fingerprint === row.baseline_fingerprint
+        && (
+          row.mode === "project_confirmation"
+          || preview.baseline_fingerprint === row.baseline_fingerprint
+        )
         && preview.add_generator_cc === row.add_generator_cc
         && preview.generator_identity_fingerprint === row.generator_identity_fingerprint
         ? new Map(
