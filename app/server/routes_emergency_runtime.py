@@ -8,7 +8,11 @@ from typing import Any
 from fastapi import APIRouter, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..application.errors import ApplicationValidationError
+from ..application.errors import (
+    ApplicationError,
+    ApplicationUnavailableError,
+    ApplicationValidationError,
+)
 from ..application.security import AuthPrincipal
 from ..domain.emergency_broadcast import (
     CreateEmergencyBroadcastCommand,
@@ -70,6 +74,20 @@ def _receipt_payload(
 def _private_no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, private"
     response.headers["Vary"] = "Cookie"
+
+
+
+
+async def _bounded_db_read(call, /, *args, **kwargs):
+    try:
+        return await asyncio.to_thread(call, *args, **kwargs)
+    except ApplicationError:
+        raise
+    except Exception as exc:
+        raise ApplicationUnavailableError(
+            "Emergency runtime data is temporarily unavailable.",
+            code="emergency_broadcast_status_unavailable",
+        ) from exc
 
 
 def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRouter:
@@ -189,7 +207,7 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         active = await asyncio.to_thread(runtime.active_broadcast)
         active_users = tuple(item for item in snapshot.observations if item.active)
         receipts = (
-            await asyncio.to_thread(
+            await _bounded_db_read(
                 runtime.repository.acknowledgments_for_users,
                 broadcast_id=active.id,
                 user_ids=tuple(item.user_id for item in active_users),
@@ -198,7 +216,7 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
             else ()
         )
         by_user = {record.user_id: record for record in receipts}
-        labels = await asyncio.to_thread(
+        labels = await _bounded_db_read(
             runtime.repository.user_labels,
             tuple(item.user_id for item in active_users),
         )
@@ -240,7 +258,7 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         cursor: int = Query(default=0, ge=0),
     ) -> dict[str, object]:
         _private_no_store(response)
-        records = await asyncio.to_thread(
+        records = await _bounded_db_read(
             runtime.repository.list_history,
             limit=limit + 1,
             offset=cursor,
@@ -260,14 +278,14 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         cursor: int = Query(default=0, ge=0),
     ) -> dict[str, object]:
         _private_no_store(response)
-        records = await asyncio.to_thread(
+        records = await _bounded_db_read(
             runtime.repository.list_acknowledgments,
             broadcast_id=broadcast_id,
             limit=limit + 1,
             offset=cursor,
         )
         page = records[:limit]
-        labels = await asyncio.to_thread(
+        labels = await _bounded_db_read(
             runtime.repository.user_labels,
             tuple(record.user_id for record in page),
         )
