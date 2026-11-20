@@ -143,6 +143,7 @@ class ProjectCommunicationShiftDelta:
     after: ProjectCommunicationShiftFact | None
     changed_fields: tuple[str, ...] = ()
     historical_refresh: bool = False
+    historical_version: int | None = None
 
 
 def french_long_date(value: date) -> str:
@@ -1568,6 +1569,7 @@ def _project_shift_deltas(
                 after=new,
                 changed_fields=changed_fields,
                 historical_refresh=refresh,
+                historical_version=(previous_version if refresh else None),
             )
         )
     return tuple(deltas)
@@ -1716,18 +1718,31 @@ def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
 
     if delta.historical_refresh and after is not None:
         current_row = after.assignment
-        refresh_details = (
-            f"confirmation {current_row.confirmation}; "
-            f"allocation {current_row.allocation_type}; "
-            f"hors horaire {_yes_no(current_row.outside_schedule)}; "
-            f"tâche {current_row.task_code or current_row.task_id or '—'} "
-            f"{current_row.task_description or after.task_description}"
-        )
+        refresh_values = [
+            f"confirmation {current_row.confirmation}",
+            f"allocation {current_row.allocation_type}",
+            f"hors horaire {_yes_no(current_row.outside_schedule)}",
+            f"identité tâche {current_row.task_id or '—'}",
+            f"code tâche {current_row.task_code or '—'}",
+            f"travaux {current_row.task_description or after.task_description}",
+        ]
+        if delta.historical_version is not None and delta.historical_version < 2:
+            refresh_values.extend(
+                (
+                    f"heures standard {float(current_row.standard_hours or 0):g}",
+                    f"actifs {_display_assets(current_row)}",
+                )
+            )
+        if delta.historical_version is not None and delta.historical_version < 3:
+            refresh_values.append(
+                "téléphone responsable projet "
+                + (_effective_manager_phone(current_row)[1] or "non publié")
+            )
         if delta.kind != "refresh":
             text += (
                 " — Référence historique incomplète — état courant à reconfirmer"
             )
-        text += f" — {refresh_details}"
+        text += " — " + "; ".join(refresh_values)
     return text
 
 
