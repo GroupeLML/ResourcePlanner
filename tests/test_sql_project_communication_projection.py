@@ -2652,6 +2652,137 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "project_communication_delta_baseline_missing",
                 )
 
+    def test_889_historical_refresh_persists_until_v4_batch_is_communicated(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            transport = FakeProjectDraftTransport()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+            )
+            with TestClient(app) as client:
+                current = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_confirmation"
+                )
+                self.assertEqual(current.status_code, 200, current.text)
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_confirmation",
+                        "expected_fingerprint": current.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                historical_id = prepared.json()["id"]
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        batch = session.get(CommunicationBatchRow, historical_id)
+                        assert batch is not None and batch.project_snapshot_json is not None
+                        payload = json.loads(batch.project_snapshot_json)
+                        payload["request_provenance_version"] = 3
+                        for project in payload["projects"]:
+                            for day in project["days"]:
+                                for task in day["tasks"]:
+                                    for assignment in task.get("request_assignments") or ():
+                                        for key in (
+                                            "confirmation",
+                                            "allocation_type",
+                                            "outside_schedule",
+                                            "task_id",
+                                            "task_code",
+                                            "task_description",
+                                        ):
+                                            assignment.pop(key, None)
+                        historical_json = json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                        historical_projection = deserialize_project_projection(
+                            historical_json
+                        )
+                        batch.project_snapshot_json = historical_json
+                        batch.snapshot_fingerprint = project_projection_fingerprint(
+                            historical_projection
+                        )
+                        batch.status = "COMMUNICATED"
+                        batch.communicated_by = "historical-v3"
+                        batch.communicated_at = batch.prepared_at
+                finally:
+                    engine.dispose()
+
+                refresh = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(refresh.status_code, 200, refresh.text)
+                refresh_payload = refresh.json()
+                self.assertGreater(len(refresh_payload["drafts"]), 0)
+                self.assertTrue(
+                    any(
+                        "Référence historique incomplète" in draft["body"]
+                        for draft in refresh_payload["drafts"]
+                    )
+                )
+
+                v4_refresh = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_planning_change",
+                        "expected_fingerprint": refresh_payload["snapshot_fingerprint"],
+                        "expected_baseline_fingerprint": refresh_payload[
+                            "baseline_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(v4_refresh.status_code, 201, v4_refresh.text)
+                refresh_id = v4_refresh.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{refresh_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{refresh_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertGreater(transport.create_calls, 0)
+
+                still_refresh = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(still_refresh.status_code, 200, still_refresh.text)
+                self.assertTrue(
+                    any(
+                        "Référence historique incomplète" in draft["body"]
+                        for draft in still_refresh.json()["drafts"]
+                    )
+                )
+
+                communicated = client.post(
+                    f"/api/v1/communications/project-batches/{refresh_id}/mark-communicated"
+                )
+                self.assertEqual(communicated.status_code, 200, communicated.text)
+
+                completed = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(completed.status_code, 200, completed.text)
+                self.assertEqual(completed.json()["drafts"], [])
+
     def test_889_delta_preparation_rejects_changed_reference_baseline(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
