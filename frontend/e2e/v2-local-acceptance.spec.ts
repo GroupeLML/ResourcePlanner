@@ -1137,6 +1137,11 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(addGeneratorCc).not.toBeChecked();
 
     await page.getByLabel("Semaine du").fill(d1);
+    const deltaPreviewButton = page.getByRole("button", {
+      name: "Générer uniquement les modifications",
+    });
+    await expect(deltaPreviewButton).toBeDisabled();
+    await expect(page.getByText("Aucune communication de référence n’existe encore pour cette semaine.")).toBeVisible();
     await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
 
     const draft = page.locator(".draft-card").filter({ hasText: "Projet P-251" }).first();
@@ -1214,8 +1219,12 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await page.getByRole("button", { name: "Préparer le lot" }).click();
     const prepareRequest = await prepareRequestPromise;
     const preparePayload = prepareRequest.postDataJSON() as {
+      mode: string;
+      expected_baseline_fingerprint: string | null;
       reviews: Array<Record<string, unknown>>;
     };
+    expect(preparePayload.mode).toBe("project_confirmation");
+    expect(preparePayload.expected_baseline_fingerprint).toBeNull();
     expect(preparePayload.reviews.length).toBeGreaterThan(0);
     for (const review of preparePayload.reviews) {
       expect(Object.keys(review).sort()).toEqual([
@@ -1258,6 +1267,18 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(page.locator(".batch-row").first()).toContainText("COMMUNICATED");
     await expect(page.locator(".batch-row").first()).toContainText("SMTP : SENT");
     await expect(page.locator(".batch-row").first().getByRole("button", { name: "Envoyer par SMTP" })).toHaveCount(0);
+
+    await expect(deltaPreviewButton).toBeEnabled();
+    await deltaPreviewButton.click();
+    await expect(page.locator(".preview-summary")).toContainText("Modification de planning");
+    await expect(page.getByText(
+      "Aucune modification depuis la dernière communication pour cette semaine.",
+    )).toBeVisible();
+    await expect(page.locator(".draft-card")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
+    await expect(page.locator(".preview-summary")).toContainText("Confirmation par projet");
+    await expect(page.locator(".draft-card").filter({ hasText: "Projet P-251" }).first()).toBeVisible();
     await closeContext(context);
   });
 
