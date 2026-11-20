@@ -466,7 +466,7 @@ export default function CommunicationsPage() {
                                 }
                                 className={recipient.email ? "" : "recipient-missing"}
                               >
-                                {recipient.display_name} · {recipient.email ?? "Courriel manquant"}
+                                {resourceDisplayName(recipient.display_name)} · {recipient.email ?? "Courriel manquant"}
                               </span>
                             ))}
                           </div>
