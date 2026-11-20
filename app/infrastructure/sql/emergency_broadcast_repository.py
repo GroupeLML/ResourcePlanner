@@ -381,3 +381,67 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
             )
             session.commit()
             return int(result.rowcount or 0)
+
+
+    def list_history(
+        self,
+        *,
+        limit: int = 25,
+    ) -> tuple[EmergencyBroadcastRecord, ...]:
+        bounded = max(1, min(int(limit), 100))
+        with self._factory() as session:
+            rows = session.scalars(
+                select(EmergencyBroadcast)
+                .order_by(EmergencyBroadcast.activated_at.desc(), EmergencyBroadcast.id.desc())
+                .limit(bounded)
+            )
+            return tuple(_broadcast_record(row) for row in rows)
+
+    def list_acknowledgments(
+        self,
+        *,
+        broadcast_id: str,
+        limit: int = 100,
+    ) -> tuple[EmergencyBroadcastAcknowledgmentRecord, ...]:
+        bounded = max(1, min(int(limit), 250))
+        with self._factory() as session:
+            rows = session.scalars(
+                select(EmergencyBroadcastAcknowledgment)
+                .where(EmergencyBroadcastAcknowledgment.broadcast_id == broadcast_id)
+                .order_by(
+                    EmergencyBroadcastAcknowledgment.acknowledged_at,
+                    EmergencyBroadcastAcknowledgment.user_id,
+                )
+                .limit(bounded)
+            )
+            return tuple(_ack_record(row) for row in rows)
+
+    def acknowledgments_for_users(
+        self,
+        *,
+        broadcast_id: str,
+        user_ids: Sequence[str],
+    ) -> tuple[EmergencyBroadcastAcknowledgmentRecord, ...]:
+        ids = tuple(dict.fromkeys(str(value) for value in user_ids if value))
+        if not ids:
+            return ()
+        with self._factory() as session:
+            rows = session.scalars(
+                select(EmergencyBroadcastAcknowledgment).where(
+                    EmergencyBroadcastAcknowledgment.broadcast_id == broadcast_id,
+                    EmergencyBroadcastAcknowledgment.user_id.in_(ids),
+                )
+            )
+            return tuple(_ack_record(row) for row in rows)
+
+    def user_labels(self, user_ids: Sequence[str]) -> dict[str, str]:
+        from .identity_models import AppUser
+
+        ids = tuple(dict.fromkeys(str(value) for value in user_ids if value))
+        if not ids:
+            return {}
+        with self._factory() as session:
+            rows = session.execute(
+                select(AppUser.id, AppUser.display_name).where(AppUser.id.in_(ids))
+            )
+            return {str(row.id): str(row.display_name) for row in rows}
