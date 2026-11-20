@@ -2380,20 +2380,28 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         for version in (1, 2, 3):
             historical = historical_version(current, version)
             frozen = serialize_project_projection(historical)
-            for key in (
-                '"confirmation"',
-                '"allocation_type"',
-                '"outside_schedule"',
-                '"task_id"',
-                '"task_code"',
-                '"task_description"',
-            ):
-                self.assertNotIn(key, frozen)
+            frozen_payload = json.loads(frozen)
+            for project_row in frozen_payload["projects"]:
+                for day_row in project_row["days"]:
+                    for task_row in day_row["tasks"]:
+                        for assignment_row in task_row.get("request_assignments") or ():
+                            for key in (
+                                "confirmation",
+                                "allocation_type",
+                                "outside_schedule",
+                                "task_id",
+                                "task_code",
+                                "task_description",
+                            ):
+                                self.assertNotIn(key, assignment_row)
+            restored_historical = deserialize_project_projection(frozen)
             self.assertEqual(
-                serialize_project_projection(
-                    deserialize_project_projection(frozen)
-                ),
+                serialize_project_projection(restored_historical),
                 frozen,
+            )
+            self.assertEqual(
+                project_projection_fingerprint(restored_historical),
+                project_projection_fingerprint(historical),
             )
 
         identity_changed = v4_shift_projection(
