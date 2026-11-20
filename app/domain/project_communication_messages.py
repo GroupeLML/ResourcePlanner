@@ -1816,6 +1816,14 @@ def serialize_project_projection(
     for project in serialized["projects"]:
         if not project.get("project_manager_erp_phone"):
             project.pop("project_manager_erp_phone", None)
+    v4_keys = (
+        "confirmation",
+        "allocation_type",
+        "outside_schedule",
+        "task_id",
+        "task_code",
+        "task_description",
+    )
     if projection.request_provenance_version is None:
         serialized.pop("request_provenance_version", None)
         serialized.pop("request_provenance_complete", None)
@@ -1824,7 +1832,7 @@ def serialize_project_projection(
                 for task in day["tasks"]:
                     task.pop("request_assignments", None)
     elif projection.request_provenance_version == 1:
-        # Preserve historical v1 JSON byte shape: v2/v3 fields did not exist.
+        # Preserve frozen v1 JSON shape.
         for project in serialized["projects"]:
             for day in project["days"]:
                 for task in day["tasks"]:
@@ -1833,14 +1841,26 @@ def serialize_project_projection(
                         assignment.pop("standard_hours", None)
                         assignment.pop("include_project_manager_contact_phone", None)
                         assignment.pop("project_manager_contact_phone", None)
+                        for key in v4_keys:
+                            assignment.pop(key, None)
     elif projection.request_provenance_version == 2:
-        # Preserve historical v2 JSON byte shape: #880 request-phone facts did not exist.
+        # Preserve frozen v2 JSON shape.
         for project in serialized["projects"]:
             for day in project["days"]:
                 for task in day["tasks"]:
                     for assignment in task.get("request_assignments") or ():
                         assignment.pop("include_project_manager_contact_phone", None)
                         assignment.pop("project_manager_contact_phone", None)
+                        for key in v4_keys:
+                            assignment.pop(key, None)
+    elif projection.request_provenance_version == 3:
+        # Preserve frozen v3 JSON shape.
+        for project in serialized["projects"]:
+            for day in project["days"]:
+                for task in day["tasks"]:
+                    for assignment in task.get("request_assignments") or ():
+                        for key in v4_keys:
+                            assignment.pop(key, None)
     return json.dumps(
         serialized,
         ensure_ascii=False,
@@ -1863,8 +1883,21 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
             for task in day.get("tasks") or ()
         ):
             raise ValueError("Snapshot chantier legacy incohérent")
-    elif provenance_version not in (1, 2, 3) or provenance_complete is not True:
+    elif (
+        type(provenance_version) is not int
+        or provenance_version not in (1, 2, 3, 4)
+        or provenance_complete is not True
+    ):
         raise ValueError("Version ou couverture de provenance chantier invalide")
+
+    v4_keys = (
+        "confirmation",
+        "allocation_type",
+        "outside_schedule",
+        "task_id",
+        "task_code",
+        "task_description",
+    )
 
     if provenance_version == 1:
         for project in data.get("projects") or ():
@@ -1876,12 +1909,13 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                             or "standard_hours" in assignment
                             or "include_project_manager_contact_phone" in assignment
                             or "project_manager_contact_phone" in assignment
+                            or any(key in assignment for key in v4_keys)
                         ):
                             raise ValueError(
-                                "Snapshot provenance v1 contient des faits v2"
+                                "Snapshot provenance v1 contient des faits de capacité ultérieure"
                             )
 
-    if provenance_version in (2, 3):
+    if provenance_version in (2, 3, 4):
         for project in data.get("projects") or ():
             for day in project.get("days") or ():
                 for task in day.get("tasks") or ():
@@ -1914,16 +1948,17 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                         if (
                             "include_project_manager_contact_phone" in assignment
                             or "project_manager_contact_phone" in assignment
+                            or any(key in assignment for key in v4_keys)
                         ):
                             raise ValueError(
-                                "Snapshot provenance v2 contient des faits v3"
+                                "Snapshot provenance v2 contient des faits de capacité ultérieure"
                             )
 
-    if provenance_version == 3:
+    if provenance_version in (3, 4):
         for project in data.get("projects") or ():
             if str(project.get("project_manager_erp_phone") or "").strip():
                 raise ValueError(
-                    "Snapshot provenance v3 invalide: téléphone ERP responsable projet interdit"
+                    "Snapshot provenance v3+ invalide: téléphone ERP responsable projet interdit"
                 )
             for day in project.get("days") or ():
                 for task in day.get("tasks") or ():
@@ -1933,14 +1968,14 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                             or "project_manager_contact_phone" not in assignment
                         ):
                             raise ValueError(
-                                "Snapshot provenance v3 incomplet: téléphone responsable projet absent"
+                                "Snapshot provenance v3+ incomplet: téléphone responsable projet absent"
                             )
                         include_manager_phone = assignment[
                             "include_project_manager_contact_phone"
                         ]
-                        if not isinstance(include_manager_phone, bool):
+                        if type(include_manager_phone) is not bool:
                             raise ValueError(
-                                "Snapshot provenance v3 invalide: sélection téléphone non booléenne"
+                                "Snapshot provenance v3+ invalide: sélection téléphone non booléenne"
                             )
                         if (
                             include_manager_phone
@@ -1949,7 +1984,75 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                             ).strip()
                         ):
                             raise ValueError(
-                                "Snapshot provenance v3 invalide: téléphone sélectionné vide"
+                                "Snapshot provenance v3+ invalide: téléphone sélectionné vide"
+                            )
+
+    if provenance_version == 3:
+        for project in data.get("projects") or ():
+            for day in project.get("days") or ():
+                for task in day.get("tasks") or ():
+                    for assignment in task.get("request_assignments") or ():
+                        if any(key in assignment for key in v4_keys):
+                            raise ValueError(
+                                "Snapshot provenance v3 contient des faits Shift v4"
+                            )
+
+    if provenance_version == 4:
+        for project in data.get("projects") or ():
+            for day in project.get("days") or ():
+                for task in day.get("tasks") or ():
+                    for assignment in task.get("request_assignments") or ():
+                        if any(key not in assignment for key in v4_keys):
+                            raise ValueError(
+                                "Snapshot provenance v4 incomplet: faits Shift absents"
+                            )
+                        confirmation = assignment["confirmation"]
+                        allocation_type = assignment["allocation_type"]
+                        outside_schedule = assignment["outside_schedule"]
+                        task_id = assignment["task_id"]
+                        task_code = assignment["task_code"]
+                        task_description = assignment["task_description"]
+                        if confirmation not in VALID_CONFIRMATIONS:
+                            raise ValueError(
+                                "Snapshot provenance v4 invalide: confirmation"
+                            )
+                        if (
+                            not isinstance(allocation_type, str)
+                            or not allocation_type.strip()
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v4 invalide: type d'allocation"
+                            )
+                        if type(outside_schedule) is not bool:
+                            raise ValueError(
+                                "Snapshot provenance v4 invalide: hors horaire non booléen"
+                            )
+                        if (
+                            task_id is not None
+                            and (
+                                not isinstance(task_id, str)
+                                or not task_id.strip()
+                            )
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v4 invalide: identité tâche"
+                            )
+                        if (
+                            task_code is not None
+                            and (
+                                not isinstance(task_code, str)
+                                or not task_code.strip()
+                            )
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v4 invalide: code tâche"
+                            )
+                        if (
+                            not isinstance(task_description, str)
+                            or not task_description.strip()
+                        ):
+                            raise ValueError(
+                                "Snapshot provenance v4 invalide: description tâche"
                             )
 
     def participant(row):
@@ -2081,12 +2184,42 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 ),
                                 standard_hours=(
                                     float(value["standard_hours"])
-                                    if provenance_version in (2, 3)
+                                    if provenance_version in (2, 3, 4)
                                     else (
                                         float(value["standard_hours"])
                                         if value.get("standard_hours") is not None
                                         else None
                                     )
+                                ),
+                                confirmation=(
+                                    value["confirmation"]
+                                    if provenance_version == 4
+                                    else None
+                                ),
+                                allocation_type=(
+                                    value["allocation_type"]
+                                    if provenance_version == 4
+                                    else None
+                                ),
+                                outside_schedule=(
+                                    value["outside_schedule"]
+                                    if provenance_version == 4
+                                    else None
+                                ),
+                                task_id=(
+                                    value["task_id"]
+                                    if provenance_version == 4
+                                    else None
+                                ),
+                                task_code=(
+                                    value["task_code"]
+                                    if provenance_version == 4
+                                    else None
+                                ),
+                                task_description=(
+                                    value["task_description"]
+                                    if provenance_version == 4
+                                    else None
                                 ),
                             )
                             for value in task_row.get("request_assignments") or ()
