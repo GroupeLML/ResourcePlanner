@@ -126,6 +126,24 @@ class ProjectCommunicationChange:
     after: ProjectCommunicationProject | None
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectCommunicationShiftFact:
+    project_id: str
+    day: date
+    task_description: str
+    assignment: ProjectCommunicationRequestAssignment
+    operational_responsible: ContactResolution | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectCommunicationShiftDelta:
+    kind: str  # added | removed | replaced | moved | modified | refresh
+    before: ProjectCommunicationShiftFact | None
+    after: ProjectCommunicationShiftFact | None
+    changed_fields: tuple[str, ...] = ()
+    historical_refresh: bool = False
+
+
 def french_long_date(value: date) -> str:
     return (
         f"{_WEEKDAYS_FR[value.weekday()].capitalize()} le "
@@ -619,6 +637,98 @@ def _project_v3_semantic_payload(
     )
 
 
+def _project_shift_facts(
+    project: ProjectCommunicationProject,
+) -> dict[str, ProjectCommunicationShiftFact]:
+    facts: dict[str, ProjectCommunicationShiftFact] = {}
+    for day in project.days:
+        for task in day.tasks:
+            responsibility_by_shift = {
+                assignment.shift_id: assignment.operational_responsible
+                for assignment in task.responsibility_assignments
+            }
+            for assignment in task.request_assignments:
+                facts[assignment.shift_id] = ProjectCommunicationShiftFact(
+                    project_id=project.project_id,
+                    day=day.day,
+                    task_description=task.task_description,
+                    assignment=assignment,
+                    operational_responsible=responsibility_by_shift.get(
+                        assignment.shift_id
+                    ),
+                )
+    return facts
+
+
+def _effective_manager_phone(
+    assignment: ProjectCommunicationRequestAssignment,
+) -> tuple[bool, str]:
+    enabled = bool(assignment.include_project_manager_contact_phone)
+    return (
+        enabled,
+        (
+            " ".join((assignment.project_manager_contact_phone or "").split())
+            if enabled
+            else ""
+        ),
+    )
+
+
+def _shift_v4_payload(
+    fact: ProjectCommunicationShiftFact,
+) -> tuple[object, ...]:
+    row = fact.assignment
+    return (
+        row.shift_id,
+        fact.project_id,
+        fact.day.isoformat(),
+        row.resource_id,
+        row.resource_name,
+        round(float(row.hours), 2),
+        row.confirmation,
+        row.allocation_type,
+        row.outside_schedule,
+        row.task_id,
+        row.task_code,
+        row.task_description,
+        row.workforce_request_id,
+        row.request_number,
+        row.site_contact_name,
+        row.site_contact_phone,
+        _effective_manager_phone(row),
+        round(float(row.standard_hours or 0.0), 2),
+        tuple(
+            sorted(
+                (_asset_payload(asset) for asset in employee_assigned_assets(row)),
+                key=repr,
+            )
+        ),
+        (
+            _responsible_payload(fact.operational_responsible)
+            if fact.operational_responsible is not None
+            else None
+        ),
+    )
+
+
+def _shift_v4_semantics(
+    project: ProjectCommunicationProject,
+) -> tuple[object, ...]:
+    return tuple(
+        _shift_v4_payload(fact)
+        for _shift_id, fact in sorted(_project_shift_facts(project).items())
+    )
+
+
+def _project_v4_semantic_payload(
+    project: ProjectCommunicationProject,
+) -> tuple[object, ...]:
+    return (
+        _project_v3_semantic_payload(project),
+        ("shift_provenance_v4", _shift_v4_semantics(project)),
+    )
+
+
 def _fingerprint_payload(payload: object) -> str:
     encoded = json.dumps(
         payload,
@@ -635,7 +745,18 @@ def project_projection_fingerprint(
     if version is not None:
         _validate_provenance(projection)
 
-    if version == 3:
+    if version == 4:
+        payload = (
+            "project_provenance_v4",
+            projection.week_start.isoformat(),
+            projection.week_end.isoformat(),
+            tuple(
+                _project_v4_semantic_payload(project)
+                for project in projection.projects
+            ),
+            tuple(projection.diagnostics),
+        )
+    elif version == 3:
         payload = (
             "project_provenance_v3",
             projection.week_start.isoformat(),
