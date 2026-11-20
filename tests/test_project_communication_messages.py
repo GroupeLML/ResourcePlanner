@@ -2429,6 +2429,39 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             project_projection_fingerprint(historical_version(identity_changed, 3)),
         )
 
+        project_row = current.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        requirement_only = replace(
+            current,
+            projects=(
+                replace(
+                    project_row,
+                    days=(
+                        replace(
+                            day,
+                            tasks=(
+                                replace(
+                                    task,
+                                    request_assignments=tuple(
+                                        replace(
+                                            row,
+                                            requirement_id=f"TRACE-{row.requirement_id}",
+                                        )
+                                        for row in task.request_assignments
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        self.assertEqual(
+            project_projection_fingerprint(current),
+            project_projection_fingerprint(requirement_only),
+        )
+
     def test_889_v4_raw_capability_validation_fails_closed(self) -> None:
         current = v4_shift_projection(
             (
