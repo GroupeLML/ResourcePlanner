@@ -559,7 +559,6 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             if _text(manager.employee_external_id)
         }
         resources_by_employee_rows: dict[str, list[Resource]] = {}
-        phones_by_employee: dict[str, list[str | None]] = {}
         # Bound the IN-list for SQL Server parameter limits.
         ordered_employee_ids = sorted(employee_ids)
         for offset in range(0, len(ordered_employee_ids), 900):
@@ -572,20 +571,12 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     resources_by_employee_rows.setdefault(key, []).append(
                         resource_row
                     )
-                    phones_by_employee.setdefault(key, []).append(
-                        _text(resource_row.erp_phone) or None
-                    )
         # Duplicate Resource identities are ambiguous, even when their phone
         # values happen to agree: never choose an arbitrary row.
         canonical_resources_by_employee = {
             employee_id: resources[0]
             for employee_id, resources in resources_by_employee_rows.items()
             if len(resources) == 1
-        }
-        canonical_erp_phones = {
-            employee_id: phones[0]
-            for employee_id, phones in phones_by_employee.items()
-            if len(phones) == 1 and phones[0] is not None
         }
         relevant_contact_ids = {
             _text(manager.business_contact_id)
@@ -724,9 +715,6 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     resource_name=resource.name,
                     resource_contact=resource_contact,
                     project_manager=manager,
-                    project_manager_erp_phone=canonical_erp_phones.get(
-                        _text(project_managers[project.id].employee_external_id)
-                    ) if project_managers.get(project.id) is not None else None,
                     operational_responsible=resolution.operational_responsible,
                     project_co_managers=co_managers,
                     requester=requester,
@@ -741,6 +729,13 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                     ),
                     site_contact_phone=(
                         _text(request.site_contact_phone) or None
+                        if request is not None else None
+                    ),
+                    include_project_manager_contact_phone=bool(
+                        request.include_project_manager_contact_phone
+                    ) if request is not None else False,
+                    project_manager_contact_phone=(
+                        _text(request.project_manager_contact_phone) or None
                         if request is not None else None
                     ),
                     assets=tuple(assets_by_shift.get(shift.id, ())),

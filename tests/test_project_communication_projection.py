@@ -172,6 +172,126 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
                 request_provenance_version=2,
             )
 
+    def test_880_v3_builds_enforces_v2_invariants_and_fails_closed(self) -> None:
+        valid = replace(
+            self._row(shift_id="S-V3"),
+            workforce_request_id="D-V3",
+            request_number="DMO-V3",
+            standard_hours=8.0,
+            assets=(),
+            include_project_manager_contact_phone=True,
+            project_manager_contact_phone=synthetic_phone("0880"),
+        )
+        result = build_project_communication_projection(
+            week_start=WEEK,
+            week_end=date(2026, 9, 27),
+            assignments=(valid,),
+            request_provenance_version=3,
+        )
+        self.assertEqual(result.request_provenance_version, 3)
+        assignment = result.projects[0].days[0].tasks[0].request_assignments[0]
+        self.assertTrue(assignment.include_project_manager_contact_phone)
+        self.assertEqual(
+            assignment.project_manager_contact_phone,
+            synthetic_phone("0880"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "Heures standard"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(
+                    replace(valid, shift_id="S-NO-HOURS", standard_hours=None),
+                ),
+                request_provenance_version=3,
+            )
+        with self.assertRaisesRegex(ValueError, "Actifs Shift"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(
+                    replace(valid, shift_id="S-ASSETS-LIST", assets=[]),
+                ),
+                request_provenance_version=3,
+            )
+        with self.assertRaisesRegex(ValueError, "sélectionné mais vide"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(
+                    replace(
+                        valid,
+                        shift_id="S-BLANK-PHONE",
+                        project_manager_contact_phone="  ",
+                    ),
+                ),
+                request_provenance_version=3,
+            )
+        with self.assertRaisesRegex(ValueError, "booléenne"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(
+                    replace(
+                        valid,
+                        shift_id="S-NONBOOL",
+                        include_project_manager_contact_phone="false",
+                    ),
+                ),
+                request_provenance_version=3,
+            )
+        with self.assertRaisesRegex(ValueError, "Téléphone ERP"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(
+                    replace(
+                        valid,
+                        shift_id="S-ERP-PHONE",
+                        include_project_manager_contact_phone=False,
+                        project_manager_contact_phone=synthetic_phone("0888"),
+                        project_manager_erp_phone=synthetic_phone("0831"),
+                    ),
+                ),
+                request_provenance_version=3,
+            )
+        with self.assertRaisesRegex(ValueError, "non prise en charge"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(valid,),
+                request_provenance_version=4,
+            )
+
+    def test_880_v1_v2_do_not_gain_v3_request_phone_facts(self) -> None:
+        source = replace(
+            self._row(shift_id="S-COMPAT"),
+            workforce_request_id="D-COMPAT",
+            request_number="DMO-COMPAT",
+            standard_hours=8.0,
+            assets=(),
+            include_project_manager_contact_phone=True,
+            project_manager_contact_phone=synthetic_phone("0880"),
+        )
+        for version in (1, 2):
+            with self.subTest(version=version):
+                result = build_project_communication_projection(
+                    week_start=WEEK,
+                    week_end=date(2026, 9, 27),
+                    assignments=(source,),
+                    request_provenance_version=version,
+                )
+                assignment = (
+                    result.projects[0]
+                    .days[0]
+                    .tasks[0]
+                    .request_assignments[0]
+                )
+                self.assertFalse(
+                    assignment.include_project_manager_contact_phone
+                )
+                self.assertIsNone(assignment.project_manager_contact_phone)
+
     def test_831_manager_erp_phone_propagates_without_changing_shift_grouping(self) -> None:
         rows = (
             replace(self._row(shift_id="S1", hours=3.0),

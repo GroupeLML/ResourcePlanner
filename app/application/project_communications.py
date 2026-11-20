@@ -252,7 +252,7 @@ class ProjectCommunicationService:
             week_start=week,
             week_end=week_end,
             assignments=tuple(assignments),
-            request_provenance_version=2,
+            request_provenance_version=3,
         )
 
     @staticmethod

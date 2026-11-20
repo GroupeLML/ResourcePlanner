@@ -75,6 +75,8 @@ type FormState = {
   description: string;
   site_contact_name: string;
   site_contact_phone: string;
+  include_project_manager_contact_phone: boolean;
+  project_manager_contact_phone: string;
   resource_count: string;
   required_competency_ids: string[];
   required_resource_class: string;
@@ -135,6 +137,8 @@ function emptyForm(projectNumber = "", requesterUserId = ""): FormState {
     description: "",
     site_contact_name: "",
     site_contact_phone: "",
+    include_project_manager_contact_phone: false,
+    project_manager_contact_phone: "",
     resource_count: "1",
     required_competency_ids: [],
     required_resource_class: "",
@@ -177,6 +181,9 @@ function formFromDemand(demand: DemandReadModel): FormState {
     description: demand.description ?? "",
     site_contact_name: demand.site_contact_name ?? "",
     site_contact_phone: demand.site_contact_phone ?? "",
+    include_project_manager_contact_phone:
+      demand.include_project_manager_contact_phone ?? false,
+    project_manager_contact_phone: demand.project_manager_contact_phone ?? "",
     resource_count: String(demand.resource_count || 1),
     required_competency_ids: demand.required_competency_ids ?? [],
     required_resource_class: demand.line_mode
@@ -721,6 +728,14 @@ export default function DemandsPage({
       return;
     }
 
+    if (
+      form.include_project_manager_contact_phone
+      && !form.project_manager_contact_phone.trim()
+    ) {
+      setError("Saisis le numéro de contact du responsable projet ou désactive l’option.");
+      return;
+    }
+
     let payload: DemandWrite;
     if (lineMode) {
       if (lines.length === 0) {
@@ -752,6 +767,22 @@ export default function DemandsPage({
         description: form.description.trim(),
         site_contact_name: form.site_contact_name.trim() || null,
         site_contact_phone: form.site_contact_phone.trim() || null,
+        ...(
+          creating
+          || form.include_project_manager_contact_phone !== Boolean(
+            selectedDemand?.include_project_manager_contact_phone,
+          )
+          || form.project_manager_contact_phone.trim() !== (
+            selectedDemand?.project_manager_contact_phone ?? ""
+          ).trim()
+            ? {
+                include_project_manager_contact_phone:
+                  form.include_project_manager_contact_phone,
+                project_manager_contact_phone:
+                  form.project_manager_contact_phone.trim() || null,
+              }
+            : {}
+        ),
         lines: lines.map(demandLineWrite),
         ...(selectedDemand ? { expected_version: selectedDemand.version } : {}),
       };
@@ -812,6 +843,22 @@ export default function DemandsPage({
         desired_start: form.desired_start,
         desired_end: form.desired_end || null,
         description: form.description.trim(),
+        ...(
+          creating
+          || form.include_project_manager_contact_phone !== Boolean(
+            selectedDemand?.include_project_manager_contact_phone,
+          )
+          || form.project_manager_contact_phone.trim() !== (
+            selectedDemand?.project_manager_contact_phone ?? ""
+          ).trim()
+            ? {
+                include_project_manager_contact_phone:
+                  form.include_project_manager_contact_phone,
+                project_manager_contact_phone:
+                  form.project_manager_contact_phone.trim() || null,
+              }
+            : {}
+        ),
         ...((creating
           || form.site_contact_name.trim() !== (selectedDemand?.site_contact_name ?? "").trim()
           || form.site_contact_phone.trim() !== (selectedDemand?.site_contact_phone ?? "").trim())
@@ -855,16 +902,27 @@ export default function DemandsPage({
         const previousForm = formFromDemand(selectedDemand);
         const onlyContactEdited = (
           Object.keys(form).every((key) => (
-            key === "site_contact_name" || key === "site_contact_phone"
+            key === "site_contact_name"
+            || key === "site_contact_phone"
+            || key === "include_project_manager_contact_phone"
+            || key === "project_manager_contact_phone"
             || JSON.stringify(form[key as keyof FormState]) === JSON.stringify(previousForm[key as keyof FormState])
           ))
         ) && (
           form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "")
           || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "")
+          || form.include_project_manager_contact_phone
+            !== Boolean(selectedDemand.include_project_manager_contact_phone)
+          || form.project_manager_contact_phone.trim()
+            !== (selectedDemand.project_manager_contact_phone ?? "").trim()
         ) && !contextDirty && lineMode === Boolean(selectedDemand.line_mode);
         const contactFieldsChanged = (
           form.site_contact_name.trim() !== (selectedDemand.site_contact_name ?? "").trim()
           || form.site_contact_phone.trim() !== (selectedDemand.site_contact_phone ?? "").trim()
+          || form.include_project_manager_contact_phone
+            !== Boolean(selectedDemand.include_project_manager_contact_phone)
+          || form.project_manager_contact_phone.trim()
+            !== (selectedDemand.project_manager_contact_phone ?? "").trim()
         );
         const result = onlyContactEdited
           ? await updateDemandSiteContact(
@@ -872,6 +930,8 @@ export default function DemandsPage({
               selectedDemand.version,
               form.site_contact_name.trim() || null,
               form.site_contact_phone.trim() || null,
+              form.include_project_manager_contact_phone,
+              form.project_manager_contact_phone.trim() || null,
             )
           : await updateDemand(
           selectedDemand.number,
@@ -1235,6 +1295,31 @@ export default function DemandsPage({
                 <label className="span-2">
                   <span>Description / contexte de la demande</span>
                   <textarea rows={4} value={form.description} onChange={(event) => setField("description", event.target.value)} disabled={saving} placeholder="Contexte commun, travaux demandés et contraintes…" />
+                </label>
+                <label className="span-2">
+                  <span>
+                    <input
+                      type="checkbox"
+                      checked={form.include_project_manager_contact_phone}
+                      onChange={(event) => setField(
+                        "include_project_manager_contact_phone",
+                        event.target.checked,
+                      )}
+                      disabled={saving}
+                    />
+                    {" "}Include project manager's contact number
+                  </span>
+                  <input
+                    type="tel"
+                    maxLength={64}
+                    value={form.project_manager_contact_phone}
+                    onChange={(event) => setField(
+                      "project_manager_contact_phone",
+                      event.target.value,
+                    )}
+                    disabled={saving || !form.include_project_manager_contact_phone}
+                    placeholder="Numéro de contact"
+                  />
                 </label>
                 <label>
                   <span>Contact chantier — Nom</span>

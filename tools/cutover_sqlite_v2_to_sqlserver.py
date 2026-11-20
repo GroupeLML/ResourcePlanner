@@ -94,6 +94,8 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
             "workforce_requests": {
                 "site_contact_name": None,
                 "site_contact_phone": None,
+                "include_project_manager_contact_phone": False,
+                "project_manager_contact_phone": None,
             },
             "auth_sessions": {
                 "auth_mode": None,

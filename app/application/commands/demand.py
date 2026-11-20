@@ -94,6 +94,8 @@ class DemandCreateCommand:
     site_client: str = ""
     site_contact_name: str | None = None
     site_contact_phone: str | None = None
+    include_project_manager_contact_phone: bool = False
+    project_manager_contact_phone: str | None = None
     location: str = ""
     resource_count: int = 1
     required_competencies: str | None = None
@@ -152,6 +154,14 @@ class DemandCreateCommand:
                     code="demand_lines_mixed_contract",
                     context={"fields": tuple(sorted(mixed))},
                 )
+        if self.include_project_manager_contact_phone and not optional_text(
+            self.project_manager_contact_phone
+        ):
+            raise ApplicationValidationError(
+                "Le numéro de contact du responsable projet est requis lorsque l'option est activée.",
+                code="demand_project_manager_contact_phone_required",
+                context={"field": "project_manager_contact_phone"},
+            )
         if self.resource_count < 1:
             raise ApplicationValidationError(
                 "Le nombre de ressources doit être au moins 1.",
@@ -225,6 +235,12 @@ class DemandCreateCommand:
             site_client=text(values.get("SiteClient")),
             site_contact_name=optional_text(values.get("SiteContactName")),
             site_contact_phone=optional_text(values.get("SiteContactPhone")),
+            include_project_manager_contact_phone=bool(
+                values.get("IncludeProjectManagerContactPhone", False)
+            ),
+            project_manager_contact_phone=optional_text(
+                values.get("ProjectManagerContactPhone")
+            ),
             location=text(values.get("Lieu")),
             resource_count=int_value(
                 values.get("NombreRessources"),
@@ -281,6 +297,12 @@ class DemandCreateCommand:
             "SiteClient": text(self.site_client),
             "SiteContactName": optional_text(self.site_contact_name),
             "SiteContactPhone": optional_text(self.site_contact_phone),
+            "IncludeProjectManagerContactPhone": bool(
+                self.include_project_manager_contact_phone
+            ),
+            "ProjectManagerContactPhone": optional_text(
+                self.project_manager_contact_phone
+            ),
             "Lieu": text(self.location),
             "NombreRessources": int(self.resource_count),
             "CompetencesRequises": self.required_competencies,
@@ -319,6 +341,8 @@ class DemandUpdateCommand:
     site_client: str | None | UnsetType = UNSET
     site_contact_name: str | None | UnsetType = UNSET
     site_contact_phone: str | None | UnsetType = UNSET
+    include_project_manager_contact_phone: bool | UnsetType = UNSET
+    project_manager_contact_phone: str | None | UnsetType = UNSET
     location: str | None | UnsetType = UNSET
     resource_count: int | None | UnsetType = UNSET
     required_competencies: str | None | UnsetType = UNSET
@@ -420,6 +444,8 @@ class DemandUpdateCommand:
             "SiteClient",
             "SiteContactName",
             "SiteContactPhone",
+            "IncludeProjectManagerContactPhone",
+            "ProjectManagerContactPhone",
             "Lieu",
             "NombreRessources",
             "CompetencesRequises",
@@ -470,6 +496,14 @@ class DemandUpdateCommand:
             site_client=present("SiteClient", optional_text),
             site_contact_name=present("SiteContactName", optional_text),
             site_contact_phone=present("SiteContactPhone", optional_text),
+            include_project_manager_contact_phone=(
+                bool(updates["IncludeProjectManagerContactPhone"])
+                if "IncludeProjectManagerContactPhone" in updates
+                else UNSET
+            ),
+            project_manager_contact_phone=present(
+                "ProjectManagerContactPhone", optional_text
+            ),
             location=present("Lieu", optional_text),
             resource_count=(
                 int_value(
@@ -522,6 +556,8 @@ class DemandUpdateCommand:
             "SiteClient": self.site_client,
             "SiteContactName": self.site_contact_name,
             "SiteContactPhone": self.site_contact_phone,
+            "IncludeProjectManagerContactPhone": self.include_project_manager_contact_phone,
+            "ProjectManagerContactPhone": self.project_manager_contact_phone,
             "Lieu": self.location,
             "NombreRessources": self.resource_count,
             "CompetencesRequises": self.required_competencies,

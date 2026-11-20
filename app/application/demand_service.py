@@ -926,7 +926,14 @@ class DemandService:
             ACTION_MODIFY,
             expected_version=expected_version,
         )
-        contact_edit = bool({"SiteContactName", "SiteContactPhone"}.intersection(data))
+        contact_edit = bool(
+            {
+                "SiteContactName",
+                "SiteContactPhone",
+                "IncludeProjectManagerContactPhone",
+                "ProjectManagerContactPhone",
+            }.intersection(data)
+        )
         if contact_edit and expected_version is None:
             raise ApplicationValidationError(
                 "expected_version est requis pour modifier le contact chantier.",
@@ -941,6 +948,25 @@ class DemandService:
                     context={"demand_number": number},
                 )
             data["ExpectedVersion"] = int(expected_version)
+        effective_include_manager_phone = bool(
+            data.get(
+                "IncludeProjectManagerContactPhone",
+                existing.include_project_manager_contact_phone,
+            )
+        )
+        effective_manager_phone = str(
+            data.get(
+                "ProjectManagerContactPhone",
+                existing.project_manager_contact_phone,
+            )
+            or ""
+        ).strip()
+        if effective_include_manager_phone and not effective_manager_phone:
+            raise ApplicationValidationError(
+                "Le numéro de contact du responsable projet est requis lorsque l'option est activée.",
+                code="demand_project_manager_contact_phone_required",
+                context={"demand_number": number, "field": "project_manager_contact_phone"},
+            )
         if "RequestLines" not in data and not existing.line_mode:
             final_count = int(data.get("NombreRessources", existing.resource_count) or 1)
             final_hours = data.get("TempsEstimeHeures", existing.estimated_hours)

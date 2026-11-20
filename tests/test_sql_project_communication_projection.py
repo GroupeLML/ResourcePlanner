@@ -583,7 +583,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     before = self._service(session).project_projection(
                         week_start=WEEK
                     )
-                self.assertEqual(before.request_provenance_version, 2)
+                self.assertEqual(before.request_provenance_version, 3)
                 before_rows = {
                     row.resource_id: row
                     for task in before.projects[0].days[0].tasks
@@ -786,105 +786,39 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             ],
         )
 
-    def test_831_sql_phone_uses_canonical_employee_identity_not_contact(self) -> None:
+    def test_880_erp_phone_is_not_current_communication_authority(self) -> None:
         with TemporaryDirectory() as directory:
             url = self._database(directory)
             engine = create_sql_engine(url)
             factory = create_session_factory(engine)
             try:
                 with factory.begin() as session:
-                    pm_contact = session.get(BusinessContact, "C-PM")
-                    assert pm_contact is not None
-                    pm_contact.phone = "WRONG-CONTACT-PHONE"
-                    project_row = session.get(Project, "P1")
-                    assert project_row is not None
-                    # ERP sync normally trims these; the canonical resolver must
-                    # also normalize an older padded project identity.
-                    project_row.project_manager_external_id = " PM-1 "
-                    session.add_all((
+                    session.add(
                         Resource(
-                            id="R-MANAGER-831", external_id="PM-1",
-                            name="Unrelated ERP label", email="wrong" + chr(64) + TEST_DOMAIN,
-                            active=False, erp_active=False, erp_phone=synthetic_phone("0100"),
-                        ),
-                        Resource(
-                            id="R-NAME-831", external_id="NOT-PM-1",
-                            name="Chargé de projet Démo", email="pm" + chr(64) + TEST_DOMAIN,
-                            active=True, erp_active=True, erp_phone="WRONG-NAME-PHONE",
-                        ),
-                    ))
-                def current():
-                    with factory() as session:
-                        service = self._service(session)
-                        return service.project_projection(week_start=WEEK)
-                result = current()
-                self.assertEqual(result.projects[0].project_manager_erp_phone, synthetic_phone("0100"))
-                self.assertEqual(result.projects[0].project_manager.phone,
-                                 "WRONG-CONTACT-PHONE")
-                self.assertEqual(result.projects[0].project_manager.display_name,
-                                 "Chargé de projet Démo")
-
-                with factory.begin() as session:
-                    row = session.get(Resource, "R-MANAGER-831")
-                    assert row is not None
-                    row.erp_phone = None
-                self.assertIsNone(current().projects[0].project_manager_erp_phone)
-
-                with factory() as session:
-                    session.add(Resource(
-                        id="R-DUPLICATE-831", external_id="PM-1",
-                        name="Duplicate ERP identity", active=False,
-                        erp_active=False, erp_phone=synthetic_phone("0900"),
-                    ))
-                    with self.assertRaises(IntegrityError):
-                        session.flush()
-                    session.rollback()
-
-                with factory() as session:
-                    real_execute = session.execute
-
-                    class DuplicatePhoneRows:
-                        def all(self):
-                            return [
-                                ("PM-1", synthetic_phone("0100")),
-                                ("PM-1", synthetic_phone("0900")),
-                            ]
-
-                    def execute_with_duplicate_resource_identity(statement, *args, **kwargs):
-                        selected_columns = tuple(
-                            getattr(statement, "selected_columns", ())
+                            id="R-MANAGER-880",
+                            external_id="PM-1",
+                            name="ERP manager metadata",
+                            email="manager-resource" + chr(64) + TEST_DOMAIN,
+                            active=False,
+                            erp_active=False,
+                            erp_phone=synthetic_phone("0880"),
                         )
-                        if (
-                            len(selected_columns) == 2
-                            and [column.name for column in selected_columns]
-                            == ["external_id", "erp_phone"]
-                            and all(
-                                getattr(column.table, "name", None) == "resources"
-                                for column in selected_columns
-                            )
-                        ):
-                            return DuplicatePhoneRows()
-                        return real_execute(statement, *args, **kwargs)
-
-                    with patch.object(
-                        session,
-                        "execute",
-                        side_effect=execute_with_duplicate_resource_identity,
-                    ):
-                        ambiguous = self._service(session).project_projection(
-                            week_start=WEEK
-                        )
-                self.assertIsNone(
-                    ambiguous.projects[0].project_manager_erp_phone
-                )
-
-                with factory.begin() as session:
-                    pm = session.get(Resource, "R-MANAGER-831")
-                    assert pm is not None
-                    session.delete(pm)
-                self.assertIsNone(current().projects[0].project_manager_erp_phone)
+                    )
+                with factory() as session:
+                    projection = self._service(session).project_projection(
+                        week_start=WEEK
+                    )
+                    preview = self._service(session).project_preview(
+                        week_start=WEEK
+                    )
             finally:
                 engine.dispose()
+
+        self.assertEqual(projection.request_provenance_version, 3)
+        self.assertIsNone(projection.projects[0].project_manager_erp_phone)
+        body = preview.drafts[0].body
+        self.assertIn("Responsable projet\nChargé de projet Démo", body)
+        self.assertNotIn(synthetic_phone("0880"), body)
 
     def test_871_communication_manager_uses_canonical_app_user_human_name(self) -> None:
         with TemporaryDirectory() as directory:
@@ -920,9 +854,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(len(preview.drafts), 1)
                 draft = preview.drafts[0]
                 self.assertIn(
-                    "Responsable projet\nJean Tremblay\n" + phone,
+                    "Responsable projet\nJean Tremblay",
                     draft.body,
                 )
+                self.assertNotIn(phone, draft.body)
                 self.assertNotIn("12345 - Jean Tremblay", draft.body)
                 self.assertIsNotNone(draft.body_html)
                 self.assertIn(">Jean Tremblay</div>", draft.body_html or "")
@@ -1147,9 +1082,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(len(projection.drafts), 1)
                 draft = projection.drafts[0]
                 self.assertIn(
-                    "Responsable projet\nAncien nom\n" + synthetic_phone("0100"),
+                    "Responsable projet\nAncien nom",
                     draft.body,
                 )
+                self.assertNotIn(synthetic_phone("0100"), draft.body)
                 self.assertNotIn("ERP source", draft.body)
                 self.assertFalse(draft.approvable)
                 self.assertIsNone(draft.to_recipient.email)
@@ -1206,6 +1142,14 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                     ):
                                         assignment.pop("assets", None)
                                         assignment.pop("standard_hours", None)
+                                        assignment.pop(
+                                            "include_project_manager_contact_phone",
+                                            None,
+                                        )
+                                        assignment.pop(
+                                            "project_manager_contact_phone",
+                                            None,
+                                        )
                         legacy_json = json.dumps(
                             legacy,
                             ensure_ascii=False,
@@ -1343,21 +1287,23 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "project_communication_batch_stale",
                 )
 
-    def test_831_preview_prepared_stale_and_graph_smtp_use_persisted_body(self) -> None:
+    def test_880_request_phone_changes_stale_batch_and_persists_to_transports(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
             engine = create_sql_engine(database_url)
             factory = create_session_factory(engine)
             try:
                 with factory.begin() as session:
-                    session.add(Resource(
-                        id="R-MANAGER-831", external_id="PM-1",
-                        name="Source ERP différente", active=False,
-                        erp_active=False, erp_phone=synthetic_phone("0100"),
-                    ))
-                    contact = session.get(BusinessContact, "C-PM")
-                    assert contact is not None
-                    contact.phone = "WRONG-CONTACT-PHONE"
+                    session.add(
+                        Resource(
+                            id="R-MANAGER-META-880",
+                            external_id="PM-1",
+                            name="ERP phone must remain metadata",
+                            active=False,
+                            erp_active=False,
+                            erp_phone=synthetic_phone("0999"),
+                        )
+                    )
             finally:
                 engine.dispose()
 
@@ -1369,43 +1315,24 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 communication_transport=transport,
                 smtp_client=smtp,
             )
+            selected_phone = synthetic_phone("0880")
             with TestClient(app) as client:
-                preview = client.get(
+                before = client.get(
                     "/api/v1/communications/project-preview?week_start=2026-09-23"
                 )
-                self.assertEqual(preview.status_code, 200, preview.text)
-                old_fingerprint = preview.json()["snapshot_fingerprint"]
-                first_body = preview.json()["drafts"][0]["body"]
-                first_html = preview.json()["drafts"][0]["body_html"]
-                self.assertIsNotNone(first_html)
-                self.assertIn(
-                    "Responsable projet\nChargé de projet Démo\n"
-                    + synthetic_phone("0100"),
-                    first_body,
-                )
-                self.assertNotIn("WRONG-CONTACT-PHONE", first_body)
-                self.assertEqual(len(preview.json()["drafts"]), 1)
-
-                prepared = client.post(
-                    "/api/v1/communications/project-batches",
-                    json={
-                        "week_start": "2026-09-23",
-                        "expected_fingerprint": old_fingerprint,
-                        "reviews": [],
-                    },
-                )
-                self.assertEqual(prepared.status_code, 201, prepared.text)
-                old_id = prepared.json()["id"]
-                self.assertEqual(prepared.json()["messages"][0]["body"], first_body)
-                self.assertEqual(prepared.json()["messages"][0]["body_html"], first_html)
+                self.assertEqual(before.status_code, 200, before.text)
+                before_payload = before.json()
+                old_fingerprint = before_payload["snapshot_fingerprint"]
+                self.assertNotIn(synthetic_phone("0999"), before_payload["drafts"][0]["body"])
 
                 engine = create_sql_engine(database_url)
                 factory = create_session_factory(engine)
                 try:
                     with factory.begin() as session:
-                        manager = session.get(Resource, "R-MANAGER-831")
-                        assert manager is not None
-                        manager.erp_phone = synthetic_phone("0200")
+                        request = session.get(WorkforceRequest, "D1")
+                        assert request is not None
+                        request.include_project_manager_contact_phone = True
+                        request.project_manager_contact_phone = selected_phone
                 finally:
                     engine.dispose()
 
@@ -1413,61 +1340,95 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "/api/v1/communications/project-preview?week_start=2026-09-23"
                 )
                 self.assertEqual(updated.status_code, 200, updated.text)
-                self.assertNotEqual(updated.json()["snapshot_fingerprint"], old_fingerprint)
-                current_body = updated.json()["drafts"][0]["body"]
-                current_html = updated.json()["drafts"][0]["body_html"]
-                self.assertIsNotNone(current_html)
+                updated_payload = updated.json()
+                self.assertNotEqual(
+                    updated_payload["snapshot_fingerprint"],
+                    old_fingerprint,
+                )
+                current_draft = updated_payload["drafts"][0]
                 self.assertIn(
-                    "Responsable projet\nChargé de projet Démo\n"
-                    + synthetic_phone("0200"),
-                    current_body,
+                    "Responsable projet\nChargé de projet Démo\n" + selected_phone,
+                    current_draft["body"],
                 )
-                self.assertNotIn(synthetic_phone("0100"), current_body)
-                self.assertEqual(updated.json()["drafts"][0]["to_recipients"],
-                                 preview.json()["drafts"][0]["to_recipients"])
-                self.assertEqual(updated.json()["drafts"][0]["cc_recipients"],
-                                 preview.json()["drafts"][0]["cc_recipients"])
+                self.assertIn(selected_phone, current_draft["body_html"])
+                self.assertNotIn(synthetic_phone("0999"), current_draft["body"])
 
-                stale = client.post(
-                    f"/api/v1/communications/project-batches/{old_id}/approve"
-                )
-                self.assertEqual(stale.status_code, 409, stale.text)
-                self.assertEqual(stale.json()["error"]["code"],
-                                 "project_communication_batch_stale")
-                stored = client.get(
-                    "/api/v1/communications/project-batches?week_start=2026-09-23"
-                )
-                self.assertEqual(stored.status_code, 200, stored.text)
-                old = next(row for row in stored.json() if row["id"] == old_id)
-                self.assertEqual(old["messages"][0]["body"], first_body)
-                self.assertEqual(old["messages"][0]["body_html"], first_html)
-
-                replacement = client.post(
+                prepared = client.post(
                     "/api/v1/communications/project-batches",
                     json={
                         "week_start": "2026-09-23",
-                        "expected_fingerprint": updated.json()["snapshot_fingerprint"],
+                        "expected_fingerprint": updated_payload["snapshot_fingerprint"],
                         "reviews": [],
                     },
                 )
-                self.assertEqual(replacement.status_code, 201, replacement.text)
-                new_id = replacement.json()["id"]
-                self.assertEqual(replacement.json()["messages"][0]["body"], current_body)
-                self.assertEqual(
-                    replacement.json()["messages"][0]["body_html"],
-                    current_html,
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = prepared.json()["messages"][0]
+                self.assertEqual(message["body"], current_draft["body"])
+                self.assertEqual(message["body_html"], current_draft["body_html"])
+                batch_id = prepared.json()["id"]
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        request = session.get(WorkforceRequest, "D1")
+                        assert request is not None
+                        request.project_manager_contact_phone = synthetic_phone("0881")
+                finally:
+                    engine.dispose()
+
+                stale = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
                 )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(
+                    stale.json()["error"]["code"],
+                    "project_communication_batch_stale",
+                )
+                stored = client.get(
+                    "/api/v1/communications/project-batches?week_start=2026-09-23"
+                )
+                persisted = next(
+                    row for row in stored.json() if row["id"] == batch_id
+                )
+                self.assertEqual(persisted["messages"][0]["body"], current_draft["body"])
+                self.assertEqual(
+                    persisted["messages"][0]["body_html"],
+                    current_draft["body_html"],
+                )
+
+                # Return live request to the prepared semantic before approving;
+                # delivery must consume persisted content, not live request data.
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        request = session.get(WorkforceRequest, "D1")
+                        assert request is not None
+                        request.project_manager_contact_phone = selected_phone
+                finally:
+                    engine.dispose()
+
                 approved = client.post(
-                    f"/api/v1/communications/project-batches/{new_id}/approve"
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
                 )
                 self.assertEqual(approved.status_code, 200, approved.text)
                 drafts = client.post(
-                    f"/api/v1/communications/project-batches/{new_id}/create-drafts"
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
                 )
                 self.assertEqual(drafts.status_code, 200, drafts.text)
-                self.assertEqual(len(transport.messages), 1)
-                self.assertEqual(transport.messages[0].body, current_body)
-                self.assertEqual(transport.messages[0].body_html, current_html)
+                self.assertEqual(transport.messages[0].body, current_draft["body"])
+                self.assertEqual(
+                    transport.messages[0].body_html,
+                    current_draft["body_html"],
+                )
+
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+                mime = BytesParser(policy=policy.default).parsebytes(downloaded.content)
+                self.assertIn(selected_phone, mime.get_body(preferencelist=("plain",)).get_content())
 
                 configured = client.put(
                     "/api/v1/admin/settings/smtp",
@@ -1487,11 +1448,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(configured.status_code, 200, configured.text)
                 sent = client.post(
-                    f"/api/v1/communications/project-batches/{new_id}/send-smtp"
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
                 )
                 self.assertEqual(sent.status_code, 200, sent.text)
-                self.assertEqual(smtp.attempt_bodies, [current_body])
-                self.assertEqual(smtp.attempt_html, [current_html])
+                self.assertEqual(smtp.attempt_bodies, [current_draft["body"]])
+                self.assertEqual(smtp.attempt_html, [current_draft["body_html"]])
 
     def test_855_historical_null_html_eml_remains_text_only(self) -> None:
         message = CommunicationMessageRecord(
@@ -2475,7 +2436,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     immutable = ProjectCommunicationService(
                         repository
                     ).project_projection(week_start=WEEK)
-                    self.assertEqual(immutable.request_provenance_version, 2)
+                    self.assertEqual(immutable.request_provenance_version, 3)
                     shift_rows = {
                         item.shift_id: item
                         for day in immutable.projects[0].days
@@ -3628,13 +3589,15 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["week_start"], "2026-09-21")
         self.assertEqual(payload["week_end"], "2026-09-27")
-        self.assertEqual(payload["request_provenance_version"], 2)
+        self.assertEqual(payload["request_provenance_version"], 3)
         self.assertTrue(payload["request_provenance_complete"])
         assignment = payload["projects"][0]["days"][0]["tasks"][0][
             "request_assignments"
         ][0]
         self.assertIn("assets", assignment)
         self.assertIn("standard_hours", assignment)
+        self.assertIn("include_project_manager_contact_phone", assignment)
+        self.assertIn("project_manager_contact_phone", assignment)
         self.assertEqual(payload["projects"][0]["project_number"], "1000")
         self.assertEqual(
             payload["projects"][0]["days"][0]["tasks"][0]["task_description"],

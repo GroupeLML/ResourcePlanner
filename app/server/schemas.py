@@ -218,6 +218,8 @@ class DemandCreateRequest(StrictRequest):
     site_client: str = ""
     site_contact_name: str | None = Field(default=None, max_length=255)
     site_contact_phone: str | None = Field(default=None, max_length=64)
+    include_project_manager_contact_phone: bool = False
+    project_manager_contact_phone: str | None = Field(default=None, max_length=64)
     location: str = ""
     resource_count: int = Field(default=1, ge=1)
     required_competencies: str | None = None
@@ -239,6 +241,14 @@ class DemandCreateRequest(StrictRequest):
                 )
         elif self.desired_start is None:
             raise ValueError("desired_start est requis lorsque lines est omis.")
+        if (
+            self.include_project_manager_contact_phone
+            and not str(self.project_manager_contact_phone or "").strip()
+        ):
+            raise ValueError(
+                "project_manager_contact_phone est requis lorsque "
+                "include_project_manager_contact_phone est activé."
+            )
         return self
 
 
@@ -258,6 +268,8 @@ class DemandUpdateRequest(StrictRequest):
     site_client: str | None = None
     site_contact_name: str | None = Field(default=None, max_length=255)
     site_contact_phone: str | None = Field(default=None, max_length=64)
+    include_project_manager_contact_phone: bool | None = None
+    project_manager_contact_phone: str | None = Field(default=None, max_length=64)
     location: str | None = None
     resource_count: int | None = Field(default=None, ge=1)
     required_competencies: str | None = None

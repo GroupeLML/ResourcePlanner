@@ -56,6 +56,8 @@ class ProjectCommunicationAssignment:
     request_number: str | None = None
     site_contact_name: str | None = None
     site_contact_phone: str | None = None
+    include_project_manager_contact_phone: bool = False
+    project_manager_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     standard_hours: float | None = None
     diagnostics: tuple[str, ...] = ()
@@ -95,6 +97,8 @@ class ProjectCommunicationRequestAssignment:
     hours: float
     site_contact_name: str | None
     site_contact_phone: str | None
+    include_project_manager_contact_phone: bool = False
+    project_manager_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     standard_hours: float | None = None
 
@@ -192,9 +196,9 @@ def build_project_communication_projection(
 ) -> ProjectCommunicationProjection:
     """Group authoritative shifts as Project -> Date -> Task -> assigned resources."""
 
-    if request_provenance_version not in (1, 2):
+    if request_provenance_version not in (1, 2, 3):
         raise ValueError("Version de provenance chantier non prise en charge")
-    if request_provenance_version == 2:
+    if request_provenance_version in (2, 3):
         for row in assignments:
             if (
                 row.standard_hours is None
@@ -202,10 +206,34 @@ def build_project_communication_projection(
                 or float(row.standard_hours) < 0
             ):
                 raise ValueError(
-                    "Heures standard manquantes ou invalides pour la provenance v2"
+                    "Heures standard manquantes ou invalides pour la provenance v2+"
                 )
             if not isinstance(row.assets, tuple):
-                raise ValueError("Actifs Shift v2 non explicites")
+                raise ValueError("Actifs Shift v2+ non explicites")
+    if request_provenance_version == 3:
+        for row in assignments:
+            if not isinstance(row.include_project_manager_contact_phone, bool):
+                raise ValueError(
+                    "Sélection téléphone responsable projet v3 doit être booléenne"
+                )
+            if str(row.project_manager_erp_phone or "").strip():
+                raise ValueError(
+                    "Téléphone ERP responsable projet interdit en provenance v3"
+                )
+            if row.workforce_request_id is None and (
+                row.include_project_manager_contact_phone
+                or row.project_manager_contact_phone
+            ):
+                raise ValueError(
+                    "Téléphone responsable projet sans demande source"
+                )
+            if (
+                row.include_project_manager_contact_phone
+                and not str(row.project_manager_contact_phone or "").strip()
+            ):
+                raise ValueError(
+                    "Téléphone responsable projet sélectionné mais vide"
+                )
 
     projects: dict[str, dict[str, object]] = {}
     global_diagnostics: list[str] = []
@@ -290,6 +318,16 @@ def build_project_communication_projection(
                 hours=row.hours,
                 site_contact_name=row.site_contact_name,
                 site_contact_phone=row.site_contact_phone,
+                include_project_manager_contact_phone=(
+                    row.include_project_manager_contact_phone
+                    if request_provenance_version == 3
+                    else False
+                ),
+                project_manager_contact_phone=(
+                    row.project_manager_contact_phone
+                    if request_provenance_version == 3
+                    else None
+                ),
                 assets=tuple(row.assets),
                 standard_hours=row.standard_hours,
             )

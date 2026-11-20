@@ -1713,6 +1713,225 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertNotIn("part de la demande", draft.body)
         self.assertNotIn("Totaux planifiés", draft.body)
 
+    def test_880_v3_request_manager_phone_preserves_multi_request_provenance(self) -> None:
+        base = projection(
+            project(
+                resources=(
+                    resource("R1", "Alice", address=email("alice")),
+                    resource("R2", "Bob", address=email("bob")),
+                )
+            )
+        )
+        project_row = base.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        first, second = task.request_assignments
+
+        def current(
+            first_enabled: bool,
+            first_phone: str | None,
+            second_enabled: bool,
+            second_phone: str | None,
+        ) -> ProjectCommunicationProjection:
+            v3_task = replace(
+                task,
+                request_assignments=(
+                    replace(
+                        first,
+                        workforce_request_id="D1",
+                        request_number="DMO-1",
+                        standard_hours=8.0,
+                        include_project_manager_contact_phone=first_enabled,
+                        project_manager_contact_phone=first_phone,
+                    ),
+                    replace(
+                        second,
+                        workforce_request_id="D2",
+                        request_number="DMO-2",
+                        standard_hours=8.0,
+                        include_project_manager_contact_phone=second_enabled,
+                        project_manager_contact_phone=second_phone,
+                    ),
+                ),
+            )
+            return replace(
+                base,
+                request_provenance_version=3,
+                projects=(
+                    replace(
+                        project_row,
+                        days=(replace(day, tasks=(v3_task,)),),
+                    ),
+                ),
+            )
+
+        none = current(False, None, False, None)
+        none_body = build_project_confirmation_batch(none).drafts[0].body
+        self.assertNotIn(synthetic_phone("0880"), none_body)
+        self.assertNotIn(synthetic_phone("0881"), none_body)
+
+        one = current(True, synthetic_phone("0880"), False, synthetic_phone("0999"))
+        one_body = build_project_confirmation_batch(one).drafts[0].body
+        self.assertEqual(one_body.count(synthetic_phone("0880")), 1)
+        self.assertNotIn(synthetic_phone("0999"), one_body)
+
+        same = current(
+            True,
+            synthetic_phone("0880"),
+            True,
+            "  " + synthetic_phone("0880") + "  ",
+        )
+        same_body = build_project_confirmation_batch(same).drafts[0].body
+        self.assertEqual(same_body.count(synthetic_phone("0880")), 1)
+
+        different = current(
+            True,
+            synthetic_phone("0880"),
+            True,
+            synthetic_phone("0881"),
+        )
+        different_body = build_project_confirmation_batch(different).drafts[0].body
+        self.assertIn(
+            f"Demande DMO-1 — 210 Installation de poteaux — {synthetic_phone('0880')}",
+            different_body,
+        )
+        self.assertIn(
+            f"Demande DMO-2 — 210 Installation de poteaux — {synthetic_phone('0881')}",
+            different_body,
+        )
+
+        one_fingerprint = project_projection_fingerprint(one)
+        changed_phone = current(True, synthetic_phone("0882"), False, synthetic_phone("0999"))
+        self.assertNotEqual(
+            project_projection_fingerprint(changed_phone),
+            one_fingerprint,
+        )
+        opted_out_stored_change = current(
+            True,
+            synthetic_phone("0880"),
+            False,
+            synthetic_phone("0777"),
+        )
+        self.assertEqual(
+            project_projection_fingerprint(opted_out_stored_change),
+            one_fingerprint,
+        )
+
+        encoded = serialize_project_projection(different)
+        self.assertIn('"request_provenance_version":3', encoded)
+        self.assertIn('"include_project_manager_contact_phone":true', encoded)
+        restored = deserialize_project_projection(encoded)
+        self.assertEqual(restored, different)
+        self.assertEqual(
+            project_projection_fingerprint(restored),
+            project_projection_fingerprint(different),
+        )
+        opted_out_with_stored_phone = current(
+            False,
+            synthetic_phone("0770"),
+            False,
+            synthetic_phone("0771"),
+        )
+        opted_out_body = build_project_confirmation_batch(
+            opted_out_with_stored_phone
+        ).drafts[0].body
+        self.assertNotIn(synthetic_phone("0770"), opted_out_body)
+        self.assertNotIn(synthetic_phone("0771"), opted_out_body)
+        self.assertEqual(
+            deserialize_project_projection(
+                serialize_project_projection(opted_out_with_stored_phone)
+            ),
+            opted_out_with_stored_phone,
+        )
+
+        malformed_nonboolean = json.loads(encoded)
+        malformed_nonboolean["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]["include_project_manager_contact_phone"] = "false"
+        with self.assertRaisesRegex(ValueError, "non booléenne"):
+            deserialize_project_projection(
+                json.dumps(malformed_nonboolean, ensure_ascii=False)
+            )
+
+        malformed_legacy_erp = json.loads(
+            serialize_project_projection(opted_out_with_stored_phone)
+        )
+        malformed_legacy_erp["projects"][0][
+            "project_manager_erp_phone"
+        ] = synthetic_phone("0831")
+        with self.assertRaisesRegex(ValueError, "téléphone ERP"):
+            deserialize_project_projection(
+                json.dumps(malformed_legacy_erp, ensure_ascii=False)
+            )
+
+        directly_malformed = replace(
+            different,
+            projects=(
+                replace(
+                    different.projects[0],
+                    days=(
+                        replace(
+                            different.projects[0].days[0],
+                            tasks=(
+                                replace(
+                                    different.projects[0].days[0].tasks[0],
+                                    request_assignments=(
+                                        replace(
+                                            different.projects[0]
+                                            .days[0]
+                                            .tasks[0]
+                                            .request_assignments[0],
+                                            include_project_manager_contact_phone="false",
+                                        ),
+                                        different.projects[0]
+                                        .days[0]
+                                        .tasks[0]
+                                        .request_assignments[1],
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "booléenne"):
+            serialize_project_projection(directly_malformed)
+
+    def test_880_historical_v2_snapshot_keeps_831_phone_without_v3_enrichment(self) -> None:
+        base = projection(project())
+        project_row = base.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        v2_task = replace(
+            task,
+            request_assignments=tuple(
+                replace(row, standard_hours=8.0)
+                for row in task.request_assignments
+            ),
+        )
+        historical = replace(
+            base,
+            request_provenance_version=2,
+            projects=(
+                replace(
+                    project_row,
+                    project_manager_erp_phone=synthetic_phone("0831"),
+                    days=(replace(day, tasks=(v2_task,)),),
+                ),
+            ),
+        )
+        payload = serialize_project_projection(historical)
+        self.assertNotIn("include_project_manager_contact_phone", payload)
+        self.assertNotIn("project_manager_contact_phone", payload)
+        restored = deserialize_project_projection(payload)
+        self.assertEqual(restored.request_provenance_version, 2)
+        self.assertIn(
+            f"Responsable projet\nChargé Démo\n{synthetic_phone('0831')}",
+            build_project_confirmation_batch(restored).drafts[0].body,
+        )
+        self.assertEqual(serialize_project_projection(restored), payload)
+
     def test_830_contact_add_change_clear_and_legacy_delta(self) -> None:
         base = projection(project())
         old_project = base.projects[0]
