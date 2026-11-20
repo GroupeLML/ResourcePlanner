@@ -2671,14 +2671,36 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
                 {"shift_id": "S-MARY", "resource_id": "R-MARY", "resource_name": "Mary"},
             )
         )
-        historical = historical_version(current, 3)
-        refresh = build_project_delta_batch(historical, current)
-        self.assertEqual(len(refresh.drafts), 1)
-        body = refresh.drafts[0].body
-        self.assertIn("Référence historique incomplète", body)
-        self.assertIn("état courant à reconfirmer", body)
-        self.assertIn("John", body)
-        self.assertIn("Mary", body)
+        for version in (1, 2, 3):
+            with self.subTest(version=version):
+                historical = historical_version(current, version)
+                refresh = build_project_delta_batch(historical, current)
+                self.assertEqual(len(refresh.drafts), 1)
+                body = refresh.drafts[0].body
+                self.assertIn("Référence historique incomplète", body)
+                self.assertIn("état courant à reconfirmer", body)
+                self.assertIn("John", body)
+                self.assertIn("Mary", body)
+                self.assertNotIn("confirmation None → Confirmée", body)
+                self.assertNotIn("allocation None → Flexible", body)
+
+                changed = v4_shift_projection(
+                    (
+                        {"shift_id": "S-JOHN", "resource_id": "R-JOHN", "resource_name": "John"},
+                        {
+                            "shift_id": "S-MARY",
+                            "resource_id": "R-MARY",
+                            "resource_name": "Mary",
+                            "hours": 4.0,
+                        },
+                    )
+                )
+                changed_refresh = build_project_delta_batch(
+                    historical,
+                    changed,
+                ).drafts[0].body
+                self.assertIn("heures 8 h → 4 h", changed_refresh)
+                self.assertIn("Référence historique incomplète", changed_refresh)
 
         complete = build_project_delta_batch(current, current)
         self.assertEqual(complete.drafts, ())
