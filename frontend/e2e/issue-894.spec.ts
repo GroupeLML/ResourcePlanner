@@ -68,23 +68,29 @@ async function resetEmergencyFixture(request: APIRequestContext) {
   expect(response.ok(), await response.text()).toBeTruthy();
 }
 
-async function canonicalPersistedDisplayName(
+async function durableReceiptDisplayName(
   adminRequest: APIRequestContext,
   userRequest: APIRequestContext,
+  broadcastId: string,
 ) {
   const principalResponse = await userRequest.get("/api/v1/auth/me");
   expect(principalResponse.status(), await principalResponse.text()).toBe(200);
   const principal = await principalResponse.json() as { local_user_id: string | null };
   expect(principal.local_user_id).toBeTruthy();
 
-  const statusResponse = await adminRequest.get("/api/v1/admin/runtime/status");
-  expect(statusResponse.status(), await statusResponse.text()).toBe(200);
-  const status = await statusResponse.json() as {
-    users: Array<{ user_id: string; display_name: string }>;
+  const receiptsResponse = await adminRequest.get(
+    `/api/v1/admin/runtime/broadcasts/${encodeURIComponent(broadcastId)}/acknowledgments`,
+  );
+  expect(receiptsResponse.status(), await receiptsResponse.text()).toBe(200);
+  const receipts = await receiptsResponse.json() as {
+    items: Array<{ user_id: string; display_name: string }>;
   };
-  const persisted = status.users.find((user) => user.user_id === principal.local_user_id);
-  expect(persisted).toBeTruthy();
-  return persisted!.display_name;
+  const receipt = receipts.items.find(
+    (item) => item.user_id === principal.local_user_id,
+  );
+  expect(receipt).toBeTruthy();
+  expect(receipt!.display_name).toBeTruthy();
+  return receipt!.display_name;
 }
 
 async function setFailureMode(
@@ -142,6 +148,8 @@ test.describe.serial("#894 emergency broadcast Phase 3", () => {
       adminPage.once("dialog", (dialog) => void dialog.accept());
       await adminPanel.getByRole("button", { name: "Diffuser maintenant" }).click();
       await expect(adminPanel).toContainText("La diffusion d’urgence est active.");
+      const createdBroadcast = await activeBroadcast(adminContext.request);
+      expect(createdBroadcast).not.toBeNull();
 
       const userDialog = await expectEmergency(
         userPage,
@@ -182,9 +190,10 @@ test.describe.serial("#894 emergency broadcast Phase 3", () => {
       }
 
       await adminPanel.getByRole("button", { name: "Actualiser" }).click();
-      const persistedTechnicianName = await canonicalPersistedDisplayName(
+      const persistedTechnicianName = await durableReceiptDisplayName(
         adminContext.request,
         userContext.request,
+        createdBroadcast!.id,
       );
       await expect(adminPanel).toContainText(persistedTechnicianName);
       await expect(adminPanel).toContainText(/acquitt/i);
