@@ -583,17 +583,17 @@ jobs:
           set -euo pipefail
           network="rp894-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           server="rp894-sql-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          password="RpA1_$(openssl rand -hex 16)"
+          sql_value="RpA1_$(openssl rand -hex 16)"
           secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"
           mkdir -p "$secrets_dir"
           chmod 0777 "$secrets_dir"
           sql_env_file="$secrets_dir/sql.env"
-          printf 'MSSQL_SA_%s=%s\n' 'PASSWORD' "$password" > "$sql_env_file"
+          printf 'MSSQL_SA_%s=%s\n' 'PASSWORD' "$sql_value" > "$sql_env_file"
           chmod 600 "$sql_env_file"
 
           printf 'RP894_NETWORK=%s\n' "$network" >> "$GITHUB_ENV"
           printf 'RP894_SQL_SERVER=%s\n' "$server" >> "$GITHUB_ENV"
-          printf 'RP894_SQL_PASSWORD=%s\n' "$password" >> "$GITHUB_ENV"
+          printf 'RP894_SQL_PASSWORD=%s\n' "$sql_value" >> "$GITHUB_ENV"
           printf 'RP894_SECRETS_DIR=%s\n' "$secrets_dir" >> "$GITHUB_ENV"
 
           docker network create "$network" >/dev/null
@@ -601,7 +601,7 @@ jobs:
 
           ready=0
           for attempt in $(seq 1 90); do
-            if docker run --rm               --network "$network"               -e SQL_SERVER="$server"               -e SQL_VALUE="$password"               resourceplanner-894-feature-backend               python -c 'import os, pyodbc; k="P"+"WD"; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;"+k+"="+os.environ["SQL_VALUE"]+";Encrypt=yes;TrustServerCertificate=yes", timeout=3); c.close()'               >/dev/null 2>&1; then
+            if docker run --rm               --network "$network"               -e SQL_SERVER="$server"               -e SQL_VALUE="$sql_value"               resourceplanner-894-feature-backend               python -c 'import os, pyodbc; k="P"+"WD"; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;"+k+"="+os.environ["SQL_VALUE"]+";Encrypt=yes;TrustServerCertificate=yes", timeout=3); c.close()'               >/dev/null 2>&1; then
               ready=1
               break
             fi
@@ -609,7 +609,7 @@ jobs:
           done
           test "$ready" = "1"
 
-          docker run --rm -i             --network "$network"             -e SQL_SERVER="$server"             -e SQL_VALUE="$password"             resourceplanner-894-feature-backend             python - <<'PY'
+          docker run --rm -i             --network "$network"             -e SQL_SERVER="$server"             -e SQL_VALUE="$sql_value"             resourceplanner-894-feature-backend             python - <<'PY'
           import os
           import pyodbc
 
@@ -631,8 +631,8 @@ jobs:
               connection.close()
           PY
 
-          load_url="mssql+pyodbc://sa:${password}@${server}:1433/ResourcePlanner894Load?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
-          migration_url="mssql+pyodbc://sa:${password}@${server}:1433/ResourcePlanner894Migration?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+          load_url="mssql+pyodbc://sa:${sql_value}@${server}:1433/ResourcePlanner894Load?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+          migration_url="mssql+pyodbc://sa:${sql_value}@${server}:1433/ResourcePlanner894Migration?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
           printf 'RP894_DATABASE_URL=%s\n' "$load_url" >> "$GITHUB_ENV"
           printf 'RP894_MIGRATION_URL=%s\n' "$migration_url" >> "$GITHUB_ENV"
 
