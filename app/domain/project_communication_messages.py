@@ -9,6 +9,7 @@ import math
 import re
 from typing import Sequence
 
+from .confirmation import VALID_CONFIRMATIONS
 from .operational_contacts import (
     ContactResolution,
     SOURCE_PROJECT_MANAGER,
@@ -255,14 +256,18 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
 
 def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
     version = projection.request_provenance_version
-    if version not in (1, 2, 3) or not projection.request_provenance_complete:
+    if (
+        type(version) is not int
+        or version not in (1, 2, 3, 4)
+        or projection.request_provenance_complete is not True
+    ):
         raise ValueError("Version ou couverture de provenance chantier invalide")
 
     seen: set[str] = set()
     for project in projection.projects:
-        if version == 3 and str(project.project_manager_erp_phone or "").strip():
+        if version in (3, 4) and str(project.project_manager_erp_phone or "").strip():
             raise ValueError(
-                "Téléphone ERP responsable projet interdit en provenance v3"
+                "Téléphone ERP responsable projet interdit en provenance v3+"
             )
         for day in project.days:
             for task in day.tasks:
@@ -273,6 +278,9 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                 }
                 actual: set[str] = set()
                 hours_by_resource: dict[str, float] = {}
+                confirmations_by_resource: dict[str, list[str]] = {}
+                allocations_by_resource: dict[str, list[str]] = {}
+                outside_by_resource: dict[str, bool] = {}
                 for assignment in task.request_assignments:
                     if not assignment.shift_id or assignment.shift_id in seen:
                         raise ValueError("Shift de provenance manquant ou dupliqué")
@@ -295,7 +303,23 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                         for resource in task.resources
                     ):
                         raise ValueError("Ressource de provenance incohérente")
-                    if version in (2, 3):
+
+                    if version in (1, 2, 3) and any(
+                        value is not None
+                        for value in (
+                            assignment.confirmation,
+                            assignment.allocation_type,
+                            assignment.outside_schedule,
+                            assignment.task_id,
+                            assignment.task_code,
+                            assignment.task_description,
+                        )
+                    ):
+                        raise ValueError(
+                            "Faits Shift v4 interdits dans une provenance historique"
+                        )
+
+                    if version in (2, 3, 4):
                         standard_hours = assignment.standard_hours
                         if (
                             standard_hours is None
@@ -319,13 +343,14 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                             + float(assignment.hours),
                             2,
                         )
-                    if version == 3:
+
+                    if version in (3, 4):
                         if not isinstance(
                             assignment.include_project_manager_contact_phone,
                             bool,
                         ):
                             raise ValueError(
-                                "Sélection téléphone responsable projet v3 doit être booléenne"
+                                "Sélection téléphone responsable projet v3+ doit être booléenne"
                             )
                         if (
                             assignment.workforce_request_id is None
@@ -346,20 +371,108 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                             raise ValueError(
                                 "Téléphone responsable projet sélectionné mais vide"
                             )
+
+                    if version == 4:
+                        if assignment.confirmation not in VALID_CONFIRMATIONS:
+                            raise ValueError("Confirmation Shift v4 invalide")
+                        if (
+                            not isinstance(assignment.allocation_type, str)
+                            or not assignment.allocation_type.strip()
+                        ):
+                            raise ValueError(
+                                "Type d'allocation Shift v4 manquant ou invalide"
+                            )
+                        if type(assignment.outside_schedule) is not bool:
+                            raise ValueError(
+                                "Hors horaire Shift v4 doit être booléen"
+                            )
+                        if (
+                            assignment.task_id is not None
+                            and not isinstance(assignment.task_id, str)
+                        ):
+                            raise ValueError("Identité tâche Shift v4 invalide")
+                        if (
+                            assignment.task_code is not None
+                            and not isinstance(assignment.task_code, str)
+                        ):
+                            raise ValueError("Code tâche Shift v4 invalide")
+                        if (
+                            not isinstance(assignment.task_description, str)
+                            or not assignment.task_description.strip()
+                        ):
+                            raise ValueError(
+                                "Description tâche Shift v4 manquante ou invalide"
+                            )
+                        if assignment.task_description != task.task_description:
+                            raise ValueError(
+                                "Description tâche Shift v4 incohérente avec le contexte"
+                            )
+                        if (
+                            assignment.task_id is not None
+                            and assignment.task_id not in task.task_ids
+                        ):
+                            raise ValueError(
+                                "Identité tâche Shift v4 incohérente avec le contexte"
+                            )
+                        if (
+                            assignment.task_code is not None
+                            and assignment.task_code not in task.task_codes
+                        ):
+                            raise ValueError(
+                                "Code tâche Shift v4 incohérent avec le contexte"
+                            )
+                        confirmations_by_resource.setdefault(
+                            assignment.resource_id, []
+                        ).append(assignment.confirmation)
+                        allocations_by_resource.setdefault(
+                            assignment.resource_id, []
+                        ).append(assignment.allocation_type)
+                        outside_by_resource[assignment.resource_id] = (
+                            outside_by_resource.get(assignment.resource_id, False)
+                            or assignment.outside_schedule
+                        )
+
                     actual.add(assignment.shift_id)
                     seen.add(assignment.shift_id)
+
                 if actual != expected:
                     raise ValueError("Couverture de provenance chantier incomplète")
-                if version in (2, 3):
+                if version in (2, 3, 4):
                     for resource in task.resources:
                         if round(float(resource.hours), 2) != hours_by_resource.get(
                             resource.resource_id,
                             0.0,
                         ):
                             raise ValueError(
-                                "Heures Shift v2 incohérentes avec le total ressource"
+                                "Heures Shift v2+ incohérentes avec le total ressource"
                             )
-
+                        if version == 4:
+                            if resource.confirmations != tuple(
+                                dict.fromkeys(
+                                    confirmations_by_resource.get(
+                                        resource.resource_id, []
+                                    )
+                                )
+                            ):
+                                raise ValueError(
+                                    "Confirmations Shift v4 incohérentes avec l'agrégat ressource"
+                                )
+                            if resource.allocation_types != tuple(
+                                dict.fromkeys(
+                                    allocations_by_resource.get(
+                                        resource.resource_id, []
+                                    )
+                                )
+                            ):
+                                raise ValueError(
+                                    "Types d'allocation Shift v4 incohérents avec l'agrégat ressource"
+                                )
+                            if bool(resource.outside_schedule) != outside_by_resource.get(
+                                resource.resource_id, False
+                            ):
+                                raise ValueError(
+                                    "Hors horaire Shift v4 incohérent avec l'agrégat ressource"
+                                )
 
 def _contact_semantics(project: ProjectCommunicationProject) -> tuple[object, ...]:
     """Communication-owned semantics only; exclude replaceable physical identifiers."""
