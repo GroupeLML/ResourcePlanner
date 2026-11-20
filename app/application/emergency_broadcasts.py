@@ -60,6 +60,20 @@ class EmergencyBroadcastRepositoryPort(Protocol):
         limit: int = 100,
     ) -> Sequence[str]: ...
 
+    def delete_acknowledgments_for_expired(
+        self,
+        *,
+        broadcast_ids: Sequence[str],
+        limit: int = 1000,
+    ) -> int: ...
+
+    def delete_empty_expired_broadcasts(
+        self,
+        *,
+        ended_before: datetime,
+        limit: int = 100,
+    ) -> int: ...
+
 
 class EmergencyBroadcastService:
     def __init__(self, repository: EmergencyBroadcastRepositoryPort) -> None:
