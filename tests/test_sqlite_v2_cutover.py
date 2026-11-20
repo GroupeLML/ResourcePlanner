@@ -348,6 +348,8 @@ def _reshape_source_as_0048(path: Path) -> None:
         raw.execute("PRAGMA foreign_keys=OFF")
         raw.executescript(
             """
+            DROP TABLE IF EXISTS emergency_broadcast_acknowledgments;
+            DROP TABLE IF EXISTS emergency_broadcasts;
             DROP TABLE IF EXISTS auth_security_audit;
             DROP TABLE IF EXISTS break_glass_credentials;
             DROP TABLE IF EXISTS work_package_audit;
