@@ -16,6 +16,7 @@ from app.application.security import AuthPrincipal, ROLE_ADMIN, ROLE_TECHNICIAN
 from app.infrastructure.sql import AppUser, Base, create_sql_engine
 from app.domain.emergency_broadcast import EmergencyBroadcastAcknowledgmentRecord
 from app.server.emergency_broadcast_runtime import (
+    AsyncAdmission,
     PresenceRegistry,
     _ActiveBroadcastCache,
     _PositiveReceiptCache,
@@ -155,6 +156,41 @@ class EmergencyRuntimeCacheTests(unittest.TestCase):
         self.assertIs(cache.get("B", "MARY"), receipt_b)
 
 
+class EmergencyAdmissionTests(unittest.TestCase):
+    def test_admission_bounds_in_flight_and_queue_without_blocking_event_loop(self) -> None:
+        admission = AsyncAdmission(
+            max_in_flight=1,
+            max_waiting=1,
+            acquire_timeout_seconds=0.05,
+        )
+
+        async def scenario() -> None:
+            release = asyncio.Event()
+
+            async def held() -> str:
+                await release.wait()
+                return "held"
+
+            first = asyncio.create_task(admission.run(held))
+            while (await admission.counts())[1] != 1:
+                await asyncio.sleep(0)
+
+            second = asyncio.create_task(admission.run(held))
+            while (await admission.counts())[0] != 1:
+                await asyncio.sleep(0)
+
+            with self.assertRaisesRegex(Exception, "saturated"):
+                await admission.run(held)
+
+            waiting, in_flight = await admission.counts()
+            self.assertEqual((waiting, in_flight), (1, 1))
+            release.set()
+            self.assertEqual(await first, "held")
+            self.assertEqual(await second, "held")
+
+        asyncio.run(scenario())
+
+
 class EmergencyAuthOffloadTests(unittest.TestCase):
     def test_high_frequency_sync_auth_can_run_off_event_loop(self) -> None:
         request = type("RequestStub", (), {})()
@@ -233,6 +269,21 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
             "authentication_required",
         )
 
+    def test_status_requires_identity_but_not_a_business_permission(self) -> None:
+        no_role_principal = AuthPrincipal.from_roles(
+            local_user_id="USER-894",
+            issuer="urn:test",
+            subject="USER-894",
+            display_name="User 894",
+            email=None,
+            roles=(),
+            auth_mode="local",
+        )
+        app = self._app(no_role_principal)
+        with TestClient(app) as client:
+            response = client.get("/api/v1/runtime/status")
+        self.assertEqual(response.status_code, 200, response.text)
+
     def test_authenticated_status_records_presence_and_returns_active_broadcast(self) -> None:
         admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
         with TestClient(admin_app) as admin:
@@ -262,6 +313,34 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
             self.assertIn("server_time_utc", status.json())
             self.assertEqual(status.headers["cache-control"], "no-store, private")
             self.assertEqual(status.headers["vary"], "Cookie")
+
+    def test_admin_second_active_creation_is_deterministic_409(self) -> None:
+        admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
+        with TestClient(admin_app) as admin:
+            first = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "A",
+                    "message": "A",
+                    "confirmed": True,
+                },
+            )
+            second = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "B",
+                    "message": "B",
+                    "confirmed": True,
+                },
+            )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(
+            second.json()["error"]["code"],
+            "emergency_broadcast_already_active",
+        )
 
     def test_known_broadcast_hint_omits_content_but_keeps_identity_and_receipt_state(self) -> None:
         admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
