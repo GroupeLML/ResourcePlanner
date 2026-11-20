@@ -5,10 +5,12 @@ import os
 import unittest
 from uuid import uuid4
 
+from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select, text
 
 from app.application.emergency_broadcasts import EmergencyBroadcastService
 from app.application.errors import ApplicationConflictError
+from app.application.security import AuthPrincipal, ROLE_TECHNICIAN
 from app.domain.emergency_broadcast import CreateEmergencyBroadcastCommand
 from app.infrastructure.sql import AppUser, create_session_factory, create_sql_engine
 from app.infrastructure.sql.emergency_broadcast_models import (
@@ -18,6 +20,8 @@ from app.infrastructure.sql.emergency_broadcast_models import (
 from app.infrastructure.sql.emergency_broadcast_repository import (
     SqlEmergencyBroadcastRepository,
 )
+from app.server.http import create_api_app
+from app.server.security import static_auth_resolver
 
 
 DATABASE_URL = str(os.getenv("RESOURCEPLANNER_SQLSERVER_TEST_URL") or "").strip()
@@ -108,6 +112,55 @@ class EmergencyBroadcastSqlServerConcurrencyTests(unittest.TestCase):
             rows = tuple(pool.map(lambda _index: acknowledge(), range(3)))
 
         self.assertEqual(len({row.acknowledged_at for row in rows}), 1)
+        with self.factory() as session:
+            count = session.scalar(
+                select(func.count())
+                .select_from(EmergencyBroadcastAcknowledgment)
+                .where(
+                    EmergencyBroadcastAcknowledgment.broadcast_id == broadcast.id,
+                    EmergencyBroadcastAcknowledgment.user_id == user_id,
+                )
+            )
+        self.assertEqual(count, 1)
+
+    def test_same_user_concurrent_http_acknowledgment_returns_three_200s(self) -> None:
+        broadcast = self._create(self.user_ids[0], "same-user-http")
+        user_id = self.user_ids[2]
+
+        def make_client() -> TestClient:
+            principal = AuthPrincipal.from_roles(
+                local_user_id=user_id,
+                issuer="urn:sql894",
+                subject=user_id,
+                display_name="SQL894 User",
+                email=None,
+                roles=(ROLE_TECHNICIAN,),
+                auth_mode="local",
+            )
+            app = create_api_app(
+                DATABASE_URL,
+                auth_resolver=static_auth_resolver(principal),
+                api_docs_enabled=False,
+            )
+            return TestClient(app)
+
+        def acknowledge(_index: int):
+            with make_client() as client:
+                response = client.post(
+                    f"/api/v1/runtime/broadcasts/{broadcast.id}/acknowledgment",
+                    json={},
+                )
+                return response.status_code, response.json()
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            responses = tuple(pool.map(acknowledge, range(3)))
+
+        self.assertEqual([item[0] for item in responses], [200, 200, 200])
+        timestamps = {
+            item[1]["acknowledgment"]["acknowledged_at"]
+            for item in responses
+        }
+        self.assertEqual(len(timestamps), 1)
         with self.factory() as session:
             count = session.scalar(
                 select(func.count())
