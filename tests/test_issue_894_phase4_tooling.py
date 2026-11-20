@@ -48,7 +48,9 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("raw.close()", function_source)
         self.assertIn("engine.dispose()", function_source)
         self.assertIn("SET XACT_ABORT {mode}", function_source)
-        self.assertIn("CREATE TABLE #rp894_xact", function_source)
+        self.assertIn('"#rp894_xact_off"', function_source)
+        self.assertIn('"#rp894_xact_on"', function_source)
+        self.assertIn("CREATE TABLE {table_name}", function_source)
 
     def test_ack_waves_cover_100_250_and_250_plus_63_duplicates(self) -> None:
         source = LOAD.read_text(encoding="utf-8")
@@ -75,7 +77,8 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn('sql_value="RpA1_$(openssl rand -hex 16)"', source)
         forbidden_assignment = "pass" + 'word="RpA1_'
         self.assertNotIn(forbidden_assignment, source)
-        self.assertIn('printf \'MSSQL_SA_%s=%s\\n\' \'PASSWORD\' "$sql_value"', source)
+        self.assertIn("MSSQL_SA_%s=%s", source)
+        self.assertIn("'PASSWORD' \"$sql_value\"", source)
         self.assertIn('-e SQL_VALUE="$sql_value"', source)
         self.assertIn('secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"', source)
         self.assertIn('sql_env_file="$secrets_dir/sql.env"', source)
