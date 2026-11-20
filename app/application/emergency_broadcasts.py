@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Protocol, Sequence
+import uuid
 
 from ..domain.emergency_broadcast import (
     CreateEmergencyBroadcastCommand,
@@ -89,6 +90,17 @@ class EmergencyBroadcastService:
             )
         return normalized
 
+    @staticmethod
+    def _broadcast_id(value: str) -> str:
+        normalized = str(value or "").strip()
+        try:
+            return str(uuid.UUID(normalized))
+        except (ValueError, AttributeError) as exc:
+            raise ApplicationValidationError(
+                "broadcast_id must be a UUID",
+                code="emergency_broadcast_invalid",
+            ) from exc
+
     def create(
         self,
         command: CreateEmergencyBroadcastCommand,
@@ -129,12 +141,7 @@ class EmergencyBroadcastService:
         self,
         command: EndEmergencyBroadcastCommand,
     ) -> EmergencyBroadcastRecord:
-        broadcast_id = str(command.broadcast_id or "").strip()
-        if not broadcast_id:
-            raise ApplicationValidationError(
-                "broadcast_id is required",
-                code="emergency_broadcast_invalid",
-            )
+        broadcast_id = self._broadcast_id(command.broadcast_id)
         actor_user_id = self._user_id(command.actor_user_id, field="actor_user_id")
         return self._repository.end(
             broadcast_id=broadcast_id,
@@ -147,12 +154,7 @@ class EmergencyBroadcastService:
         broadcast_id: str,
         authenticated_user_id: str,
     ) -> EmergencyBroadcastAcknowledgmentRecord:
-        normalized_broadcast_id = str(broadcast_id or "").strip()
-        if not normalized_broadcast_id:
-            raise ApplicationValidationError(
-                "broadcast_id is required",
-                code="emergency_broadcast_invalid",
-            )
+        normalized_broadcast_id = self._broadcast_id(broadcast_id)
         user_id = self._user_id(
             authenticated_user_id,
             field="authenticated_user_id",
@@ -169,7 +171,7 @@ class EmergencyBroadcastService:
         authenticated_user_id: str,
     ) -> EmergencyBroadcastAcknowledgmentRecord | None:
         return self._repository.get_acknowledgment(
-            broadcast_id=str(broadcast_id or "").strip(),
+            broadcast_id=self._broadcast_id(broadcast_id),
             user_id=self._user_id(
                 authenticated_user_id,
                 field="authenticated_user_id",
