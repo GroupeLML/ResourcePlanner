@@ -2680,6 +2680,47 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         complete = build_project_delta_batch(current, current)
         self.assertEqual(complete.drafts, ())
 
+    def test_889_pre_provenance_baseline_uses_explicit_whole_project_refresh(self) -> None:
+        current = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            )
+        )
+        current_project = current.projects[0]
+        legacy_task = replace(
+            current_project.days[0].tasks[0],
+            request_assignments=(),
+        )
+        legacy = replace(
+            current,
+            projects=(
+                replace(
+                    current_project,
+                    days=(
+                        replace(
+                            current_project.days[0],
+                            tasks=(legacy_task,),
+                        ),
+                    ),
+                ),
+            ),
+            request_provenance_version=None,
+            request_provenance_complete=False,
+        )
+        delta = build_project_delta_batch(legacy, current)
+        self.assertEqual(len(delta.drafts), 1)
+        body = delta.drafts[0].body
+        self.assertIn(
+            "Référence historique incomplète — actualisation du projet complet.",
+            body,
+        )
+        self.assertIn("Mary", body)
+        self.assertNotIn("Modifié — Mary", body)
+
     def test_889_cross_project_move_is_isolated_remove_add(self) -> None:
         old_project = v4_shift_projection(
             (
