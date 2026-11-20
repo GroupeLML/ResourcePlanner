@@ -2423,6 +2423,162 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertIn("heures 6 h → 5 h", next_body)
                 self.assertNotIn("heures 8 h → 5 h", next_body)
 
+    def test_889_delta_edited_content_is_persisted_and_reused_by_all_transports(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(app) as client:
+                initial = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_confirmation"
+                )
+                self.assertEqual(initial.status_code, 200, initial.text)
+                first = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_confirmation",
+                        "expected_fingerprint": initial.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(first.status_code, 201, first.text)
+                first_id = first.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{first_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{first_id}/mark-communicated"
+                    ).status_code,
+                    200,
+                )
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        shift = session.get(Shift, "S1")
+                        assert shift is not None
+                        shift.hours = Decimal("6")
+                finally:
+                    engine.dispose()
+
+                delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(delta.status_code, 200, delta.text)
+                delta_payload = delta.json()
+                draft = delta_payload["drafts"][0]
+                self.assertIn("Modifié", draft["body"])
+                self.assertIn("heures 8 h → 6 h", draft["body"])
+
+                edited_subject = "Delta #889 approuvé"
+                edited_body = (
+                    "Modification validée par la coordonnatrice.\n\n"
+                    "Texte libre <sécurisé> & conservé."
+                )
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_planning_change",
+                        "expected_fingerprint": delta_payload["snapshot_fingerprint"],
+                        "expected_baseline_fingerprint": delta_payload[
+                            "baseline_fingerprint"
+                        ],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "subject": edited_subject,
+                                "body": edited_body,
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = prepared.json()["messages"][0]
+                self.assertEqual(message["subject"], edited_subject)
+                self.assertEqual(message["body"], edited_body)
+                self.assertIn("&lt;sécurisé&gt; &amp; conservé.", message["body_html"])
+                expected_html = message["body_html"]
+                expected_to = tuple(message["to_emails"])
+                expected_cc = tuple(message["cc_emails"])
+                batch_id = prepared.json()["id"]
+
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{batch_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+                self.assertEqual(sent.json()["status"], "COMMUNICATED")
+
+            self.assertEqual(len(transport.messages), 1)
+            graph = transport.messages[0]
+            self.assertEqual(graph.subject, edited_subject)
+            self.assertEqual(graph.body, edited_body)
+            self.assertEqual(graph.body_html, expected_html)
+            self.assertEqual(graph.to_emails, expected_to)
+            self.assertEqual(graph.cc_emails, expected_cc)
+
+            mime = BytesParser(policy=policy.default).parsebytes(downloaded.content)
+            self.assertEqual(str(mime["Subject"]), edited_subject)
+            parts = list(mime.iter_parts())
+            self.assertEqual(
+                parts[0].get_content().replace("\r\n", "\n").rstrip("\n"),
+                edited_body,
+            )
+            self.assertEqual(parts[1].get_content().strip(), expected_html)
+
+            self.assertEqual(smtp.attempt_subjects, [edited_subject])
+            self.assertEqual(smtp.attempt_bodies, [edited_body])
+            self.assertEqual(smtp.attempt_html, [expected_html])
+            self.assertEqual(smtp.attempt_to, [expected_to])
+            self.assertEqual(smtp.attempt_cc, [expected_cc])
+
     def test_889_delta_requires_communicated_baseline_and_full_preview_remains_available(self) -> None:
         with TemporaryDirectory() as directory:
             transport = FakeProjectDraftTransport()
