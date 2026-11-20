@@ -301,6 +301,8 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                 confirmations_by_resource: dict[str, list[str]] = {}
                 allocations_by_resource: dict[str, list[str]] = {}
                 outside_by_resource: dict[str, bool] = {}
+                v4_task_ids: set[str] = set()
+                v4_task_codes: set[str] = set()
                 for assignment in task.request_assignments:
                     if not assignment.shift_id or assignment.shift_id in seen:
                         raise ValueError("Shift de provenance manquant ou dupliqué")
@@ -444,6 +446,10 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                             raise ValueError(
                                 "Code tâche Shift v4 incohérent avec le contexte"
                             )
+                        if assignment.task_id is not None:
+                            v4_task_ids.add(assignment.task_id)
+                        if assignment.task_code is not None:
+                            v4_task_codes.add(assignment.task_code)
                         confirmations_by_resource.setdefault(
                             assignment.resource_id, []
                         ).append(assignment.confirmation)
@@ -460,6 +466,15 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
 
                 if actual != expected:
                     raise ValueError("Couverture de provenance chantier incomplète")
+                if version == 4:
+                    if set(task.task_ids) != v4_task_ids:
+                        raise ValueError(
+                            "Identités tâche v4 incohérentes avec les Shifts"
+                        )
+                    if set(task.task_codes) != v4_task_codes:
+                        raise ValueError(
+                            "Codes tâche v4 incohérents avec les Shifts"
+                        )
                 if version in (2, 3, 4):
                     for resource in task.resources:
                         if round(float(resource.hours), 2) != hours_by_resource.get(
