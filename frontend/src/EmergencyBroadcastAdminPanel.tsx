@@ -55,7 +55,8 @@ export default function EmergencyBroadcastAdminPanel() {
   const [creating, setCreating] = useState(false);
   const [ending, setEnding] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [stale, setStale] = useState(false);
+  const [statusStale, setStatusStale] = useState(false);
+  const [historyStale, setHistoryStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -63,13 +64,14 @@ export default function EmergencyBroadcastAdminPanel() {
   const refreshStatus = useCallback(async (signal?: AbortSignal) => {
     const next = await getEmergencyAdminStatus(signal);
     setStatus(next);
-    setStale(false);
+    setStatusStale(false);
   }, []);
 
   const refreshHistory = useCallback(async (signal?: AbortSignal) => {
     const page = await getEmergencyBroadcastHistory(0, 25, signal);
     setHistory(page.items);
     setHistoryCursor(page.next_cursor);
+    setHistoryStale(false);
   }, []);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -79,7 +81,7 @@ export default function EmergencyBroadcastAdminPanel() {
       setError(null);
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
-      setStale(true);
+      setStatusStale(true);
       setError(message(reason, "Impossible de confirmer l’état courant des diffusions."));
     } finally {
       setRefreshing(false);
@@ -97,7 +99,7 @@ export default function EmergencyBroadcastAdminPanel() {
         setError(null);
       } catch (reason) {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
-        setStale(true);
+        setStatusStale(true);
         setError(message(reason, "Impossible de confirmer l’état courant des diffusions."));
       } finally {
         if (!stopped) {
@@ -108,7 +110,7 @@ export default function EmergencyBroadcastAdminPanel() {
 
     void refreshHistory(controller.signal).catch((reason) => {
       if (!(reason instanceof DOMException && reason.name === "AbortError")) {
-        setStale(true);
+        setHistoryStale(true);
         setError(message(reason, "Impossible de charger l’historique des diffusions."));
       }
     });
@@ -183,7 +185,7 @@ export default function EmergencyBroadcastAdminPanel() {
       setNotice("La diffusion est terminée.");
       await refresh();
     } catch (reason) {
-      setStale(true);
+      setStatusStale(true);
       setError(message(reason, "Impossible de confirmer la fin de la diffusion."));
     } finally {
       setEnding(false);
@@ -230,6 +232,7 @@ export default function EmergencyBroadcastAdminPanel() {
   }
 
   const active = status?.broadcast?.state === "ACTIVE" ? status.broadcast : null;
+  const stale = statusStale || historyStale;
 
   return (
     <section className="emergency-admin-panel" aria-labelledby="emergency-admin-title">
@@ -249,7 +252,9 @@ export default function EmergencyBroadcastAdminPanel() {
 
       {stale && (
         <div className="emergency-admin-stale" role="status">
-          Données affichées possiblement périmées — l’état courant ne peut pas être confirmé.
+          {statusStale
+            ? "État courant possiblement périmé — création et fin de diffusion sont désactivées jusqu’à confirmation du serveur."
+            : "Historique possiblement périmé — les lignes déjà chargées sont conservées sans prétendre être à jour."}
         </div>
       )}
       {error && <div className="error-panel"><strong>Erreur</strong><span>{error}</span></div>}
@@ -279,7 +284,7 @@ export default function EmergencyBroadcastAdminPanel() {
             />
             <small>{utf16Length(broadcastMessage)} / 4000 unités UTF-16</small>
           </label>
-          <button type="submit" disabled={Boolean(active) || creating || stale}>
+          <button type="submit" disabled={Boolean(active) || creating || statusStale}>
             {creating ? "Diffusion…" : "Diffuser maintenant"}
           </button>
           {active && <small>Terminez la diffusion active avant d’en créer une autre.</small>}
@@ -297,7 +302,7 @@ export default function EmergencyBroadcastAdminPanel() {
                 <span><strong>{status?.active_pending_count ?? 0}</strong> actifs en attente</span>
                 <span><strong>{status?.active_acknowledged_count ?? 0}</strong> actifs acquittés</span>
               </div>
-              <button type="button" onClick={() => void endActive()} disabled={ending || stale}>
+              <button type="button" onClick={() => void endActive()} disabled={ending || statusStale}>
                 {ending ? "Fin en cours…" : "Terminer la diffusion"}
               </button>
             </>
