@@ -248,31 +248,26 @@ def _xact_abort_recovery(database_url: str) -> dict[str, bool]:
     results: dict[str, bool] = {}
     try:
         for mode in ("OFF", "ON"):
-            with engine.connect() as connection:
-                connection.exec_driver_sql(f"SET XACT_ABORT {mode}")
-                connection.exec_driver_sql(
+            raw = engine.raw_connection()
+            try:
+                cursor = raw.cursor()
+                cursor.execute(f"SET XACT_ABORT {mode}")
+                cursor.execute(
                     "CREATE TABLE #rp894_xact (id int NOT NULL PRIMARY KEY)"
                 )
-                connection.commit()
+                raw.commit()
                 try:
-                    connection.exec_driver_sql("BEGIN TRANSACTION")
-                    connection.exec_driver_sql(
-                        "INSERT INTO #rp894_xact (id) VALUES (1)"
-                    )
-                    connection.exec_driver_sql(
-                        "INSERT INTO #rp894_xact (id) VALUES (1)"
-                    )
+                    cursor.execute("BEGIN TRANSACTION")
+                    cursor.execute("INSERT INTO #rp894_xact (id) VALUES (1)")
+                    cursor.execute("INSERT INTO #rp894_xact (id) VALUES (1)")
+                    raw.commit()
                 except Exception:
-                    try:
-                        connection.exec_driver_sql(
-                            "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"
-                        )
-                    except Exception:
-                        connection.rollback()
-                remaining = connection.scalar(
-                    text("SELECT COUNT(*) FROM #rp894_xact")
-                )
-                results[mode.lower()] = int(remaining or 0) == 0
+                    raw.rollback()
+                cursor.execute("SELECT COUNT(*) FROM #rp894_xact")
+                remaining = int(cursor.fetchone()[0] or 0)
+                results[mode.lower()] = remaining == 0
+            finally:
+                raw.close()
     finally:
         engine.dispose()
     return results
