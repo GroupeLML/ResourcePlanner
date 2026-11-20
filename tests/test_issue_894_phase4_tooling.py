@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import unittest
 
@@ -11,6 +12,14 @@ SERVER = ROOT / "tools" / "issue_894_phase4_server.py"
 
 
 class Issue894Phase4ToolingTests(unittest.TestCase):
+    def test_phase4_python_tools_parse(self) -> None:
+        for path in (
+            LOAD,
+            ROOT / "tools" / "issue_894_phase4_server.py",
+            ROOT / "tools" / "issue_894_phase4_stats.py",
+        ):
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
     def test_load_matrix_and_timings_match_accepted_contract(self) -> None:
         source = LOAD.read_text(encoding="utf-8")
         self.assertIn("CLIENT_COUNTS = (20, 50, 100, 250, 500)", source)
