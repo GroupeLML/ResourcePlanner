@@ -105,7 +105,7 @@ def required_permission(method: str, path: str) -> str | None:
         path.startswith("/api/v1/runtime/broadcasts/")
         and path.endswith("/acknowledgment")
     ):
-        return PERMISSION_READ
+        return None
     if path.startswith("/api/v1/admin/runtime"):
         return PERMISSION_ADMIN_SETTINGS
     if (
