@@ -63,6 +63,30 @@ async function endIfActive(request: APIRequestContext) {
   expect(response.status(), await response.text()).toBe(200);
 }
 
+async function resetEmergencyFixture(request: APIRequestContext) {
+  const response = await request.post("/__e2e__/emergency/reset");
+  expect(response.ok(), await response.text()).toBeTruthy();
+}
+
+async function canonicalPersistedDisplayName(
+  adminRequest: APIRequestContext,
+  userRequest: APIRequestContext,
+) {
+  const principalResponse = await userRequest.get("/api/v1/auth/me");
+  expect(principalResponse.status(), await principalResponse.text()).toBe(200);
+  const principal = await principalResponse.json() as { local_user_id: string | null };
+  expect(principal.local_user_id).toBeTruthy();
+
+  const statusResponse = await adminRequest.get("/api/v1/admin/runtime/status");
+  expect(statusResponse.status(), await statusResponse.text()).toBe(200);
+  const status = await statusResponse.json() as {
+    users: Array<{ user_id: string; display_name: string }>;
+  };
+  const persisted = status.users.find((user) => user.user_id === principal.local_user_id);
+  expect(persisted).toBeTruthy();
+  return persisted!.display_name;
+}
+
 async function setFailureMode(
   request: APIRequestContext,
   statusFailure: boolean,
@@ -89,6 +113,14 @@ async function expectEmergency(page: Page, title: string) {
 }
 
 test.describe.serial("#894 emergency broadcast Phase 3", () => {
+  test.beforeEach(async ({ request }) => {
+    await resetEmergencyFixture(request);
+  });
+
+  test.afterEach(async ({ request }) => {
+    await resetEmergencyFixture(request);
+  });
+
   test("admin UI creates plain-text warning; user ACK preserves blocking/accessibility and admin history", async ({ browser }) => {
     const adminContext = await roleContext(browser, "ADMIN");
     const userContext = await roleContext(browser, "TECHNICIAN");
@@ -150,14 +182,18 @@ test.describe.serial("#894 emergency broadcast Phase 3", () => {
       }
 
       await adminPanel.getByRole("button", { name: "Actualiser" }).click();
-      await expect(adminPanel).toContainText("Technicien Alice");
+      const persistedTechnicianName = await canonicalPersistedDisplayName(
+        adminContext.request,
+        userContext.request,
+      );
+      await expect(adminPanel).toContainText(persistedTechnicianName);
       await expect(adminPanel).toContainText(/acquitt/i);
 
       const historyItem = adminPanel.locator(".emergency-history-list > button").first();
       await expect(historyItem).toContainText("Avis <script>alert('x')</script> É");
       await historyItem.click();
       await expect(adminPanel.locator(".emergency-receipt-history")).toContainText(
-        "Technicien Alice",
+        persistedTechnicianName,
       );
 
       const denied = await userContext.request.get("/api/v1/admin/runtime/status");
@@ -214,7 +250,11 @@ test.describe.serial("#894 emergency broadcast Phase 3", () => {
       const statusBody = await status.json() as {
         users: Array<{ display_name: string; user_id: string }>;
       };
-      expect(statusBody.users.filter((user) => user.display_name === "Technicien Alice"))
+      const principalResponse = await userContext.request.get("/api/v1/auth/me");
+      expect(principalResponse.status(), await principalResponse.text()).toBe(200);
+      const principal = await principalResponse.json() as { local_user_id: string | null };
+      expect(principal.local_user_id).toBeTruthy();
+      expect(statusBody.users.filter((user) => user.user_id === principal.local_user_id))
         .toHaveLength(1);
 
       const endA = await adminContext.request.post(
