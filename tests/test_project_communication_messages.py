@@ -33,6 +33,7 @@ from app.domain.project_communication_messages import (
     SEVERITY_WARNING,
     build_project_confirmation_batch,
     build_project_delta_batch,
+    canonical_project_recipients,
     compare_project_communication_projections,
     deserialize_project_projection,
     french_long_date,
@@ -739,6 +740,74 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             serialize_project_projection(
                 projection(project(requesters=(requester,)))
             )
+        )
+        self.assertEqual(restored.projects[0].requesters, (requester,))
+
+    def test_882_canonical_recipients_deduplicate_by_email_not_display_name(self) -> None:
+        to_first = participant(
+            "Même nom",
+            contact_id="C-TO-1",
+            user_id="U-TO-1",
+            address="Person" + chr(64) + "Example.test",
+        )
+        to_duplicate = participant(
+            "Autre rôle",
+            contact_id="C-TO-2",
+            user_id="U-TO-2",
+            address="person" + chr(64) + "example.TEST",
+        )
+        to_same_name_distinct = participant(
+            "Même nom",
+            contact_id="C-TO-3",
+            user_id="U-TO-3",
+            address="other" + chr(64) + "example.test",
+        )
+        cc_first = participant(
+            "CC premier",
+            contact_id="C-CC-1",
+            user_id="U-CC-1",
+            address="CcShared" + chr(64) + "Example.test",
+        )
+        cc_duplicate = participant(
+            "CC autre rôle",
+            contact_id="C-CC-2",
+            user_id="U-CC-2",
+            address="ccshared" + chr(64) + "example.TEST",
+        )
+        cc_conflicts_with_to = participant(
+            "Ressource avec adresse To",
+            contact_id="C-CC-3",
+            user_id="U-CC-3",
+            address="PERSON" + chr(64) + "EXAMPLE.TEST",
+        )
+
+        to_recipients, cc_recipients = canonical_project_recipients(
+            (to_first, to_duplicate, to_same_name_distinct),
+            (cc_first, cc_duplicate, cc_conflicts_with_to),
+        )
+
+        self.assertEqual(to_recipients, (to_first, to_same_name_distinct))
+        self.assertEqual(cc_recipients, (cc_first,))
+        self.assertEqual(to_recipients[0].display_name, "Même nom")
+        self.assertEqual(to_recipients[1].display_name, "Même nom")
+
+    def test_882_duplicate_role_email_does_not_remove_projection_provenance(self) -> None:
+        requester = participant(
+            "Demandeuse distincte",
+            contact_id="C-REQ-882",
+            user_id="U-REQ-882",
+            address="PM" + chr(64) + "INVALID.TEST",
+        )
+        source = projection(project(requesters=(requester,)))
+        draft = build_project_confirmation_batch(source).drafts[0]
+
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm")],
+        )
+        self.assertEqual(source.projects[0].requesters, (requester,))
+        restored = deserialize_project_projection(
+            serialize_project_projection(source)
         )
         self.assertEqual(restored.projects[0].requesters, (requester,))
 
