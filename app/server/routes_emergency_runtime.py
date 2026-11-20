@@ -230,24 +230,31 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         snapshot = runtime.presence.snapshot()
         active = await run_sync_cancellation_safe(runtime.active_broadcast)
         observed_users = snapshot.observations
-        receipts = (
+        receipt_history = (
             await _bounded_db_read(
-                runtime.repository.acknowledgments_for_users,
+                runtime.repository.list_acknowledgments,
                 broadcast_id=active.id,
-                user_ids=tuple(item.user_id for item in observed_users),
+                limit=251,
+                offset=0,
             )
             if active is not None
             else ()
         )
-        by_user = {record.user_id: record for record in receipts}
+        by_user = {record.user_id: record for record in receipt_history}
+        observed_ids = {item.user_id for item in observed_users}
+        receipt_only_ids = tuple(
+            record.user_id
+            for record in receipt_history
+            if record.user_id not in observed_ids
+        )
         labels = await _bounded_db_read(
             runtime.repository.user_labels,
-            tuple(item.user_id for item in observed_users),
+            receipt_only_ids,
         )
         users = [
             {
                 "user_id": item.user_id,
-                "display_name": labels.get(item.user_id, ""),
+                "display_name": item.display_name,
                 "last_seen_at": item.last_seen_at,
                 "active": item.active,
                 "acknowledged_at": (
@@ -256,14 +263,31 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
                     else None
                 ),
                 "pending": active is not None and item.user_id not in by_user,
+                "presence_state": "active" if item.active else "recent_inactive",
             }
             for item in observed_users
         ]
+        users.extend(
+            {
+                "user_id": record.user_id,
+                "display_name": labels.get(record.user_id, ""),
+                "last_seen_at": None,
+                "active": False,
+                "acknowledged_at": record.acknowledged_at,
+                "pending": False,
+                "presence_state": "unknown",
+            }
+            for record in receipt_history
+            if record.user_id not in observed_ids
+        )
+        waiting, in_flight = await runtime.feature_admission.counts()
         return {
             "generated_at": snapshot.generated_at,
             "observation_epoch": snapshot.observation_epoch,
             "presence_warming": snapshot.warming,
             "presence_complete": snapshot.complete,
+            "stale": False,
+            "error": None,
             "tracked_user_count": snapshot.tracked_count,
             "active_user_count": snapshot.active_count,
             "active_pending_count": sum(
@@ -276,7 +300,11 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
             ),
             "broadcast": _broadcast_payload(active),
             "users": users,
-            "diagnostics": asdict(runtime.diagnostics()),
+            "diagnostics": {
+                **asdict(runtime.diagnostics()),
+                "admission_waiting": waiting,
+                "admission_in_flight": in_flight,
+            },
         }
 
     @router.get("/api/v1/admin/runtime/broadcasts")
