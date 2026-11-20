@@ -217,7 +217,9 @@ def _sql_snapshot(database_url: str) -> dict[str, object]:
                     "WHERE is_user_process = 1 AND database_id = DB_ID()"
                 )
             )
-            xact_abort = connection.scalar(text("SELECT CAST(SESSIONPROPERTY('XACT_ABORT') AS int)"))
+            xact_abort = connection.scalar(
+                text("SELECT CASE WHEN (16384 & @@OPTIONS) = 16384 THEN 1 ELSE 0 END")
+            )
             shift_count = connection.scalar(select(func.count()).select_from(Shift))
             demand_count = connection.scalar(
                 select(func.count()).select_from(WorkforceRequest)
@@ -235,6 +237,41 @@ def _sql_snapshot(database_url: str) -> dict[str, object]:
         }
     finally:
         engine.dispose()
+
+
+def _xact_abort_recovery(database_url: str) -> dict[str, bool]:
+    engine = create_sql_engine(database_url)
+    results: dict[str, bool] = {}
+    try:
+        for mode in ("OFF", "ON"):
+            with engine.connect() as connection:
+                connection.exec_driver_sql(f"SET XACT_ABORT {mode}")
+                connection.exec_driver_sql(
+                    "CREATE TABLE #rp894_xact (id int NOT NULL PRIMARY KEY)"
+                )
+                connection.commit()
+                try:
+                    connection.exec_driver_sql("BEGIN TRANSACTION")
+                    connection.exec_driver_sql(
+                        "INSERT INTO #rp894_xact (id) VALUES (1)"
+                    )
+                    connection.exec_driver_sql(
+                        "INSERT INTO #rp894_xact (id) VALUES (1)"
+                    )
+                except Exception:
+                    try:
+                        connection.exec_driver_sql(
+                            "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"
+                        )
+                    except Exception:
+                        connection.rollback()
+                remaining = connection.scalar(
+                    text("SELECT COUNT(*) FROM #rp894_xact")
+                )
+                results[mode.lower()] = int(remaining or 0) == 0
+    finally:
+        engine.dispose()
+    return results
 
 
 async def _request_timed(
@@ -758,6 +795,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         raise SystemExit("Phase 4 certification requires at least 500 synthetic users.")
 
     sql_initial = _sql_snapshot(database_url)
+    xact_abort_recovery = _xact_abort_recovery(database_url)
     baseline = await _run_baseline(
         args.base_url,
         admin,
@@ -869,6 +907,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         all(bool(item["passed"]) for item in scenario_checks)
         and bool(wave_check["passed"])
         and business_unchanged
+        and all(xact_abort_recovery.values())
     )
     return {
         "schema": "issue-894-phase4-load-v1",
@@ -884,6 +923,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
             "states": list(STATES),
         },
         "sql_initial": sql_initial,
+        "xact_abort_recovery": xact_abort_recovery,
         "baseline": baseline,
         "scenarios": scenarios,
         "scenario_acceptance": scenario_checks,
