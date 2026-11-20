@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import Sequence
 
-from sqlalchemy import delete, select, tuple_, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
@@ -463,3 +463,22 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                 select(AppUser.id, AppUser.display_name).where(AppUser.id.in_(ids))
             )
             return {str(row.id): str(row.display_name) for row in rows}
+
+
+    def retention_backlog(
+        self,
+        *,
+        ended_before: datetime,
+    ) -> tuple[int, datetime | None]:
+        with self._factory() as session:
+            count, oldest = session.execute(
+                select(
+                    func.count(EmergencyBroadcast.id),
+                    func.min(EmergencyBroadcast.ended_at),
+                ).where(
+                    EmergencyBroadcast.state == BROADCAST_ENDED,
+                    EmergencyBroadcast.ended_at.is_not(None),
+                    EmergencyBroadcast.ended_at < ended_before,
+                )
+            ).one()
+            return int(count or 0), oldest
