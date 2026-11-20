@@ -1342,6 +1342,15 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                             "project_manager_contact_phone",
                                             None,
                                         )
+                                        for key in (
+                                            "confirmation",
+                                            "allocation_type",
+                                            "outside_schedule",
+                                            "task_id",
+                                            "task_code",
+                                            "task_description",
+                                        ):
+                                            assignment.pop(key, None)
                         legacy_json = json.dumps(
                             legacy,
                             ensure_ascii=False,
