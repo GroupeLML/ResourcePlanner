@@ -46,11 +46,29 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertIn("useState(false)", page)
         self.assertIn("setAddGeneratorCc(false)", page)
         self.assertIn("preview.generator_identity_fingerprint", page)
-        self.assertIn("getProjectCommunicationPreview(weekStart, addGeneratorCc)", page)
+        self.assertIn("getProjectCommunicationPreview(weekStart, mode, addGeneratorCc)", page)
         self.assertIn("add_generator_cc", api)
         self.assertIn("expected_generator_identity_fingerprint", api)
         self.assertNotIn("generator_email:", api)
         self.assertNotIn("generator_email:", page)
+
+    def test_889_full_and_delta_modes_are_explicit_and_reference_bound(self) -> None:
+        page = PAGE.read_text(encoding="utf-8")
+        api = API.read_text(encoding="utf-8")
+        self.assertIn("Générer la prévisualisation", page)
+        self.assertIn("Générer uniquement les modifications", page)
+        self.assertIn('"project_confirmation"', page)
+        self.assertIn('"project_planning_change"', page)
+        self.assertIn("hasCommunicatedBaseline", page)
+        self.assertIn(
+            "Aucune modification depuis la dernière communication pour cette semaine.",
+            page,
+        )
+        self.assertIn("mode=", api)
+        self.assertIn("encodeURIComponent(mode)", api)
+        self.assertIn("expected_baseline_fingerprint", api)
+        self.assertIn("preview.baseline_fingerprint", page)
+        self.assertIn("preview.mode", page)
 
     def test_page_no_longer_edits_legacy_communication_contacts(self) -> None:
         page = PAGE.read_text(encoding="utf-8")
