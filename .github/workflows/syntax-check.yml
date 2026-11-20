@@ -97,6 +97,7 @@ jobs:
           tools/issue_894_phase4_server.py
           tools/issue_894_phase4_load.py
           tools/issue_894_phase4_stats.py
+          tools/issue_894_phase4_performance_report.py
           tools/cutover_inventory.py
       - name: Guard Web/SQL boundaries from V1 imports
         run: python tools/cutover_inventory.py --check-boundaries
@@ -723,6 +724,9 @@ jobs:
           docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_stats.py               --input /evidence/docker-stats.tsv               --output /evidence/docker-stats.json               --allocated-cpus "$(nproc)"
           stats_status=$?
 
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_performance_report.py               --input /evidence/performance/performance.jsonl               --output /evidence/performance-summary.json
+          performance_status=$?
+
           docker stats --no-stream --format '{{json .}}' backend frontend             > "$evidence/final-docker-stats.jsonl" || true
           log_path="$(docker inspect backend --format '{{.LogPath}}')"
           if [ -f "$log_path" ]; then
@@ -733,6 +737,7 @@ jobs:
 
           test "$load_status" = "0"
           test "$stats_status" = "0"
+          test "$performance_status" = "0"
 
       - name: Run existing V2 API performance budget
         id: benchmark
