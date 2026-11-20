@@ -179,9 +179,13 @@ class EmergencyBroadcastPersistenceTests(unittest.TestCase):
                 broadcast_id=ended.id,
             )
         )
+        historical_activated_at = datetime.now(timezone.utc) - timedelta(days=92)
+        historical_ended_at = datetime.now(timezone.utc) - timedelta(days=91)
         with self.factory.begin() as session:
             row = session.get(EmergencyBroadcast, ended.id)
-            row.ended_at = datetime.now(timezone.utc) - timedelta(days=91)
+            row.created_at = historical_activated_at
+            row.activated_at = historical_activated_at
+            row.ended_at = historical_ended_at
 
         active = self._create()
         cutoff = datetime.now(timezone.utc) - timedelta(days=90)
