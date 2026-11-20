@@ -1378,6 +1378,356 @@ def _day_schedule_lines(
     return tuple(lines)
 
 
+def _project_context_payload(
+    project: ProjectCommunicationProject,
+) -> tuple[object, ...]:
+    return (
+        project.project_id,
+        project.project_number,
+        project.project_name,
+        _participant_payload(project.project_manager),
+        project.project_manager_erp_phone,
+        tuple(_participant_payload(value) for value in project.project_co_managers),
+        tuple(_participant_payload(value) for value in project.requesters),
+        tuple(project.diagnostics),
+    )
+
+
+def _asset_semantics(
+    assignment: ProjectCommunicationRequestAssignment,
+) -> tuple[object, ...]:
+    return tuple(
+        sorted(
+            (_asset_payload(asset) for asset in employee_assigned_assets(assignment)),
+            key=repr,
+        )
+    )
+
+
+def _historical_shift_changes(
+    before: ProjectCommunicationShiftFact,
+    after: ProjectCommunicationShiftFact,
+    *,
+    previous_version: int,
+) -> tuple[str, ...]:
+    old = before.assignment
+    new = after.assignment
+    changed: list[str] = []
+    if old.resource_id != new.resource_id or old.resource_name != new.resource_name:
+        changed.append("resource")
+    if before.day != after.day:
+        changed.append("day")
+    if round(float(old.hours), 2) != round(float(new.hours), 2):
+        changed.append("hours")
+    if before.task_description != (new.task_description or after.task_description):
+        changed.append("task_description")
+    if (
+        old.workforce_request_id,
+        old.request_number,
+    ) != (
+        new.workforce_request_id,
+        new.request_number,
+    ):
+        changed.append("request")
+    if (
+        old.site_contact_name,
+        old.site_contact_phone,
+    ) != (
+        new.site_contact_name,
+        new.site_contact_phone,
+    ):
+        changed.append("site_contact")
+    if _responsible_payload(before.operational_responsible) if before.operational_responsible is not None else None != (
+        _responsible_payload(after.operational_responsible)
+        if after.operational_responsible is not None
+        else None
+    ):
+        changed.append("responsible")
+    if previous_version >= 2:
+        if round(float(old.standard_hours or 0.0), 2) != round(
+            float(new.standard_hours or 0.0), 2
+        ):
+            changed.append("standard_hours")
+        if _asset_semantics(old) != _asset_semantics(new):
+            changed.append("assets")
+    if previous_version >= 3:
+        if _effective_manager_phone(old) != _effective_manager_phone(new):
+            changed.append("manager_phone")
+    if previous_version >= 4:
+        if old.confirmation != new.confirmation:
+            changed.append("confirmation")
+        if old.allocation_type != new.allocation_type:
+            changed.append("allocation_type")
+        if old.outside_schedule != new.outside_schedule:
+            changed.append("outside_schedule")
+        if old.task_id != new.task_id:
+            changed.append("task_id")
+        if old.task_code != new.task_code:
+            changed.append("task_code")
+        if old.task_description != new.task_description:
+            if "task_description" not in changed:
+                changed.append("task_description")
+    return tuple(changed)
+
+
+def _project_shift_deltas(
+    before: ProjectCommunicationProject | None,
+    after: ProjectCommunicationProject | None,
+    *,
+    previous_version: int | None,
+    current_version: int,
+) -> tuple[ProjectCommunicationShiftDelta, ...]:
+    before_facts = _project_shift_facts(before) if before is not None else {}
+    after_facts = _project_shift_facts(after) if after is not None else {}
+
+    if previous_version is None and before is not None and after is not None:
+        return tuple(
+            ProjectCommunicationShiftDelta(
+                kind="refresh",
+                before=None,
+                after=fact,
+                historical_refresh=True,
+            )
+            for _shift_id, fact in sorted(after_facts.items())
+        )
+
+    deltas: list[ProjectCommunicationShiftDelta] = []
+    for shift_id in sorted(set(before_facts) | set(after_facts)):
+        old = before_facts.get(shift_id)
+        new = after_facts.get(shift_id)
+        if old is None:
+            deltas.append(ProjectCommunicationShiftDelta("added", None, new))
+            continue
+        if new is None:
+            deltas.append(ProjectCommunicationShiftDelta("removed", old, None))
+            continue
+        assert previous_version is not None
+        changed_fields = _historical_shift_changes(
+            old,
+            new,
+            previous_version=previous_version,
+        )
+        refresh = previous_version < 4 and current_version == 4
+        if "resource" in changed_fields:
+            kind = "replaced"
+        elif "day" in changed_fields:
+            kind = "moved"
+        elif changed_fields:
+            kind = "modified"
+        elif refresh:
+            kind = "refresh"
+        else:
+            continue
+        deltas.append(
+            ProjectCommunicationShiftDelta(
+                kind=kind,
+                before=old,
+                after=new,
+                changed_fields=changed_fields,
+                historical_refresh=refresh,
+            )
+        )
+    return tuple(deltas)
+
+
+def _display_fact_resource(fact: ProjectCommunicationShiftFact | None) -> str:
+    if fact is None:
+        return "—"
+    return _display_employee_name(fact.assignment.resource_name)
+
+
+def _display_assets(assignment: ProjectCommunicationRequestAssignment) -> str:
+    values = tuple(
+        code
+        for code in (
+            _asset_display(asset) for asset in employee_assigned_assets(assignment)
+        )
+        if code
+    )
+    return " / ".join(values) or "aucun"
+
+
+def _display_responsible(value: ContactResolution | None) -> str:
+    return _responsible_display(value) if value is not None else "aucun"
+
+
+def _yes_no(value: bool | None) -> str:
+    return "oui" if value else "non"
+
+
+def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
+    before = delta.before
+    after = delta.after
+    current = after or before
+    assert current is not None
+
+    if delta.kind == "added":
+        text = (
+            f"Ajouté — {_display_fact_resource(after)} — "
+            f"{french_long_date(after.day)} — {float(after.assignment.hours):g} h"
+        )
+    elif delta.kind == "removed":
+        text = (
+            f"Retiré — {_display_fact_resource(before)} — "
+            f"{french_long_date(before.day)} — {float(before.assignment.hours):g} h"
+        )
+    elif delta.kind == "replaced":
+        assert before is not None and after is not None
+        text = (
+            f"Remplacé — {_display_fact_resource(before)} → "
+            f"{_display_fact_resource(after)} — {french_long_date(after.day)}"
+        )
+    elif delta.kind == "moved":
+        assert before is not None and after is not None
+        text = (
+            f"Déplacé — {_display_fact_resource(after)} — "
+            f"{french_long_date(before.day)} → {french_long_date(after.day)}"
+        )
+    elif delta.kind == "refresh":
+        assert after is not None
+        text = (
+            f"Référence historique incomplète — {_display_fact_resource(after)} — "
+            f"{french_long_date(after.day)} — état courant à reconfirmer"
+        )
+    else:
+        fact = after or before
+        assert fact is not None
+        text = (
+            f"Modifié — {_display_fact_resource(fact)} — "
+            f"{french_long_date(fact.day)}"
+        )
+
+    if before is not None and after is not None:
+        old = before.assignment
+        new = after.assignment
+        extras: list[str] = []
+        if "hours" in delta.changed_fields:
+            extras.append(
+                f"heures {float(old.hours):g} h → {float(new.hours):g} h"
+            )
+        if "confirmation" in delta.changed_fields:
+            extras.append(f"confirmation {old.confirmation} → {new.confirmation}")
+        if "allocation_type" in delta.changed_fields:
+            extras.append(
+                f"allocation {old.allocation_type} → {new.allocation_type}"
+            )
+        if "outside_schedule" in delta.changed_fields:
+            extras.append(
+                f"hors horaire {_yes_no(old.outside_schedule)} → "
+                f"{_yes_no(new.outside_schedule)}"
+            )
+        if "task_id" in delta.changed_fields:
+            extras.append(f"tâche ID {old.task_id or '—'} → {new.task_id or '—'}")
+        if "task_code" in delta.changed_fields:
+            extras.append(
+                f"code tâche {old.task_code or '—'} → {new.task_code or '—'}"
+            )
+        if "task_description" in delta.changed_fields:
+            extras.append(
+                f"travaux {before.task_description or '—'} → "
+                f"{new.task_description or after.task_description or '—'}"
+            )
+        if "request" in delta.changed_fields:
+            extras.append(
+                f"demande {old.request_number or old.workforce_request_id or '—'} → "
+                f"{new.request_number or new.workforce_request_id or '—'}"
+            )
+        if "site_contact" in delta.changed_fields:
+            extras.append(
+                "contact chantier "
+                f"{_contact_display(old.site_contact_name, old.site_contact_phone)} → "
+                f"{_contact_display(new.site_contact_name, new.site_contact_phone)}"
+            )
+        if "standard_hours" in delta.changed_fields:
+            extras.append(
+                f"heures standard {float(old.standard_hours or 0):g} → "
+                f"{float(new.standard_hours or 0):g}"
+            )
+        if "assets" in delta.changed_fields:
+            extras.append(f"actifs {_display_assets(old)} → {_display_assets(new)}")
+        if "responsible" in delta.changed_fields:
+            extras.append(
+                f"responsable {_display_responsible(before.operational_responsible)} → "
+                f"{_display_responsible(after.operational_responsible)}"
+            )
+        if "manager_phone" in delta.changed_fields:
+            extras.append(
+                "téléphone responsable projet "
+                f"{_effective_manager_phone(old)[1] or 'non publié'} → "
+                f"{_effective_manager_phone(new)[1] or 'non publié'}"
+            )
+        if extras:
+            text += " — " + "; ".join(extras)
+
+    if delta.historical_refresh and after is not None:
+        current_row = after.assignment
+        refresh_details = (
+            f"confirmation {current_row.confirmation}; "
+            f"allocation {current_row.allocation_type}; "
+            f"hors horaire {_yes_no(current_row.outside_schedule)}; "
+            f"tâche {current_row.task_code or current_row.task_id or '—'} "
+            f"{current_row.task_description or after.task_description}"
+        )
+        if delta.kind != "refresh":
+            text += (
+                " — Référence historique incomplète — état courant à reconfirmer"
+            )
+        text += f" — {refresh_details}"
+    return text
+
+
+def _project_delta_semantic_message(
+    project: ProjectCommunicationProject,
+    *,
+    deltas: Sequence[ProjectCommunicationShiftDelta],
+    project_context_changed: bool,
+    change_kind: str,
+) -> ProjectMessageSemantic:
+    lines: list[ProjectMessageLine] = [
+        _line(
+            "project_header",
+            f"{project.project_number} - {project.project_name}".strip(" -"),
+        ),
+        _line("blank"),
+        _line("text", {
+            "added": "Projet ajouté au planning communiqué.",
+            "removed": "Projet retiré du planning communiqué.",
+            "modified": "Mise à jour du planning communiqué.",
+        }.get(change_kind, "Mise à jour du planning communiqué.")),
+        _line("blank"),
+        _line("section", "Responsable projet"),
+        _line(
+            "text",
+            _display_employee_name(project.project_manager.display_name),
+        ),
+    ]
+    manager_phone_lines = _manager_phone_lines(project)
+    if manager_phone_lines:
+        lines.extend(_line("text", value) for value in manager_phone_lines)
+    elif project.project_manager_erp_phone:
+        lines.append(_line("text", project.project_manager_erp_phone))
+
+    lines.extend((_line("blank"), _line("section", "Description")))
+    for value in _description_lines(project):
+        lines.append(_line("text", value))
+    lines.extend((_line("blank"), _line("section", "Contact chantier")))
+    for value in _contact_lines(project):
+        lines.append(_line("text", value))
+
+    lines.extend((_line("blank"), _line("section", "Modifications")))
+    if project_context_changed and not deltas:
+        lines.append(_line("bullet", "Informations du projet mises à jour."))
+    for delta in deltas:
+        lines.append(_line("bullet", _shift_delta_line(delta)))
+    lines.extend(
+        (
+            _line("blank"),
+            _line("footer", PROJECT_RESPONSIBILITY_FOOTER),
+        )
+    )
+    return ProjectMessageSemantic(lines=tuple(lines))
+
+
 def _project_semantic_message(
     project: ProjectCommunicationProject,
     *,
@@ -1606,6 +1956,7 @@ def _build_draft(
     message_kind: str,
     cc_sources: Sequence[ProjectCommunicationProject],
     change_kind: str | None = None,
+    semantic_override: ProjectMessageSemantic | None = None,
 ) -> ProjectCommunicationDraft:
     message_key = f"project:{project.project_id}"
     to_recipients, cc_recipients = canonical_project_recipients(
@@ -1618,7 +1969,11 @@ def _build_draft(
         week_start,
         change=message_kind == MESSAGE_KIND_PLANNING_CHANGE,
     )
-    semantic = _project_semantic_message(project, change_kind=change_kind)
+    semantic = (
+        semantic_override
+        if semantic_override is not None
+        else _project_semantic_message(project, change_kind=change_kind)
+    )
     body = _render_project_text(semantic)
     body_html = _render_project_html(semantic)
     fingerprint = _fingerprint_payload(
@@ -1712,16 +2067,22 @@ def compare_project_communication_projections(
 
     current_version = current.request_provenance_version
     previous_version = previous.request_provenance_version
-    if current_version not in (1, 2, 3) or not current.request_provenance_complete:
+    if (
+        type(current_version) is not int
+        or current_version not in (1, 2, 3, 4)
+        or current.request_provenance_complete is not True
+    ):
         raise ValueError("Projection courante sans provenance chantier complète")
     _validate_provenance(current)
-    if previous_version not in (None, 1, 2, 3):
+    if previous_version is not None and (
+        type(previous_version) is not int
+        or previous_version not in (1, 2, 3, 4)
+    ):
         raise ValueError("Version historique de provenance chantier non supportée")
     if previous_version is not None:
         _validate_provenance(previous)
     if (
         previous_version is not None
-        and current_version is not None
         and current_version < previous_version
     ):
         raise ValueError("Régression de capacité de provenance chantier interdite")
@@ -1736,14 +2097,18 @@ def compare_project_communication_projections(
             changes.append(ProjectCommunicationChange(project_id, "added", None, new))
         elif new is None:
             changes.append(ProjectCommunicationChange(project_id, "removed", old, None))
+        elif current_version == 4 and previous_version in (None, 1, 2, 3):
+            # Historical capability cannot prove all v4 per-Shift facts.
+            changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
+        elif current_version == 4:
+            if _project_v4_semantic_payload(old) != _project_v4_semantic_payload(new):
+                changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
         elif current_version == 3 and previous_version in (None, 1, 2):
-            # Historical snapshots cannot prove equality for v3 request-phone facts.
             changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
         elif current_version == 3:
             if _project_v3_semantic_payload(old) != _project_v3_semantic_payload(new):
                 changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
         elif current_version == 2 and previous_version in (None, 1):
-            # Historical snapshots cannot prove equality for v2 Shift facts.
             changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
         elif current_version == 2:
             if _project_v2_semantic_payload(old) != _project_v2_semantic_payload(new):
@@ -1767,6 +2132,8 @@ def build_project_delta_batch(
     current: ProjectCommunicationProjection,
 ) -> ProjectCommunicationMessageBatch:
     changes = compare_project_communication_projections(previous, current)
+    current_version = current.request_provenance_version
+    previous_version = previous.request_provenance_version
     drafts: list[ProjectCommunicationDraft] = []
     for change in changes:
         project = change.after or change.before
@@ -1774,15 +2141,45 @@ def build_project_delta_batch(
         cc_sources = tuple(
             value for value in (change.before, change.after) if value is not None
         )
-        drafts.append(
-            _build_draft(
-                project=project,
-                week_start=current.week_start,
-                message_kind=MESSAGE_KIND_PLANNING_CHANGE,
-                cc_sources=cc_sources,
+        if current_version == 4:
+            deltas = _project_shift_deltas(
+                change.before,
+                change.after,
+                previous_version=previous_version,
+                current_version=current_version,
+            )
+            project_context_changed = (
+                change.before is not None
+                and change.after is not None
+                and _project_context_payload(change.before)
+                != _project_context_payload(change.after)
+            )
+            semantic = _project_delta_semantic_message(
+                project,
+                deltas=deltas,
+                project_context_changed=project_context_changed,
                 change_kind=change.kind,
             )
-        )
+            drafts.append(
+                _build_draft(
+                    project=project,
+                    week_start=current.week_start,
+                    message_kind=MESSAGE_KIND_PLANNING_CHANGE,
+                    cc_sources=cc_sources,
+                    change_kind=change.kind,
+                    semantic_override=semantic,
+                )
+            )
+        else:
+            drafts.append(
+                _build_draft(
+                    project=project,
+                    week_start=current.week_start,
+                    message_kind=MESSAGE_KIND_PLANNING_CHANGE,
+                    cc_sources=cc_sources,
+                    change_kind=change.kind,
+                )
+            )
     result = tuple(drafts)
     diagnostics = tuple(
         diagnostic for draft in result for diagnostic in draft.diagnostics
@@ -1792,7 +2189,6 @@ def build_project_delta_batch(
         snapshot_fingerprint=project_projection_fingerprint(current),
         diagnostics=diagnostics,
     )
-
 
 def serialize_project_projection(
     projection: ProjectCommunicationProjection,
