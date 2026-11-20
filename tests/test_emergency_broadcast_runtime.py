@@ -15,7 +15,11 @@ from app.application.security import AuthPrincipal, ROLE_ADMIN, ROLE_TECHNICIAN
 from app.infrastructure.sql import AppUser, Base, create_sql_engine
 from app.server.emergency_broadcast_runtime import PresenceRegistry
 from app.server.http import create_api_app
-from app.server.security import install_authorization_middleware, static_auth_resolver
+from app.server.security import (
+    install_authorization_middleware,
+    resolve_principal,
+    static_auth_resolver,
+)
 
 
 class FakeClock:
@@ -98,20 +102,30 @@ class EmergencyPresenceTests(unittest.TestCase):
 
 class EmergencyAuthOffloadTests(unittest.TestCase):
     def test_high_frequency_sync_auth_can_run_off_event_loop(self) -> None:
-        async def scenario() -> float:
+        request = type("RequestStub", (), {})()
+        expected = principal("USER-OFFLOAD", ROLE_TECHNICIAN)
+
+        def slow_resolver(_request):
+            time.sleep(0.12)
+            return expected
+
+        async def scenario() -> tuple[float, AuthPrincipal | None]:
             started = time.perf_counter()
-
-            async def blocking_auth() -> None:
-                await asyncio.to_thread(time.sleep, 0.12)
-
-            task = asyncio.create_task(blocking_auth())
+            task = asyncio.create_task(
+                resolve_principal(
+                    slow_resolver,
+                    request,
+                    offload_sync=True,
+                )
+            )
             await asyncio.sleep(0.01)
             elapsed = time.perf_counter() - started
-            await task
-            return elapsed
+            resolved = await task
+            return elapsed, resolved
 
-        elapsed = asyncio.run(scenario())
+        elapsed, resolved = asyncio.run(scenario())
         self.assertLess(elapsed, 0.08)
+        self.assertEqual(resolved, expected)
 
 
 class EmergencyRuntimeHttpTests(unittest.TestCase):
