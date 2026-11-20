@@ -952,6 +952,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         ordinary = scenario["ordinary_api"]
         status = scenario["status"]
         loop = scenario["event_loop"]["event_loop_lag_ms"]
+        pool = scenario["event_loop"]["pool"]
         delivery = scenario["foreground_delivery"]
         deadlock_delta = (
             int(scenario["sql_after"]["deadlocks"])
@@ -974,6 +975,11 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
             "status_all_200": set(status_codes) <= {"200"}
                 and int(status["count"]) > 0,
             "event_loop_p99_ok": float(loop["p99"]) <= 100.0,
+            "pool_ceiling_ok": (
+                int(pool["max_checked_out"]) <= int(pool["size"]) + 10
+                and int(pool["max_overflow"]) <= 10
+                and int(pool["checked_out"]) == 0
+            ),
             "deadlocks_zero": deadlock_delta == 0,
             "delivery_p95_ok": (
                 scenario["state"] != "pending"
