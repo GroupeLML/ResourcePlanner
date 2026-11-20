@@ -744,6 +744,41 @@ def _resource_participants(
     return resources
 
 
+def canonical_project_recipients(
+    to_recipients: Sequence[ProjectCommunicationParticipant],
+    cc_recipients: Sequence[ProjectCommunicationParticipant],
+) -> tuple[
+    tuple[ProjectCommunicationParticipant, ...],
+    tuple[ProjectCommunicationParticipant, ...],
+]:
+    """Deduplicate transport addresses case-insensitively with To priority."""
+
+    def normalized_email(participant: ProjectCommunicationParticipant) -> str:
+        return str(participant.email or "").strip().casefold()
+
+    normalized_to: list[ProjectCommunicationParticipant] = []
+    to_emails: set[str] = set()
+    for participant in to_recipients:
+        email = normalized_email(participant)
+        if email and email in to_emails:
+            continue
+        if email:
+            to_emails.add(email)
+        normalized_to.append(participant)
+
+    normalized_cc: list[ProjectCommunicationParticipant] = []
+    cc_emails: set[str] = set()
+    for participant in cc_recipients:
+        email = normalized_email(participant)
+        if email and (email in to_emails or email in cc_emails):
+            continue
+        if email:
+            cc_emails.add(email)
+        normalized_cc.append(participant)
+
+    return tuple(normalized_to), tuple(normalized_cc)
+
+
 def _to_recipients(
     project: ProjectCommunicationProject,
 ) -> tuple[ProjectCommunicationParticipant, ...]:
@@ -1351,13 +1386,9 @@ def _build_draft(
     change_kind: str | None = None,
 ) -> ProjectCommunicationDraft:
     message_key = f"project:{project.project_id}"
-    to_recipients = _to_recipients(project)
-    cc_recipients = _cc_recipients(
-        cc_sources,
-        exclude_emails=tuple(
-            participant.email or ""
-            for participant in to_recipients
-        ),
+    to_recipients, cc_recipients = canonical_project_recipients(
+        _to_recipients(project),
+        _cc_recipients(cc_sources),
     )
     diagnostics = _recipient_diagnostics(project, cc_sources)
     subject = _subject(
