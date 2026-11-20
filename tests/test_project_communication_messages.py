@@ -2462,6 +2462,38 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             project_projection_fingerprint(requirement_only),
         )
 
+        task = current.projects[0].days[0].tasks[0]
+        stored_unused_phone = replace(
+            current,
+            projects=(
+                replace(
+                    current.projects[0],
+                    days=(
+                        replace(
+                            current.projects[0].days[0],
+                            tasks=(
+                                replace(
+                                    task,
+                                    request_assignments=tuple(
+                                        replace(
+                                            row,
+                                            include_project_manager_contact_phone=False,
+                                            project_manager_contact_phone=synthetic_phone("0889"),
+                                        )
+                                        for row in task.request_assignments
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        self.assertEqual(
+            project_projection_fingerprint(current),
+            project_projection_fingerprint(stored_unused_phone),
+        )
+
     def test_889_v4_raw_capability_validation_fails_closed(self) -> None:
         current = v4_shift_projection(
             (
