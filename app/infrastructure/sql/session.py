@@ -39,6 +39,28 @@ def create_sql_engine(database_url: str, *, echo: bool = False) -> Engine:
                 cursor.execute("PRAGMA foreign_keys=ON")
             finally:
                 cursor.close()
+    elif engine.dialect.name == "mssql":
+        # SQL Server requires these SET options for DML against filtered indexes.
+        # Keep them connection-scoped so runtime writers use the same contract as
+        # the Alembic migration that creates the single-ACTIVE filtered index.
+        @event.listens_for(engine, "connect")
+        def _enable_mssql_filtered_index_options(
+            dbapi_connection,
+            _connection_record,
+        ) -> None:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute(
+                    "SET ANSI_NULLS ON; "
+                    "SET ANSI_PADDING ON; "
+                    "SET ANSI_WARNINGS ON; "
+                    "SET ARITHABORT ON; "
+                    "SET CONCAT_NULL_YIELDS_NULL ON; "
+                    "SET QUOTED_IDENTIFIER ON; "
+                    "SET NUMERIC_ROUNDABORT OFF"
+                )
+            finally:
+                cursor.close()
 
     return engine
 
