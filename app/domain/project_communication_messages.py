@@ -1628,6 +1628,58 @@ def _yes_no(value: bool | None) -> str:
     return "oui" if value else "non"
 
 
+def _shift_work_context(
+    fact: ProjectCommunicationShiftFact,
+    *,
+    include_state: bool,
+) -> tuple[str, ...]:
+    row = fact.assignment
+    values: list[str] = []
+    task_description = row.task_description or fact.task_description
+    if task_description:
+        values.append(f"travaux {task_description}")
+    if row.task_code:
+        values.append(f"code tâche {row.task_code}")
+    asset_value = _display_assets(row)
+    if asset_value != "aucun":
+        values.append(f"actifs {asset_value}")
+    if include_state:
+        if row.confirmation and row.confirmation != "Confirmée":
+            values.append(f"confirmation {row.confirmation}")
+        if row.outside_schedule is True:
+            values.append("hors horaire oui")
+        if row.allocation_type and row.allocation_type != "Flexible":
+            values.append(f"allocation {row.allocation_type}")
+    return tuple(values)
+
+
+def _resource_contact_delta_parts(
+    before: ProjectCommunicationParticipant | None,
+    after: ProjectCommunicationParticipant | None,
+) -> tuple[str, ...]:
+    values: list[str] = []
+    old_email = (before.email or "").strip() if before is not None else ""
+    new_email = (after.email or "").strip() if after is not None else ""
+    if old_email.casefold() != new_email.casefold():
+        values.append(f"courriel {old_email or '—'} → {new_email or '—'}")
+    old_phone = (before.phone or "").strip() if before is not None else ""
+    new_phone = (after.phone or "").strip() if after is not None else ""
+    if old_phone != new_phone:
+        values.append(f"téléphone {old_phone or '—'} → {new_phone or '—'}")
+    old_active = bool(before.active) if before is not None else False
+    new_active = bool(after.active) if after is not None else False
+    if old_active != new_active:
+        values.append(
+            "contact "
+            + ("actif" if old_active else "inactif")
+            + " → "
+            + ("actif" if new_active else "inactif")
+        )
+    if not values and _resource_contact_semantics(before) != _resource_contact_semantics(after):
+        values.append("coordonnées ressource mises à jour")
+    return tuple(values)
+
+
 def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
     before = delta.before
     after = delta.after
@@ -1635,27 +1687,47 @@ def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
     assert current is not None
 
     if delta.kind == "added":
+        assert after is not None
+        context = (
+            *_shift_work_context(after, include_state=True),
+            f"{float(after.assignment.hours):g} h",
+        )
         text = (
             f"Ajouté — {_display_fact_resource(after)} — "
-            f"{french_long_date(after.day)} — {float(after.assignment.hours):g} h"
+            f"{french_long_date(after.day)}"
         )
+        if context:
+            text += " — " + "; ".join(context)
     elif delta.kind == "removed":
+        assert before is not None
+        context = (
+            *_shift_work_context(before, include_state=True),
+            f"{float(before.assignment.hours):g} h",
+        )
         text = (
             f"Retiré — {_display_fact_resource(before)} — "
-            f"{french_long_date(before.day)} — {float(before.assignment.hours):g} h"
+            f"{french_long_date(before.day)}"
         )
+        if context:
+            text += " — " + "; ".join(context)
     elif delta.kind == "replaced":
         assert before is not None and after is not None
         text = (
             f"Remplacé — {_display_fact_resource(before)} → "
             f"{_display_fact_resource(after)} — {french_long_date(after.day)}"
         )
+        context = _shift_work_context(after, include_state=False)
+        if context:
+            text += " — " + "; ".join(context)
     elif delta.kind == "moved":
         assert before is not None and after is not None
         text = (
             f"Déplacé — {_display_fact_resource(after)} — "
             f"{french_long_date(before.day)} → {french_long_date(after.day)}"
         )
+        context = _shift_work_context(after, include_state=False)
+        if context:
+            text += " — " + "; ".join(context)
     elif delta.kind == "refresh":
         assert after is not None
         text = (
@@ -1669,6 +1741,9 @@ def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
             f"Modifié — {_display_fact_resource(fact)} — "
             f"{french_long_date(fact.day)}"
         )
+        context = _shift_work_context(fact, include_state=False)
+        if context:
+            text += " — " + "; ".join(context)
 
     if before is not None and after is not None:
         old = before.assignment
@@ -1678,13 +1753,16 @@ def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
             extras.append(
                 f"date {french_long_date(before.day)} → {french_long_date(after.day)}"
             )
-        if "resource_contact" in delta.changed_fields:
-            old_contact = before.resource_contact
-            new_contact = after.resource_contact
+        if "resource_name" in delta.changed_fields:
             extras.append(
-                "coordonnées ressource "
-                f"{(old_contact.email if old_contact is not None else None) or '—'} → "
-                f"{(new_contact.email if new_contact is not None else None) or '—'}"
+                f"nom {old.resource_name or '—'} → {new.resource_name or '—'}"
+            )
+        if "resource_contact" in delta.changed_fields:
+            extras.extend(
+                _resource_contact_delta_parts(
+                    before.resource_contact,
+                    after.resource_contact,
+                )
             )
         if "hours" in delta.changed_fields:
             extras.append(
@@ -1708,9 +1786,16 @@ def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
                 f"code tâche {old.task_code or '—'} → {new.task_code or '—'}"
             )
         if "task_description" in delta.changed_fields:
+            old_task_description = (
+                old.task_description
+                if delta.historical_version is None
+                or (delta.historical_version is not None and delta.historical_version >= 4)
+                else before.task_description
+            )
+            new_task_description = new.task_description or after.task_description
             extras.append(
-                f"travaux {before.task_description or '—'} → "
-                f"{new.task_description or after.task_description or '—'}"
+                f"travaux {old_task_description or '—'} → "
+                f"{new_task_description or '—'}"
             )
         if "request" in delta.changed_fields:
             extras.append(
