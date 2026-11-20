@@ -17,7 +17,7 @@ from typing import Any
 from uuid import UUID, uuid5
 
 import httpx
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import func, inspect, select, text, update
 
 from app.application.security import ROLE_ADMIN, ROLE_TECHNICIAN
 from app.infrastructure.sql import (
@@ -36,7 +36,11 @@ from app.infrastructure.sql.models import (
     WorkforceRequest,
 )
 from app.infrastructure.sql.emergency_broadcast_models import (
+    EmergencyBroadcast,
     EmergencyBroadcastAcknowledgment,
+)
+from app.infrastructure.sql.emergency_broadcast_repository import (
+    SqlEmergencyBroadcastRepository,
 )
 from tools.benchmark_v2_api import DATASETS, _seed
 
@@ -678,6 +682,47 @@ async def _raw_lost_response(
     del reader
 
 
+def _age_ended_broadcast_for_cleanup(
+    database_url: str,
+    broadcast_id: str,
+) -> None:
+    engine = create_sql_engine(database_url)
+    historical_activation = datetime.now(timezone.utc) - timedelta(days=92)
+    historical_end = datetime.now(timezone.utc) - timedelta(days=91)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                update(EmergencyBroadcast)
+                .where(EmergencyBroadcast.id == broadcast_id)
+                .values(
+                    created_at=historical_activation,
+                    activated_at=historical_activation,
+                    ended_at=historical_end,
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def _run_retention_cleanup(database_url: str) -> tuple[int, int]:
+    engine = create_sql_engine(database_url)
+    factory = create_session_factory(engine)
+    try:
+        repository = SqlEmergencyBroadcastRepository(factory)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+        receipts = repository.delete_acknowledgments_for_expired(
+            ended_before=cutoff,
+            limit=1000,
+        )
+        parents = repository.delete_empty_expired_broadcasts(
+            ended_before=cutoff,
+            limit=100,
+        )
+        return receipts, parents
+    finally:
+        engine.dispose()
+
+
 async def _ack_wave(
     base_url: str,
     admin: Credential,
@@ -687,12 +732,30 @@ async def _ack_wave(
     duplicates: int,
     suffix: str,
 ) -> dict[str, object]:
+    database_url = os.environ["RESOURCEPLANNER_DATABASE_URL"]
+    cleanup_user = users[-1]
     async with httpx.AsyncClient(
         base_url=base_url,
         cookies=_cookies(admin),
         timeout=10.0,
     ) as admin_client:
         await _end_active(admin_client, admin)
+        old = await _create_broadcast(admin_client, admin, f"{suffix}-cleanup")
+        old_id = str(old["id"])
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            cookies=_cookies(cleanup_user),
+            timeout=10.0,
+        ) as cleanup_client:
+            cleanup_ack, _cleanup_elapsed = await _ack(
+                cleanup_client,
+                cleanup_user,
+                old_id,
+            )
+            cleanup_ack.raise_for_status()
+        await _end_active(admin_client, admin)
+        _age_ended_broadcast_for_cleanup(database_url, old_id)
+
         broadcast = await _create_broadcast(admin_client, admin, suffix)
         broadcast_id = str(broadcast["id"])
 
@@ -723,7 +786,11 @@ async def _ack_wave(
 
     tasks = [asyncio.create_task(one(item)) for item in targets]
     barrier.set()
+    cleanup_task = asyncio.create_task(
+        asyncio.to_thread(_run_retention_cleanup, database_url)
+    )
     await asyncio.gather(*tasks)
+    cleanup_deleted_receipts, cleanup_deleted_parents = await cleanup_task
 
     lost_user = users[distinct]
     await _raw_lost_response(base_url, lost_user, broadcast_id)
@@ -741,7 +808,6 @@ async def _ack_wave(
                 str(retry.json()["acknowledgment"]["acknowledged_at"])
             )
 
-    database_url = os.environ["RESOURCEPLANNER_DATABASE_URL"]
     engine = create_sql_engine(database_url)
     try:
         with engine.connect() as connection:
@@ -775,10 +841,16 @@ async def _ack_wave(
         "receipt_count": int(receipt_count or 0),
         "expected_receipt_count": expected_receipts,
         "canonical_timestamps_stable": stable,
+        "retention_interleave": {
+            "deleted_receipts": cleanup_deleted_receipts,
+            "deleted_parents": cleanup_deleted_parents,
+        },
         "passed": (
             all(code == 200 for code in statuses)
             and int(receipt_count or 0) == expected_receipts
             and stable
+            and cleanup_deleted_receipts >= 1
+            and cleanup_deleted_parents >= 1
         ),
     }
 
