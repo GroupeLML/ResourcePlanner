@@ -873,6 +873,200 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
+    def test_871_manager_prefix_is_removed_when_app_user_name_is_prefixed(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    contact = session.get(BusinessContact, "C-PM")
+                    user = session.get(AppUser, "U-PM")
+                    project_row = session.get(Project, "P1")
+                    assert contact is not None and user is not None and project_row is not None
+                    contact.display_name = "12345 - Contact Jean Tremblay"
+                    user.display_name = "12345 – Jean Tremblay"
+                    self.assertEqual(project_row.project_manager_external_id, "PM-1")
+                with factory() as session:
+                    preview = self._service(session).project_preview(week_start=WEEK)
+                    project_row = session.get(Project, "P1")
+                    assert project_row is not None
+                    self.assertEqual(project_row.project_manager_external_id, "PM-1")
+            finally:
+                engine.dispose()
+
+        draft = preview.drafts[0]
+        self.assertIn("Responsable projet\nJean Tremblay", draft.body)
+        self.assertNotIn("12345", draft.body)
+        self.assertIn(">Jean Tremblay</div>", draft.body_html or "")
+        self.assertNotIn("12345", draft.body_html or "")
+
+    def test_871_manager_prefix_is_removed_without_matching_app_user(self) -> None:
+        with TemporaryDirectory() as directory:
+            url = self._database(directory)
+            engine = create_sql_engine(url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    user = session.get(AppUser, "U-PM")
+                    project_row = session.get(Project, "P1")
+                    assert user is not None and project_row is not None
+                    user.employee_external_id = "OTHER-PM"
+                    project_row.project_manager_name = "12345 — Jean Tremblay"
+                    self.assertEqual(project_row.project_manager_external_id, "PM-1")
+                with factory() as session:
+                    preview = self._service(session).project_preview(week_start=WEEK)
+                    project_row = session.get(Project, "P1")
+                    assert project_row is not None
+                    self.assertEqual(project_row.project_manager_external_id, "PM-1")
+            finally:
+                engine.dispose()
+
+        draft = preview.drafts[0]
+        self.assertIn("Responsable projet\nJean Tremblay", draft.body)
+        self.assertNotIn("12345 — Jean Tremblay", draft.body)
+        self.assertIn(">Jean Tremblay</div>", draft.body_html or "")
+        self.assertNotIn("12345 — Jean Tremblay", draft.body_html or "")
+
+    def test_871_corrected_manager_name_is_persisted_and_delivered_unchanged(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory.begin() as session:
+                    user = session.get(AppUser, "U-PM")
+                    project_row = session.get(Project, "P1")
+                    assert user is not None and project_row is not None
+                    user.display_name = "12345 - Jean Tremblay"
+                    manager_external_id = project_row.project_manager_external_id
+            finally:
+                engine.dispose()
+
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(app) as client:
+                preview = client.get(
+                    "/api/v1/communications/project-preview?week_start=2026-09-23"
+                )
+                self.assertEqual(preview.status_code, 200, preview.text)
+                preview_draft = preview.json()["drafts"][0]
+                expected_to = tuple(
+                    row["email"]
+                    for row in preview_draft["to_recipients"]
+                    if row["email"]
+                )
+                expected_cc = tuple(
+                    row["email"]
+                    for row in preview_draft["cc_recipients"]
+                    if row["email"]
+                )
+                self.assertIn(
+                    "Responsable projet\nJean Tremblay",
+                    preview_draft["body"],
+                )
+                self.assertNotIn("12345 - Jean Tremblay", preview_draft["body"])
+                self.assertNotIn(
+                    "12345 - Jean Tremblay",
+                    preview_draft["body_html"],
+                )
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = prepared.json()["messages"][0]
+                self.assertEqual(message["body"], preview_draft["body"])
+                self.assertEqual(message["body_html"], preview_draft["body_html"])
+                self.assertEqual(tuple(message["to_emails"]), expected_to)
+                self.assertEqual(tuple(message["cc_emails"]), expected_cc)
+
+                batch_id = prepared.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{batch_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+
+            self.assertEqual(len(transport.messages), 1)
+            graph_message = transport.messages[0]
+            self.assertEqual(graph_message.body, preview_draft["body"])
+            self.assertEqual(graph_message.body_html, preview_draft["body_html"])
+            self.assertEqual(graph_message.to_emails, expected_to)
+            self.assertEqual(graph_message.cc_emails, expected_cc)
+
+            mime = BytesParser(policy=policy.default).parsebytes(downloaded.content)
+            parts = list(mime.iter_parts())
+            self.assertEqual(
+                parts[0].get_content().replace("\r\n", "\n").rstrip("\n"),
+                preview_draft["body"],
+            )
+            self.assertEqual(
+                parts[1].get_content().strip(),
+                preview_draft["body_html"],
+            )
+            self.assertNotIn("12345 - Jean Tremblay", downloaded.content.decode("utf-8"))
+
+            self.assertEqual(smtp.attempt_bodies, [preview_draft["body"]])
+            self.assertEqual(smtp.attempt_html, [preview_draft["body_html"]])
+            self.assertEqual(smtp.attempt_to, [expected_to])
+            self.assertEqual(smtp.attempt_cc, [expected_cc])
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    project_row = session.get(Project, "P1")
+                    assert project_row is not None
+                    self.assertEqual(
+                        project_row.project_manager_external_id,
+                        manager_external_id,
+                    )
+            finally:
+                engine.dispose()
+
     def test_879_never_logged_manager_uses_unique_resource_email_end_to_end(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
