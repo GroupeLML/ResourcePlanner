@@ -246,26 +246,36 @@ def _sql_snapshot(database_url: str) -> dict[str, object]:
 def _xact_abort_recovery(database_url: str) -> dict[str, bool]:
     results: dict[str, bool] = {}
     for mode in ("OFF", "ON"):
-        # SQL Server local temp tables live for the physical connection. Use a
-        # fresh engine/session per mode so pool reuse cannot leak #rp894_xact
-        # from the OFF proof into the ON proof (or vice versa).
+        # pyodbc/ODBC may reuse the same physical SQL Server session even after
+        # SQLAlchemy closes/disposes an engine. Give each XACT_ABORT proof its
+        # own session-local temp-table identity so that lower-level pooling
+        # cannot collide the OFF and ON cases.
+        table_name = (
+            "#rp894_xact_off"
+            if mode == "OFF"
+            else "#rp894_xact_on"
+        )
         engine = create_sql_engine(database_url)
         raw = engine.raw_connection()
         try:
             cursor = raw.cursor()
             cursor.execute(f"SET XACT_ABORT {mode}")
             cursor.execute(
-                "CREATE TABLE #rp894_xact (id int NOT NULL PRIMARY KEY)"
+                f"CREATE TABLE {table_name} (id int NOT NULL PRIMARY KEY)"
             )
             raw.commit()
             try:
                 cursor.execute("BEGIN TRANSACTION")
-                cursor.execute("INSERT INTO #rp894_xact (id) VALUES (1)")
-                cursor.execute("INSERT INTO #rp894_xact (id) VALUES (1)")
+                cursor.execute(
+                    f"INSERT INTO {table_name} (id) VALUES (1)"
+                )
+                cursor.execute(
+                    f"INSERT INTO {table_name} (id) VALUES (1)"
+                )
                 raw.commit()
             except Exception:
                 raw.rollback()
-            cursor.execute("SELECT COUNT(*) FROM #rp894_xact")
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             remaining = int(cursor.fetchone()[0] or 0)
             results[mode.lower()] = remaining == 0
         finally:
