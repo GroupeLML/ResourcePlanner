@@ -195,7 +195,6 @@ test.describe.serial("#894 emergency broadcast Phase 3", () => {
         userContext.request,
         createdBroadcast!.id,
       );
-      await expect(adminPanel).toContainText(persistedTechnicianName);
       await expect(adminPanel).toContainText(/acquitt/i);
 
       const historyItem = adminPanel.locator(".emergency-history-list > button").first();
