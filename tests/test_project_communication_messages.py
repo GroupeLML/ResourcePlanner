@@ -2691,6 +2691,51 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertIn("confirmation Confirmée → Tentative", body)
         self.assertIn("confirmation Tentative → Confirmée", body)
 
+        task_before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-1",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-A",
+                    "task_code": "210",
+                },
+                {
+                    "shift_id": "S-2",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-B",
+                    "task_code": "220",
+                },
+            )
+        )
+        task_after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-1",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-B",
+                    "task_code": "220",
+                },
+                {
+                    "shift_id": "S-2",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-A",
+                    "task_code": "210",
+                },
+            )
+        )
+        self.assertNotEqual(
+            project_projection_fingerprint(task_before),
+            project_projection_fingerprint(task_after),
+        )
+        task_body = build_project_delta_batch(task_before, task_after).drafts[0].body
+        self.assertEqual(task_body.count("Modifié — Mary"), 2)
+        self.assertIn("tâche ID TASK-A → TASK-B", task_body)
+        self.assertIn("code tâche 210 → 220", task_body)
+
     def test_889_resource_communication_fact_change_is_shift_modified(self) -> None:
         before = v4_shift_projection(
             (
