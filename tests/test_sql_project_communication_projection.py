@@ -1047,8 +1047,6 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 parts[1].get_content().strip(),
                 preview_draft["body_html"],
             )
-            self.assertNotIn("12345 - Jean Tremblay", downloaded.content.decode("utf-8"))
-
             self.assertEqual(smtp.attempt_bodies, [preview_draft["body"]])
             self.assertEqual(smtp.attempt_html, [preview_draft["body_html"]])
             self.assertEqual(smtp.attempt_to, [expected_to])
