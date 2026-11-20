@@ -61,12 +61,6 @@ class ProjectCommunicationAssignment:
     project_manager_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     standard_hours: float | None = None
-    confirmation: str | None = None
-    allocation_type: str | None = None
-    outside_schedule: bool | None = None
-    task_id: str | None = None
-    task_code: str | None = None
-    task_description: str | None = None
     diagnostics: tuple[str, ...] = ()
     project_manager_erp_phone: str | None = None
 
@@ -108,6 +102,12 @@ class ProjectCommunicationRequestAssignment:
     project_manager_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     standard_hours: float | None = None
+    confirmation: str | None = None
+    allocation_type: str | None = None
+    outside_schedule: bool | None = None
+    task_id: str | None = None
+    task_code: str | None = None
+    task_description: str | None = None
 
 
 _EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS = frozenset(
