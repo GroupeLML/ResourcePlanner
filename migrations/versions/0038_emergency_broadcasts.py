@@ -127,6 +127,31 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError(
-        "0038 emergency broadcast schema is widening-only; destructive downgrade is not authorized."
+    context = op.get_context()
+    if context.as_sql:
+        raise RuntimeError(
+            "0038_emergency_broadcasts refuses offline downgrade generation because "
+            "durable #894 data cannot be inspected safely."
+        )
+
+    bind = op.get_bind()
+    protected_tables = (
+        "emergency_broadcast_acknowledgments",
+        "emergency_broadcasts",
     )
+    populated: list[str] = []
+    for table_name in protected_tables:
+        count = bind.execute(
+            sa.text(f"SELECT COUNT(*) FROM {table_name}")
+        ).scalar_one()
+        if int(count or 0) > 0:
+            populated.append(table_name)
+    if populated:
+        raise RuntimeError(
+            "0038_emergency_broadcasts refuses downgrade while durable #894 "
+            "broadcast/acknowledgment data exists in: "
+            + ", ".join(populated)
+        )
+
+    op.drop_table("emergency_broadcast_acknowledgments")
+    op.drop_table("emergency_broadcasts")
