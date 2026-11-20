@@ -1734,6 +1734,24 @@ def _project_delta_semantic_message(
     elif project.project_manager_erp_phone:
         lines.append(_line("text", project.project_manager_erp_phone))
 
+    resolved_responsibles = _distinct_resolved_responsibles(project)
+    if len(resolved_responsibles) == 1:
+        responsible = resolved_responsibles[0]
+        manager_contact_id = project.project_manager.contact_id
+        is_manager_fallback = (
+            responsible.source_type == SOURCE_PROJECT_MANAGER
+            and responsible.source_entity_id == project.project_id
+            and manager_contact_id is not None
+            and responsible.contact_id == manager_contact_id
+        )
+        if not is_manager_fallback:
+            lines.append(
+                _line(
+                    "text",
+                    f"Responsable opérationnel : {_responsible_display(responsible)}",
+                )
+            )
+
     lines.extend((_line("blank"), _line("section", "Description")))
     for value in _description_lines(project):
         lines.append(_line("text", value))
