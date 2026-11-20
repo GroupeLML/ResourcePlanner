@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import asyncio
 import inspect
 from typing import Any
 
@@ -100,6 +101,13 @@ def required_permission(method: str, path: str) -> str | None:
         return None
     if path.startswith("/api/v1/dev/user-switcher"):
         return None
+    if path == "/api/v1/runtime/status" or (
+        path.startswith("/api/v1/runtime/broadcasts/")
+        and path.endswith("/acknowledgment")
+    ):
+        return PERMISSION_READ
+    if path.startswith("/api/v1/admin/runtime"):
+        return PERMISSION_ADMIN_SETTINGS
     if (
         path.startswith("/api/v1/admin/settings")
         or path.startswith("/api/v1/admin/approval-scopes")
@@ -235,15 +243,31 @@ def static_auth_resolver(principal: AuthPrincipal | None) -> AuthResolver:
     return resolve
 
 
-async def resolve_principal(resolver: AuthResolver, request: Request) -> AuthPrincipal | None:
-    resolved = resolver(request)
+async def resolve_principal(
+    resolver: AuthResolver,
+    request: Request,
+    *,
+    offload_sync: bool = False,
+) -> AuthPrincipal | None:
+    if offload_sync and not inspect.iscoroutinefunction(resolver):
+        resolved = await asyncio.to_thread(resolver, request)
+    else:
+        resolved = resolver(request)
     if inspect.isawaitable(resolved):
         return await resolved
     return resolved
 
 
-async def _csrf_allowed(guard: CsrfGuard, request: Request) -> bool:
-    result = guard(request)
+async def _csrf_allowed(
+    guard: CsrfGuard,
+    request: Request,
+    *,
+    offload_sync: bool = False,
+) -> bool:
+    if offload_sync and not inspect.iscoroutinefunction(guard):
+        result = await asyncio.to_thread(guard, request)
+    else:
+        result = guard(request)
     if inspect.isawaitable(result):
         return bool(await result)
     return bool(result)
@@ -263,8 +287,13 @@ def install_authorization_middleware(
         if not path.startswith("/api/v1/"):
             return await call_next(request)
 
+        high_frequency_runtime = path == "/api/v1/runtime/status"
         with performance_phase("auth"):
-            principal = await resolve_principal(resolver, request)
+            principal = await resolve_principal(
+                resolver,
+                request,
+                offload_sync=high_frequency_runtime,
+            )
             if principal is None:
                 return _error(
                     401,
@@ -293,7 +322,11 @@ def install_authorization_middleware(
                 and principal.auth_mode in {"oidc", "break_glass"}
                 and request.method.upper() in _UNSAFE_METHODS
             ):
-                if not await _csrf_allowed(csrf_guard, request):
+                if not await _csrf_allowed(
+                    csrf_guard,
+                    request,
+                    offload_sync=path.startswith("/api/v1/runtime/"),
+                ):
                     return _error(
                         403,
                         "csrf_validation_failed",
