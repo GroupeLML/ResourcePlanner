@@ -260,8 +260,88 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
                 week_start=WEEK,
                 week_end=date(2026, 9, 27),
                 assignments=(valid,),
-                request_provenance_version=4,
+                request_provenance_version=5,
             )
+        with self.assertRaisesRegex(ValueError, "non prise en charge"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(valid,),
+                request_provenance_version=True,
+            )
+
+    def test_889_v4_captures_distinct_per_shift_facts_before_aggregation(self) -> None:
+        first = replace(
+            self._row(shift_id="S-V4-A", confirmation="Confirmée"),
+            workforce_request_id="D-V4",
+            request_number="DMO-V4",
+            standard_hours=8.0,
+            assets=(),
+            allocation_type="Flexible",
+            outside_schedule=False,
+            task_id="TASK-A",
+            task_code="210",
+            task_description="Travaux communs",
+        )
+        second = replace(
+            first,
+            shift_id="S-V4-B",
+            confirmation="Tentative",
+            allocation_type="Rigide",
+            outside_schedule=True,
+            task_id="TASK-B",
+            task_code="220",
+        )
+
+        result = build_project_communication_projection(
+            week_start=WEEK,
+            week_end=date(2026, 9, 27),
+            assignments=(first, second),
+            request_provenance_version=4,
+        )
+
+        self.assertEqual(result.request_provenance_version, 4)
+        task = result.projects[0].days[0].tasks[0]
+        by_shift = {row.shift_id: row for row in task.request_assignments}
+        self.assertEqual(by_shift["S-V4-A"].confirmation, "Confirmée")
+        self.assertEqual(by_shift["S-V4-A"].allocation_type, "Flexible")
+        self.assertFalse(by_shift["S-V4-A"].outside_schedule)
+        self.assertEqual(by_shift["S-V4-A"].task_id, "TASK-A")
+        self.assertEqual(by_shift["S-V4-A"].task_code, "210")
+        self.assertEqual(by_shift["S-V4-A"].task_description, "Travaux communs")
+        self.assertEqual(by_shift["S-V4-B"].confirmation, "Tentative")
+        self.assertEqual(by_shift["S-V4-B"].allocation_type, "Rigide")
+        self.assertTrue(by_shift["S-V4-B"].outside_schedule)
+        self.assertEqual(by_shift["S-V4-B"].task_id, "TASK-B")
+        self.assertEqual(by_shift["S-V4-B"].task_code, "220")
+        self.assertEqual(set(task.resources[0].confirmations), {"Confirmée", "Tentative"})
+        self.assertEqual(set(task.resources[0].allocation_types), {"Flexible", "Rigide"})
+        self.assertTrue(task.resources[0].outside_schedule)
+
+    def test_889_v4_rejects_malformed_shift_facts(self) -> None:
+        valid = replace(
+            self._row(shift_id="S-V4-VALID"),
+            workforce_request_id="D-V4",
+            request_number="DMO-V4",
+            standard_hours=8.0,
+            assets=(),
+        )
+        cases = (
+            (replace(valid, confirmation=""), "Confirmation"),
+            (replace(valid, allocation_type="  "), "allocation"),
+            (replace(valid, outside_schedule=1), "booléen"),
+            (replace(valid, task_id=""), "tâche"),
+            (replace(valid, task_code=""), "tâche"),
+            (replace(valid, task_description="  "), "Description"),
+        )
+        for malformed, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                build_project_communication_projection(
+                    week_start=WEEK,
+                    week_end=date(2026, 9, 27),
+                    assignments=(malformed,),
+                    request_provenance_version=4,
+                )
 
     def test_880_v1_v2_do_not_gain_v3_request_phone_facts(self) -> None:
         source = replace(
