@@ -1606,6 +1606,10 @@ def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
         old = before.assignment
         new = after.assignment
         extras: list[str] = []
+        if "day" in delta.changed_fields and delta.kind != "moved":
+            extras.append(
+                f"date {french_long_date(before.day)} → {french_long_date(after.day)}"
+            )
         if "hours" in delta.changed_fields:
             extras.append(
                 f"heures {float(old.hours):g} h → {float(new.hours):g} h"
