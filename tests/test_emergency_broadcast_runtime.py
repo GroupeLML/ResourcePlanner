@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app.application.security import AuthPrincipal, ROLE_ADMIN, ROLE_TECHNICIAN
 from app.infrastructure.sql import AppUser, Base, create_sql_engine
@@ -291,12 +292,12 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
         runtime = user_app.state.emergency_broadcast_runtime
         with runtime.factory() as session:
             before_receipts = session.execute(
-                __import__("sqlalchemy").text(
+                text(
                     "SELECT COUNT(*) FROM emergency_broadcast_acknowledgments"
                 )
             ).scalar_one()
             before_planning = session.execute(
-                __import__("sqlalchemy").text(
+                text(
                     "SELECT COUNT(*) FROM planning_mutation_state"
                 )
             ).scalar_one()
@@ -309,12 +310,12 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
         try:
             with engine.connect() as connection:
                 after_receipts = connection.execute(
-                    __import__("sqlalchemy").text(
+                    text(
                         "SELECT COUNT(*) FROM emergency_broadcast_acknowledgments"
                     )
                 ).scalar_one()
                 after_planning = connection.execute(
-                    __import__("sqlalchemy").text(
+                    text(
                         "SELECT COUNT(*) FROM planning_mutation_state"
                     )
                 ).scalar_one()
