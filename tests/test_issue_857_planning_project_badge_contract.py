@@ -14,7 +14,10 @@ def test_857_project_badge_reuses_existing_manager_marker_authority() -> None:
     assert "shift.project_manager_color_id" in page
     assert "shift.project_manager_color_label" in page
     assert 'backgroundColor: `hsl(${hue} 70% 34%)`' in page
+    assert "resourceDisplayName(shift.project_manager_color_label)" in page
+    assert "resourceDisplayName(shift.requester)" in page
     assert "managerColorLabel ? `Responsable: ${managerColorLabel}` : null" in page
+    assert "requesterLabel ? `Demandeur: ${requesterLabel}` : null" in page
     assert "shift-pm-dot" not in page
     assert "shift.project_manager ?" not in page
 
@@ -23,7 +26,8 @@ def test_857_scope_neighbor_never_receives_manager_badge_details() -> None:
     page = PAGE.read_text(encoding="utf-8")
 
     assert "const managerColorId = !scopeNeighbor ? shift.project_manager_color_id : null;" in page
-    assert "const managerColorLabel = !scopeNeighbor ? shift.project_manager_color_label : null;" in page
+    assert "const managerColorLabel = !scopeNeighbor" in page
+    assert "? resourceDisplayName(shift.project_manager_color_label)" in page
     assert "managerColorId={managerColorId}" in page
     assert "managerLabel={managerColorLabel}" in page
 
