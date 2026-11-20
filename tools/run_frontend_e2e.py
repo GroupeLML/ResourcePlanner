@@ -879,6 +879,37 @@ def build_app(database_path: Path, frontend_dist: Path):
             "presence_warming": emergency_runtime.presence.snapshot().warming,
         }
 
+    @app.post("/__e2e__/emergency/reset", include_in_schema=False)
+    def emergency_e2e_reset():
+        emergency_failure_mode["status"] = False
+        emergency_failure_mode["acknowledgment"] = False
+
+        active = emergency_runtime.service.active()
+        ended_broadcast_id = None
+        if active is not None:
+            with app.state.session_factory() as session:
+                admin = SqlUserIdentityRepository(session).get_by_external_identity(
+                    "urn:resourceplanner:e2e-dev",
+                    "admin",
+                )
+            assert admin is not None
+            emergency_runtime.repository.end(
+                broadcast_id=active.id,
+                actor_user_id=admin.user_id,
+            )
+            ended_broadcast_id = active.id
+
+        emergency_runtime.presence = PresenceRegistry()
+        emergency_runtime._active_cache.invalidate()
+        emergency_runtime._receipt_cache.prune()
+        return {
+            "ended_broadcast_id": ended_broadcast_id,
+            "status_failure": emergency_failure_mode["status"],
+            "acknowledgment_failure": emergency_failure_mode["acknowledgment"],
+            "observation_epoch": emergency_runtime.presence.observation_epoch,
+            "presence_warming": emergency_runtime.presence.snapshot().warming,
+        }
+
     @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
     def link_pending_oidc_identity():
         with app.state.session_factory.begin() as session:
