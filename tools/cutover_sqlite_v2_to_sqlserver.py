@@ -376,6 +376,15 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
 
 
 RELATIONSHIP_CONTROLS: dict[str, tuple[str, ...]] = {
+    "emergency_broadcasts": (
+        "id",
+        "created_by_user_id",
+        "ended_by_user_id",
+    ),
+    "emergency_broadcast_acknowledgments": (
+        "broadcast_id",
+        "user_id",
+    ),
     "projects": ("id",),
     "project_co_managers": (
         "project_id",
