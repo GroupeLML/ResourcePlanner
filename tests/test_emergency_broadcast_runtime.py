@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -95,6 +96,24 @@ class EmergencyPresenceTests(unittest.TestCase):
         self.assertFalse(snapshot.complete)
 
 
+class EmergencyAuthOffloadTests(unittest.TestCase):
+    def test_high_frequency_sync_auth_can_run_off_event_loop(self) -> None:
+        async def scenario() -> float:
+            started = time.perf_counter()
+
+            async def blocking_auth() -> None:
+                await asyncio.to_thread(time.sleep, 0.12)
+
+            task = asyncio.create_task(blocking_auth())
+            await asyncio.sleep(0.01)
+            elapsed = time.perf_counter() - started
+            await task
+            return elapsed
+
+        elapsed = asyncio.run(scenario())
+        self.assertLess(elapsed, 0.08)
+
+
 class EmergencyRuntimeHttpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = TemporaryDirectory()
@@ -125,11 +144,21 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _app(self, who: AuthPrincipal):
+    def _app(self, who: AuthPrincipal | None):
         return create_api_app(
             self.database_url,
             auth_resolver=static_auth_resolver(who),
             api_docs_enabled=False,
+        )
+
+    def test_unauthenticated_status_is_401(self) -> None:
+        app = self._app(None)
+        with TestClient(app) as client:
+            response = client.get("/api/v1/runtime/status")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "authentication_required",
         )
 
     def test_authenticated_status_records_presence_and_returns_active_broadcast(self) -> None:
@@ -175,6 +204,21 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
         with TestClient(user_app) as user:
             denied = user.get("/api/v1/admin/runtime/status")
             self.assertEqual(denied.status_code, 403)
+            create_denied = user.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "Non",
+                    "message": "Non",
+                    "confirmed": True,
+                },
+            )
+            self.assertEqual(create_denied.status_code, 403)
+            end_denied = user.post(
+                f"/api/v1/admin/runtime/broadcasts/{broadcast_id}/end",
+                json={},
+            )
+            self.assertEqual(end_denied.status_code, 403)
 
             ack = user.post(
                 f"/api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment",
