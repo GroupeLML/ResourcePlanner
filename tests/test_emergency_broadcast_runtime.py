@@ -90,6 +90,7 @@ class EmergencyPresenceTests(unittest.TestCase):
         clock = FakeClock()
         presence = PresenceRegistry(monotonic=clock.monotonic, utc_now=clock.utc_now)
         presence.CAPACITY = 2
+        clock.advance(61)
 
         self.assertTrue(presence.observe("A"))
         self.assertTrue(presence.observe("B"))
