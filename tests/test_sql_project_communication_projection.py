@@ -583,7 +583,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     before = self._service(session).project_projection(
                         week_start=WEEK
                     )
-                self.assertEqual(before.request_provenance_version, 3)
+                self.assertEqual(before.request_provenance_version, 4)
                 before_rows = {
                     row.resource_id: row
                     for task in before.projects[0].days[0].tasks
@@ -814,7 +814,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
-        self.assertEqual(projection.request_provenance_version, 3)
+        self.assertEqual(projection.request_provenance_version, 4)
         self.assertIsNone(projection.projects[0].project_manager_erp_phone)
         body = preview.drafts[0].body
         self.assertIn("Responsable projet\nChargé de projet Démo", body)
@@ -1910,7 +1910,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
                 preview_response = origin.get(
                     "/api/v1/communications/project-preview"
-                    "?week_start=2026-09-23&add_generator_cc=true"
+                    "?week_start=2026-09-23&mode=project_planning_change&add_generator_cc=true"
                 )
                 self.assertEqual(preview_response.status_code, 200, preview_response.text)
                 preview = preview_response.json()
@@ -2331,9 +2331,20 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 finally:
                     engine.dispose()
 
-                delta = client.get(
+                full_again = client.get(
                     "/api/v1/communications/project-preview"
                     "?week_start=2026-09-23"
+                )
+                self.assertEqual(full_again.status_code, 200, full_again.text)
+                self.assertEqual(
+                    full_again.json()["mode"],
+                    "project_confirmation",
+                )
+                self.assertIn("6 h", full_again.json()["drafts"][0]["body"])
+
+                delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
                 )
                 self.assertEqual(delta.status_code, 200, delta.text)
                 delta_payload = delta.json()
@@ -2343,7 +2354,8 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "project_planning_change",
                 )
                 self.assertEqual(len(delta_payload["drafts"]), 1)
-                self.assertNotIn("6 h", delta_payload["drafts"][0]["body"])
+                self.assertIn("Modifié", delta_payload["drafts"][0]["body"])
+                self.assertIn("heures 8 h → 6 h", delta_payload["drafts"][0]["body"])
                 self.assertNotEqual(
                     delta_payload["snapshot_fingerprint"],
                     delta_payload["baseline_fingerprint"],
@@ -2763,7 +2775,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     immutable = ProjectCommunicationService(
                         repository
                     ).project_projection(week_start=WEEK)
-                    self.assertEqual(immutable.request_provenance_version, 3)
+                    self.assertEqual(immutable.request_provenance_version, 4)
                     shift_rows = {
                         item.shift_id: item
                         for day in immutable.projects[0].days
@@ -3617,7 +3629,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     snapshot = deserialize_project_projection(
                         persisted.project_snapshot_json or ""
                     )
-                    self.assertEqual(snapshot.request_provenance_version, 3)
+                    self.assertEqual(snapshot.request_provenance_version, 4)
                     self.assertEqual(
                         snapshot.projects[0].project_id,
                         draft["project_id"],
