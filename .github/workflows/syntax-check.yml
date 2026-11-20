@@ -661,40 +661,140 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/phase4-evidence/performance"
-          chmod 0777 "$GITHUB_WORKSPACE/phase4-evidence/performance"
-          docker run -d             --name backend             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence/performance:/home/resourceplanner/.resourceplanner/logs"             -w /app             -e PYTHONPATH=/app             -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL"             -e RESOURCEPLANNER_HOST=0.0.0.0             -e RESOURCEPLANNER_PORT=8000             -e RESOURCEPLANNER_LOG_LEVEL=info             -e RESOURCEPLANNER_AUTH_MODE=oidc             -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration             -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-phase4             -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback             -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false             -e RESOURCEPLANNER_API_DOCS_ENABLED=false             -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false             resourceplanner-894-feature-backend             python /workspace/tools/issue_894_phase4_server.py
+          evidence="$GITHUB_WORKSPACE/phase4-evidence"
+          mkdir -p "$evidence/performance"
+          chmod 0777 "$evidence/performance"
 
-          for attempt in $(seq 1 60); do
-            if docker run --rm --network "$RP894_NETWORK"               resourceplanner-894-feature-backend               python -c "from urllib.request import urlopen; r=urlopen('http://backend:8000/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"               >/dev/null 2>&1; then
-              break
-            fi
-            test "$attempt" != "60"
-            sleep 2
-          done
+          phase4_probe() {
+            url="$1"
+            docker run --rm --network "$RP894_NETWORK" \
+              resourceplanner-894-feature-backend \
+              curl --fail --silent --show-error --max-time 3 "$url" \
+              >/dev/null
+          }
 
-          docker run -d             --name frontend             --network "$RP894_NETWORK"             -e RESOURCEPLANNER_ENVIRONMENT=TEST             resourceplanner-894-feature-frontend >/dev/null
+          phase4_diagnostics() {
+            stage="$1"
+            output="$evidence/restart-${stage}-diagnostics.txt"
+            {
+              echo "stage=$stage"
+              echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "containers:"
+              docker ps -a \
+                --filter name=backend \
+                --filter name=frontend \
+                --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+              for container in backend frontend; do
+                if docker inspect "$container" >/dev/null 2>&1; then
+                  docker inspect "$container" \
+                    --format "$container status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} restarts={{.RestartCount}}"
+                  docker inspect "$container" \
+                    --format "$container health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"
+                else
+                  echo "$container missing"
+                fi
+              done
+              for target in \
+                http://backend:8000/health \
+                http://backend:8000/ready \
+                http://frontend:8080/health \
+                http://frontend:8080/ready; do
+                echo "probe=$target"
+                docker run --rm --network "$RP894_NETWORK" \
+                  resourceplanner-894-feature-backend \
+                  curl --silent --show-error --include --max-time 5 "$target" \
+                  || true
+              done
+              echo "backend logs:"
+              docker logs --tail=200 backend 2>&1 || true
+              echo "frontend logs:"
+              docker logs --tail=200 frontend 2>&1 || true
+            } > "$output" 2>&1
+            cat "$output"
+          }
 
-          for attempt in $(seq 1 60); do
-            if docker run --rm --network "$RP894_NETWORK"               resourceplanner-894-feature-backend               python -c "from urllib.request import urlopen; r=urlopen('http://frontend:8080/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"               >/dev/null 2>&1; then
-              break
-            fi
-            test "$attempt" != "60"
-            sleep 2
-          done
+          wait_phase4_ready() {
+            stage="$1"
+            url="$2"
+            for attempt in $(seq 1 60); do
+              if phase4_probe "$url"; then
+                printf '%s ready after attempt %s\n' "$stage" "$attempt" \
+                  | tee -a "$evidence/restart-probe-summary.txt"
+                return 0
+              fi
+              sleep 2
+            done
+            phase4_diagnostics "$stage"
+            return 1
+          }
 
-          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py restart-prepare               --credentials /secrets/sessions.json               --output /evidence/restart-state.json
+          docker run -d \
+            --name backend \
+            --network "$RP894_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$evidence/performance:/home/resourceplanner/.resourceplanner/logs" \
+            -w /app \
+            -e PYTHONPATH=/app \
+            -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL" \
+            -e RESOURCEPLANNER_HOST=0.0.0.0 \
+            -e RESOURCEPLANNER_PORT=8000 \
+            -e RESOURCEPLANNER_LOG_LEVEL=info \
+            -e RESOURCEPLANNER_AUTH_MODE=oidc \
+            -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration \
+            -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-phase4 \
+            -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback \
+            -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false \
+            -e RESOURCEPLANNER_API_DOCS_ENABLED=false \
+            -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false \
+            resourceplanner-894-feature-backend \
+            python /workspace/tools/issue_894_phase4_server.py >/dev/null
+
+          wait_phase4_ready initial-backend http://backend:8000/ready
+
+          docker run -d \
+            --name frontend \
+            --network "$RP894_NETWORK" \
+            -e RESOURCEPLANNER_ENVIRONMENT=PROD \
+            resourceplanner-894-feature-frontend >/dev/null
+
+          wait_phase4_ready initial-proxy http://frontend:8080/ready
+
+          docker run --rm \
+            --network "$RP894_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$RP894_SECRETS_DIR:/secrets:ro" \
+            -v "$evidence:/evidence" \
+            -w /workspace \
+            -e PYTHONPATH=/app:/workspace \
+            resourceplanner-894-feature-backend \
+            python tools/issue_894_phase4_load.py restart-prepare \
+              --credentials /secrets/sessions.json \
+              --output /evidence/restart-state.json
 
           docker restart backend >/dev/null
-          for attempt in $(seq 1 60); do
-            if docker run --rm --network "$RP894_NETWORK"               resourceplanner-894-feature-backend               python -c "from urllib.request import urlopen; r=urlopen('http://frontend:8080/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"               >/dev/null 2>&1; then
-              break
-            fi
-            test "$attempt" != "60"
-            sleep 2
-          done
 
-          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py restart-verify               --credentials /secrets/sessions.json               --state /evidence/restart-state.json             | tee "$GITHUB_WORKSPACE/phase4-evidence/restart-proof.json"
+          wait_phase4_ready restarted-backend http://backend:8000/ready
+          wait_phase4_ready restarted-proxy http://frontend:8080/ready
+
+          set +e
+          docker run --rm \
+            --network "$RP894_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$RP894_SECRETS_DIR:/secrets:ro" \
+            -v "$evidence:/evidence" \
+            -w /workspace \
+            -e PYTHONPATH=/app:/workspace \
+            resourceplanner-894-feature-backend \
+            python tools/issue_894_phase4_load.py restart-verify \
+              --credentials /secrets/sessions.json \
+              --state /evidence/restart-state.json \
+            | tee "$evidence/restart-proof.json"
+          restart_verify_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$restart_verify_status" != "0" ]; then
+            phase4_diagnostics restart-state-verification
+            exit "$restart_verify_status"
+          fi
 
       - name: Run full mixed-load and HTTP ACK certification
         id: load
@@ -779,7 +879,7 @@ jobs:
             sleep 2
           done
 
-          docker run -d             --name frontend             --network "$RP894_NETWORK"             -e RESOURCEPLANNER_ENVIRONMENT=TEST             "$rollback_frontend" >/dev/null
+          docker run -d             --name frontend             --network "$RP894_NETWORK"             -e RESOURCEPLANNER_ENVIRONMENT=PROD             "$rollback_frontend" >/dev/null
 
           for attempt in $(seq 1 60); do
             if docker run --rm --network "$RP894_NETWORK"               "$rollback_backend"               python -c "from urllib.request import urlopen; r=urlopen('http://frontend:8080/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"               >/dev/null 2>&1; then
