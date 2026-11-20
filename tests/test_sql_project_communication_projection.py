@@ -4522,6 +4522,16 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(first_deliveries["P2"]["status"], "FAILED")
                 self.assertEqual(first_deliveries["P2"]["attempt_count"], 1)
 
+                partial_delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(partial_delta.status_code, 422, partial_delta.text)
+                self.assertEqual(
+                    partial_delta.json()["error"]["code"],
+                    "project_communication_delta_baseline_missing",
+                )
+
                 second = client.post(
                     f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
                 )
@@ -4541,6 +4551,17 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(second_deliveries["P1"]["attempt_count"], 1)
                 self.assertEqual(second_deliveries["P2"]["status"], "SENT")
                 self.assertEqual(second_deliveries["P2"]["attempt_count"], 2)
+
+                communicated_delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(
+                    communicated_delta.status_code,
+                    200,
+                    communicated_delta.text,
+                )
+                self.assertEqual(communicated_delta.json()["drafts"], [])
 
         project_1000_attempts = [
             subject for subject in smtp.attempt_subjects if "1000" in subject
