@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy import delete, select, tuple_, update
@@ -179,7 +179,7 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                 )
                 .values(
                     state=BROADCAST_ENDED,
-                    ended_at=datetime.now().astimezone(),
+                    ended_at=datetime.now(timezone.utc),
                     ended_by_user_id=actor_user_id,
                 )
             )
@@ -315,6 +315,46 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                         EmergencyBroadcastAcknowledgment.broadcast_id,
                         EmergencyBroadcastAcknowledgment.user_id,
                     ).in_(keys)
+                )
+            )
+            session.commit()
+            return int(result.rowcount or 0)
+
+
+    def delete_empty_expired_broadcasts(
+        self,
+        *,
+        ended_before: datetime,
+        limit: int = 100,
+    ) -> int:
+        bounded = max(1, min(int(limit), 100))
+        with self._factory() as session:
+            candidate_ids = tuple(
+                session.scalars(
+                    select(EmergencyBroadcast.id)
+                    .where(
+                        EmergencyBroadcast.state == BROADCAST_ENDED,
+                        EmergencyBroadcast.ended_at.is_not(None),
+                        EmergencyBroadcast.ended_at < ended_before,
+                        ~select(EmergencyBroadcastAcknowledgment.broadcast_id)
+                        .where(
+                            EmergencyBroadcastAcknowledgment.broadcast_id
+                            == EmergencyBroadcast.id
+                        )
+                        .exists(),
+                    )
+                    .order_by(EmergencyBroadcast.ended_at, EmergencyBroadcast.id)
+                    .limit(bounded)
+                )
+            )
+            if not candidate_ids:
+                return 0
+            result = session.execute(
+                delete(EmergencyBroadcast).where(
+                    EmergencyBroadcast.id.in_(candidate_ids),
+                    EmergencyBroadcast.state == BROADCAST_ENDED,
+                    EmergencyBroadcast.ended_at.is_not(None),
+                    EmergencyBroadcast.ended_at < ended_before,
                 )
             )
             session.commit()
