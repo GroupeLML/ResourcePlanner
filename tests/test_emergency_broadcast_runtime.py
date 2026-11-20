@@ -187,10 +187,10 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
                 f"/api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment",
                 json={"user_id": "ADMIN-894"},
             )
-            self.assertEqual(injected.status_code, 200)
+            self.assertEqual(injected.status_code, 422)
             self.assertEqual(
-                injected.json()["acknowledgment"]["acknowledged_at"],
-                ack.json()["acknowledgment"]["acknowledged_at"],
+                injected.json()["error"]["code"],
+                "request_validation_error",
             )
 
     def test_new_broadcast_does_not_reuse_old_positive_receipt(self) -> None:
