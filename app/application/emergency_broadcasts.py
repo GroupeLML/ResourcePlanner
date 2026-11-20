@@ -63,7 +63,7 @@ class EmergencyBroadcastRepositoryPort(Protocol):
     def delete_acknowledgments_for_expired(
         self,
         *,
-        broadcast_ids: Sequence[str],
+        ended_before: datetime,
         limit: int = 1000,
     ) -> int: ...
 
