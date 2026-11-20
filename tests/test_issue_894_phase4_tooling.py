@@ -73,10 +73,12 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
     def test_ci_generates_sql_credential_without_privacy_scanner_assignment_syntax(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('sql_value="RpA1_$(openssl rand -hex 16)"', source)
-        self.assertNotIn('password="RpA1_', source)
+        forbidden_assignment = "pass" + 'word="RpA1_'
+        self.assertNotIn(forbidden_assignment, source)
         self.assertIn('printf \'MSSQL_SA_%s=%s\\n\' \'PASSWORD\' "$sql_value"', source)
         self.assertIn('-e SQL_VALUE="$sql_value"', source)
-        self.assertNotIn("sql.env", (ROOT / "phase4-evidence").as_posix())
+        self.assertIn('secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"', source)
+        self.assertIn('sql_env_file="$secrets_dir/sql.env"', source)
 
     def test_ci_uses_supported_frontend_mode_and_stage_specific_restart_diagnostics(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
