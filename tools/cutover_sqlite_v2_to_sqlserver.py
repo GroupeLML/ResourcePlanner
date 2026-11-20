@@ -29,7 +29,7 @@ from app.infrastructure.sql import Base, create_sql_engine  # noqa: E402
 
 DATABASE_ENV = "RESOURCEPLANNER_DATABASE_URL"
 DEFAULT_REPORT = ROOT / "sqlite_v2_cutover_report.json"
-POLICY_VERSION = "492-v3"
+POLICY_VERSION = "492-v4"
 DEV_IDENTITY_ISSUER = "urn:resourceplanner:dev"
 
 KEEP = "KEEP"
@@ -88,6 +88,8 @@ SOURCE_COMPATIBILITY_PROFILES: dict[str, dict[str, Any]] = {
     "erp_sync_project_quality",
     "erp_sync_recovery_state",
     "erp_sync_compensation_receipts",
+            "emergency_broadcasts",
+            "emergency_broadcast_acknowledgments",
         },
         "missing_columns": {
             # #830 columns postdate the frozen 0048 source revision.
@@ -210,6 +212,12 @@ TABLE_POLICIES: dict[str, TablePolicy] = {
     "communication_messages": _keep("Messages préparés/validés du workflow V2."),
     "communication_snapshot_lines": _keep("Snapshot métier associé aux communications."),
     "communication_deliveries": _keep("Historique de livraison des communications."),
+    "emergency_broadcasts": _keep(
+        "Diffusions d'urgence durables et acteurs de cycle de vie #894."
+    ),
+    "emergency_broadcast_acknowledgments": _keep(
+        "Preuves durables d'accusé de réception utilisateur #894."
+    ),
     "competencies": _keep("Catalogue local de compétences."),
     "competency_resource_class_audit": _keep(
         "Audit durable des rattachements compétence → classe et de leur version CAS."
