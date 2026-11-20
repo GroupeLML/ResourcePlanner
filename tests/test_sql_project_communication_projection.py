@@ -583,7 +583,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     before = self._service(session).project_projection(
                         week_start=WEEK
                     )
-                self.assertEqual(before.request_provenance_version, 3)
+                self.assertEqual(before.request_provenance_version, 4)
                 before_rows = {
                     row.resource_id: row
                     for task in before.projects[0].days[0].tasks
@@ -814,7 +814,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
             finally:
                 engine.dispose()
 
-        self.assertEqual(projection.request_provenance_version, 3)
+        self.assertEqual(projection.request_provenance_version, 4)
         self.assertIsNone(projection.projects[0].project_manager_erp_phone)
         body = preview.drafts[0].body
         self.assertIn("Responsable projet\nChargé de projet Démo", body)
@@ -1342,6 +1342,15 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                                             "project_manager_contact_phone",
                                             None,
                                         )
+                                        for key in (
+                                            "confirmation",
+                                            "allocation_type",
+                                            "outside_schedule",
+                                            "task_id",
+                                            "task_code",
+                                            "task_description",
+                                        ):
+                                            assignment.pop(key, None)
                         legacy_json = json.dumps(
                             legacy,
                             ensure_ascii=False,
@@ -1910,10 +1919,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
                 preview_response = origin.get(
                     "/api/v1/communications/project-preview"
-                    "?week_start=2026-09-23&add_generator_cc=true"
+                    "?week_start=2026-09-23&mode=project_confirmation&add_generator_cc=true"
                 )
                 self.assertEqual(preview_response.status_code, 200, preview_response.text)
                 preview = preview_response.json()
+                self.assertEqual(preview["mode"], "project_confirmation")
                 self.assertTrue(preview["add_generator_cc"])
                 self.assertEqual(len(preview["drafts"]), 2)
                 self.assertEqual(
@@ -2026,7 +2036,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     engine.dispose()
                 delta = origin.get(
                     "/api/v1/communications/project-preview"
-                    "?week_start=2026-09-23&add_generator_cc=true"
+                    "?week_start=2026-09-23&mode=project_planning_change&add_generator_cc=true"
                 )
                 self.assertEqual(delta.status_code, 200, delta.text)
                 self.assertEqual(delta.json()["mode"], "project_planning_change")
@@ -2331,9 +2341,26 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 finally:
                     engine.dispose()
 
-                delta = client.get(
+                full_again = client.get(
                     "/api/v1/communications/project-preview"
                     "?week_start=2026-09-23"
+                )
+                self.assertEqual(full_again.status_code, 200, full_again.text)
+                full_payload = full_again.json()
+                self.assertEqual(
+                    full_payload["mode"],
+                    "project_confirmation",
+                )
+                self.assertEqual(len(full_payload["drafts"]), 1)
+                self.assertEqual(full_payload["drafts"][0]["project_id"], "P1")
+                full_body = full_payload["drafts"][0]["body"]
+                self.assertIn("Technicien ressource", full_body)
+                self.assertIn("Ressource sans utilisateur", full_body)
+                self.assertNotIn("Modifié —", full_body)
+
+                delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
                 )
                 self.assertEqual(delta.status_code, 200, delta.text)
                 delta_payload = delta.json()
@@ -2343,10 +2370,523 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "project_planning_change",
                 )
                 self.assertEqual(len(delta_payload["drafts"]), 1)
-                self.assertNotIn("6 h", delta_payload["drafts"][0]["body"])
+                self.assertIn("Modifié", delta_payload["drafts"][0]["body"])
+                self.assertIn("heures 8 h → 6 h", delta_payload["drafts"][0]["body"])
                 self.assertNotEqual(
                     delta_payload["snapshot_fingerprint"],
                     delta_payload["baseline_fingerprint"],
+                )
+
+                prepared_delta = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_planning_change",
+                        "expected_fingerprint": delta_payload["snapshot_fingerprint"],
+                        "expected_baseline_fingerprint": delta_payload[
+                            "baseline_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared_delta.status_code, 201, prepared_delta.text)
+                delta_id = prepared_delta.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{delta_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{delta_id}/mark-communicated"
+                    ).status_code,
+                    200,
+                )
+
+                no_change = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(no_change.status_code, 200, no_change.text)
+                self.assertEqual(no_change.json()["drafts"], [])
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        shift = session.get(Shift, "S1")
+                        assert shift is not None
+                        shift.hours = Decimal("5")
+                finally:
+                    engine.dispose()
+
+                next_delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(next_delta.status_code, 200, next_delta.text)
+                next_body = next_delta.json()["drafts"][0]["body"]
+                self.assertIn("heures 6 h → 5 h", next_body)
+                self.assertNotIn("heures 8 h → 5 h", next_body)
+
+    def test_889_delta_edited_content_is_persisted_and_reused_by_all_transports(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(app) as client:
+                initial = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_confirmation"
+                )
+                self.assertEqual(initial.status_code, 200, initial.text)
+                first = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_confirmation",
+                        "expected_fingerprint": initial.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(first.status_code, 201, first.text)
+                first_id = first.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{first_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{first_id}/mark-communicated"
+                    ).status_code,
+                    200,
+                )
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        shift = session.get(Shift, "S1")
+                        assert shift is not None
+                        shift.hours = Decimal("6")
+                finally:
+                    engine.dispose()
+
+                delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(delta.status_code, 200, delta.text)
+                delta_payload = delta.json()
+                draft = delta_payload["drafts"][0]
+                self.assertIn("Modifié", draft["body"])
+                self.assertIn("heures 8 h → 6 h", draft["body"])
+
+                edited_subject = "Delta #889 approuvé"
+                edited_body = (
+                    draft["body"]
+                    + "\n\nModification validée par la coordonnatrice."
+                    + "\nTexte libre <sécurisé> & conservé."
+                )
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_planning_change",
+                        "expected_fingerprint": delta_payload["snapshot_fingerprint"],
+                        "expected_baseline_fingerprint": delta_payload[
+                            "baseline_fingerprint"
+                        ],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "subject": edited_subject,
+                                "body": edited_body,
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = prepared.json()["messages"][0]
+                self.assertEqual(message["subject"], edited_subject)
+                self.assertEqual(message["body"], edited_body)
+                self.assertIn("heures 8 h → 6 h", message["body"])
+                self.assertIn("&lt;sécurisé&gt; &amp; conservé.", message["body_html"])
+                expected_html = message["body_html"]
+                expected_to = tuple(message["to_emails"])
+                expected_cc = tuple(message["cc_emails"])
+                batch_id = prepared.json()["id"]
+
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{batch_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+                self.assertEqual(sent.json()["status"], "COMMUNICATED")
+
+            self.assertEqual(len(transport.messages), 1)
+            graph = transport.messages[0]
+            self.assertEqual(graph.subject, edited_subject)
+            self.assertEqual(graph.body, edited_body)
+            self.assertEqual(graph.body_html, expected_html)
+            self.assertEqual(graph.to_emails, expected_to)
+            self.assertEqual(graph.cc_emails, expected_cc)
+
+            mime = BytesParser(policy=policy.default).parsebytes(downloaded.content)
+            self.assertEqual(str(mime["Subject"]), edited_subject)
+            parts = list(mime.iter_parts())
+            self.assertEqual(
+                parts[0].get_content().replace("\r\n", "\n").rstrip("\n"),
+                edited_body,
+            )
+            self.assertEqual(parts[1].get_content().strip(), expected_html)
+
+            self.assertEqual(smtp.attempt_subjects, [edited_subject])
+            self.assertEqual(smtp.attempt_bodies, [edited_body])
+            self.assertEqual(smtp.attempt_html, [expected_html])
+            self.assertEqual(smtp.attempt_to, [expected_to])
+            self.assertEqual(smtp.attempt_cc, [expected_cc])
+
+    def test_889_delta_requires_communicated_baseline_and_full_preview_remains_available(self) -> None:
+        with TemporaryDirectory() as directory:
+            transport = FakeProjectDraftTransport()
+            app = create_api_app(
+                self._database(directory),
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+            )
+            with TestClient(app) as client:
+                full = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_confirmation"
+                )
+                self.assertEqual(full.status_code, 200, full.text)
+                self.assertEqual(full.json()["mode"], "project_confirmation")
+                self.assertFalse(full.json()["has_communicated_baseline"])
+                self.assertGreater(len(full.json()["drafts"]), 0)
+
+                delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(delta.status_code, 422, delta.text)
+                self.assertEqual(
+                    delta.json()["error"]["code"],
+                    "project_communication_delta_baseline_missing",
+                )
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_confirmation",
+                        "expected_fingerprint": full.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                delta_after_prepared = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(delta_after_prepared.status_code, 422)
+                self.assertEqual(
+                    delta_after_prepared.json()["error"]["code"],
+                    "project_communication_delta_baseline_missing",
+                )
+
+                approved = client.post(
+                    f"/api/v1/communications/project-batches/{prepared.json()['id']}/approve"
+                )
+                self.assertEqual(approved.status_code, 200, approved.text)
+                delta_after_approved = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(delta_after_approved.status_code, 422)
+
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{prepared.json()['id']}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertGreater(transport.create_calls, 0)
+                delta_after_graph = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(delta_after_graph.status_code, 422)
+                self.assertEqual(
+                    delta_after_graph.json()["error"]["code"],
+                    "project_communication_delta_baseline_missing",
+                )
+
+    def test_889_historical_refresh_persists_until_v4_batch_is_communicated(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            transport = FakeProjectDraftTransport()
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+            )
+            with TestClient(app) as client:
+                current = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_confirmation"
+                )
+                self.assertEqual(current.status_code, 200, current.text)
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_confirmation",
+                        "expected_fingerprint": current.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                historical_id = prepared.json()["id"]
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        batch = session.get(CommunicationBatchRow, historical_id)
+                        assert batch is not None and batch.project_snapshot_json is not None
+                        payload = json.loads(batch.project_snapshot_json)
+                        payload["request_provenance_version"] = 3
+                        for project in payload["projects"]:
+                            for day in project["days"]:
+                                for task in day["tasks"]:
+                                    for assignment in task.get("request_assignments") or ():
+                                        for key in (
+                                            "confirmation",
+                                            "allocation_type",
+                                            "outside_schedule",
+                                            "task_id",
+                                            "task_code",
+                                            "task_description",
+                                        ):
+                                            assignment.pop(key, None)
+                        historical_json = json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        )
+                        historical_projection = deserialize_project_projection(
+                            historical_json
+                        )
+                        batch.project_snapshot_json = historical_json
+                        batch.snapshot_fingerprint = project_projection_fingerprint(
+                            historical_projection
+                        )
+                        batch.status = "COMMUNICATED"
+                        batch.communicated_by = "historical-v3"
+                        batch.communicated_at = batch.prepared_at
+                finally:
+                    engine.dispose()
+
+                refresh = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(refresh.status_code, 200, refresh.text)
+                refresh_payload = refresh.json()
+                self.assertGreater(len(refresh_payload["drafts"]), 0)
+                self.assertTrue(
+                    any(
+                        "Référence historique incomplète" in draft["body"]
+                        for draft in refresh_payload["drafts"]
+                    )
+                )
+
+                v4_refresh = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_planning_change",
+                        "expected_fingerprint": refresh_payload["snapshot_fingerprint"],
+                        "expected_baseline_fingerprint": refresh_payload[
+                            "baseline_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(v4_refresh.status_code, 201, v4_refresh.text)
+                refresh_id = v4_refresh.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{refresh_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{refresh_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertGreater(transport.create_calls, 0)
+
+                still_refresh = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(still_refresh.status_code, 200, still_refresh.text)
+                self.assertTrue(
+                    any(
+                        "Référence historique incomplète" in draft["body"]
+                        for draft in still_refresh.json()["drafts"]
+                    )
+                )
+
+                communicated = client.post(
+                    f"/api/v1/communications/project-batches/{refresh_id}/mark-communicated"
+                )
+                self.assertEqual(communicated.status_code, 200, communicated.text)
+
+                completed = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(completed.status_code, 200, completed.text)
+                self.assertEqual(completed.json()["drafts"], [])
+
+    def test_889_delta_preparation_rejects_changed_reference_baseline(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            app = create_api_app(
+                database_url,
+                auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+            )
+            with TestClient(app) as client:
+                initial = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_confirmation"
+                )
+                self.assertEqual(initial.status_code, 200, initial.text)
+                first = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_confirmation",
+                        "expected_fingerprint": initial.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(first.status_code, 201, first.text)
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{first.json()['id']}/approve"
+                    ).status_code,
+                    200,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{first.json()['id']}/mark-communicated"
+                    ).status_code,
+                    200,
+                )
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        shift = session.get(Shift, "S1")
+                        assert shift is not None
+                        shift.hours = Decimal("6")
+                finally:
+                    engine.dispose()
+
+                delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(delta.status_code, 200, delta.text)
+                old_reference = delta.json()["baseline_fingerprint"]
+                current_fingerprint = delta.json()["snapshot_fingerprint"]
+
+                current_full = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_confirmation"
+                )
+                second = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_confirmation",
+                        "expected_fingerprint": current_full.json()["snapshot_fingerprint"],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(second.status_code, 201, second.text)
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{second.json()['id']}/approve"
+                    ).status_code,
+                    200,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{second.json()['id']}/mark-communicated"
+                    ).status_code,
+                    200,
+                )
+
+                stale_reference = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_planning_change",
+                        "expected_fingerprint": current_fingerprint,
+                        "expected_baseline_fingerprint": old_reference,
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(stale_reference.status_code, 409, stale_reference.text)
+                self.assertEqual(
+                    stale_reference.json()["error"]["code"],
+                    "project_communication_delta_baseline_stale",
                 )
 
     def test_854_persisted_batch_exposes_business_number_without_changing_identity(self) -> None:
@@ -2763,7 +3303,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     immutable = ProjectCommunicationService(
                         repository
                     ).project_projection(week_start=WEEK)
-                    self.assertEqual(immutable.request_provenance_version, 3)
+                    self.assertEqual(immutable.request_provenance_version, 4)
                     shift_rows = {
                         item.shift_id: item
                         for day in immutable.projects[0].days
@@ -3617,7 +4157,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     snapshot = deserialize_project_projection(
                         persisted.project_snapshot_json or ""
                     )
-                    self.assertEqual(snapshot.request_provenance_version, 3)
+                    self.assertEqual(snapshot.request_provenance_version, 4)
                     self.assertEqual(
                         snapshot.projects[0].project_id,
                         draft["project_id"],
@@ -3991,6 +4531,16 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(first_deliveries["P2"]["status"], "FAILED")
                 self.assertEqual(first_deliveries["P2"]["attempt_count"], 1)
 
+                partial_delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(partial_delta.status_code, 422, partial_delta.text)
+                self.assertEqual(
+                    partial_delta.json()["error"]["code"],
+                    "project_communication_delta_baseline_missing",
+                )
+
                 second = client.post(
                     f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
                 )
@@ -4010,6 +4560,17 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 self.assertEqual(second_deliveries["P1"]["attempt_count"], 1)
                 self.assertEqual(second_deliveries["P2"]["status"], "SENT")
                 self.assertEqual(second_deliveries["P2"]["attempt_count"], 2)
+
+                communicated_delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(
+                    communicated_delta.status_code,
+                    200,
+                    communicated_delta.text,
+                )
+                self.assertEqual(communicated_delta.json()["drafts"], [])
 
         project_1000_attempts = [
             subject for subject in smtp.attempt_subjects if "1000" in subject
@@ -4036,7 +4597,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["week_start"], "2026-09-21")
         self.assertEqual(payload["week_end"], "2026-09-27")
-        self.assertEqual(payload["request_provenance_version"], 3)
+        self.assertEqual(payload["request_provenance_version"], 4)
         self.assertTrue(payload["request_provenance_complete"])
         assignment = payload["projects"][0]["days"][0]["tasks"][0][
             "request_assignments"
@@ -4045,6 +4606,12 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         self.assertIn("standard_hours", assignment)
         self.assertIn("include_project_manager_contact_phone", assignment)
         self.assertIn("project_manager_contact_phone", assignment)
+        self.assertIn("confirmation", assignment)
+        self.assertIn("allocation_type", assignment)
+        self.assertIn("outside_schedule", assignment)
+        self.assertIn("task_id", assignment)
+        self.assertIn("task_code", assignment)
+        self.assertIn("task_description", assignment)
         self.assertEqual(payload["projects"][0]["project_number"], "1000")
         self.assertEqual(
             payload["projects"][0]["days"][0]["tasks"][0]["task_description"],

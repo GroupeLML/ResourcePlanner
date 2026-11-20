@@ -5,6 +5,7 @@ from datetime import date
 import math
 from typing import Sequence
 
+from .confirmation import VALID_CONFIRMATIONS
 from .operational_contacts import ContactResolution
 
 
@@ -101,6 +102,12 @@ class ProjectCommunicationRequestAssignment:
     project_manager_contact_phone: str | None = None
     assets: tuple[ProjectCommunicationAsset, ...] = ()
     standard_hours: float | None = None
+    confirmation: str | None = None
+    allocation_type: str | None = None
+    outside_schedule: bool | None = None
+    task_id: str | None = None
+    task_code: str | None = None
+    task_description: str | None = None
 
 
 _EMPLOYEE_ASSIGNED_ASSET_ASSOCIATIONS = frozenset(
@@ -196,9 +203,9 @@ def build_project_communication_projection(
 ) -> ProjectCommunicationProjection:
     """Group authoritative shifts as Project -> Date -> Task -> assigned resources."""
 
-    if request_provenance_version not in (1, 2, 3):
+    if type(request_provenance_version) is not int or request_provenance_version not in (1, 2, 3, 4):
         raise ValueError("Version de provenance chantier non prise en charge")
-    if request_provenance_version in (2, 3):
+    if request_provenance_version in (2, 3, 4):
         for row in assignments:
             if (
                 row.standard_hours is None
@@ -210,7 +217,7 @@ def build_project_communication_projection(
                 )
             if not isinstance(row.assets, tuple):
                 raise ValueError("Actifs Shift v2+ non explicites")
-    if request_provenance_version == 3:
+    if request_provenance_version in (3, 4):
         for row in assignments:
             if not isinstance(row.include_project_manager_contact_phone, bool):
                 raise ValueError(
@@ -234,6 +241,24 @@ def build_project_communication_projection(
                 raise ValueError(
                     "Téléphone responsable projet sélectionné mais vide"
                 )
+    if request_provenance_version == 4:
+        for row in assignments:
+            if row.confirmation not in VALID_CONFIRMATIONS:
+                raise ValueError("Confirmation Shift v4 invalide")
+            if not isinstance(row.allocation_type, str) or not row.allocation_type.strip():
+                raise ValueError("Type d'allocation Shift v4 manquant ou invalide")
+            if type(row.outside_schedule) is not bool:
+                raise ValueError("Hors horaire Shift v4 doit être booléen")
+            if row.task_id is not None and (
+                not isinstance(row.task_id, str) or not row.task_id.strip()
+            ):
+                raise ValueError("Identité tâche Shift v4 invalide")
+            if row.task_code is not None and (
+                not isinstance(row.task_code, str) or not row.task_code.strip()
+            ):
+                raise ValueError("Code tâche Shift v4 invalide")
+            if not isinstance(row.task_description, str) or not row.task_description.strip():
+                raise ValueError("Description tâche Shift v4 manquante ou invalide")
 
     projects: dict[str, dict[str, object]] = {}
     global_diagnostics: list[str] = []
@@ -303,9 +328,17 @@ def build_project_communication_projection(
             },
         )
         if row.task_id:
-            task["task_ids"].add(row.task_id)
+            task["task_ids"].add(
+                row.task_id.strip()
+                if request_provenance_version == 4
+                else row.task_id
+            )
         if row.task_code:
-            task["task_codes"].add(row.task_code)
+            task["task_codes"].add(
+                row.task_code.strip()
+                if request_provenance_version == 4
+                else row.task_code
+            )
         task["responsibles"][_resolution_key(row.operational_responsible)] = row.operational_responsible
         task["request_assignments"].append(
             ProjectCommunicationRequestAssignment(
@@ -320,16 +353,38 @@ def build_project_communication_projection(
                 site_contact_phone=row.site_contact_phone,
                 include_project_manager_contact_phone=(
                     row.include_project_manager_contact_phone
-                    if request_provenance_version == 3
+                    if request_provenance_version in (3, 4)
                     else False
                 ),
                 project_manager_contact_phone=(
                     row.project_manager_contact_phone
-                    if request_provenance_version == 3
+                    if request_provenance_version in (3, 4)
                     else None
                 ),
                 assets=tuple(row.assets),
                 standard_hours=row.standard_hours,
+                confirmation=(
+                    row.confirmation if request_provenance_version == 4 else None
+                ),
+                allocation_type=(
+                    row.allocation_type if request_provenance_version == 4 else None
+                ),
+                outside_schedule=(
+                    row.outside_schedule if request_provenance_version == 4 else None
+                ),
+                task_id=(
+                    (row.task_id.strip() or None)
+                    if request_provenance_version == 4 and row.task_id is not None
+                    else None
+                ),
+                task_code=(
+                    (row.task_code.strip() or None)
+                    if request_provenance_version == 4 and row.task_code is not None
+                    else None
+                ),
+                task_description=(
+                    row.task_description if request_provenance_version == 4 else None
+                ),
             )
         )
         task["responsibility_assignments"].append(

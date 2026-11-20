@@ -13,6 +13,7 @@ from app.domain.operational_contacts import (
 )
 from app.domain.project_communication import (
     ProjectCommunicationAsset,
+    ProjectCommunicationAssignment,
     ProjectCommunicationDay,
     ProjectCommunicationParticipant,
     ProjectCommunicationProject,
@@ -21,6 +22,7 @@ from app.domain.project_communication import (
     ProjectCommunicationRequestAssignment,
     ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
+    build_project_communication_projection,
 )
 from app.domain.project_communication_messages import (
     DIAGNOSTIC_CC_EMAIL_MISSING,
@@ -236,6 +238,117 @@ def projection(*projects: ProjectCommunicationProject) -> ProjectCommunicationPr
         request_provenance_version=1,
         request_provenance_complete=True,
     )
+
+def v4_shift_projection(
+    shifts: tuple[dict[str, object], ...],
+    *,
+    project_id: str = "P1",
+    project_number: str = "1000",
+    project_name: str | None = None,
+    manager_local: str = "pm",
+) -> ProjectCommunicationProjection:
+    rows = []
+    manager = participant(
+        f"Chargé {project_number}",
+        contact_id=f"C-PM-{project_id}",
+        user_id=f"U-PM-{project_id}",
+        address=email(manager_local),
+    )
+    for value in shifts:
+        resource_id = str(value["resource_id"])
+        resource_name = str(value["resource_name"])
+        rows.append(
+            ProjectCommunicationAssignment(
+                shift_id=str(value["shift_id"]),
+                requirement_id=str(value.get("requirement_id") or f"REQ-{value['shift_id']}"),
+                project_id=project_id,
+                project_number=project_number,
+                project_name=project_name or f"Projet {project_number}",
+                day=value.get("day", WEEK),
+                hours=float(value.get("hours", 8.0)),
+                allocation_type=str(value.get("allocation_type", "Flexible")),
+                outside_schedule=value.get("outside_schedule", False),
+                confirmation=str(value.get("confirmation", "Confirmée")),
+                task_id=value.get("task_id", "TASK-889"),
+                task_code=value.get("task_code", "210"),
+                task_description=str(value.get("task_description", "Travaux #889")),
+                resource_id=resource_id,
+                resource_name=resource_name,
+                resource_contact=participant(
+                    resource_name,
+                    contact_id=f"C-{resource_id}",
+                    user_id=f"U-{resource_id}",
+                    address=email(resource_id.lower()),
+                ),
+                project_manager=manager,
+                operational_responsible=responsible(
+                    contact_id=f"C-RESP-{project_id}",
+                    name=f"Responsable {project_number}",
+                ),
+                workforce_request_id=str(value.get("workforce_request_id", "D-889")),
+                request_number=str(value.get("request_number", "DMO-889")),
+                site_contact_name=value.get("site_contact_name"),
+                site_contact_phone=value.get("site_contact_phone"),
+                include_project_manager_contact_phone=False,
+                project_manager_contact_phone=None,
+                assets=tuple(value.get("assets", ())),
+                standard_hours=float(value.get("standard_hours", 8.0)),
+            )
+        )
+    return build_project_communication_projection(
+        week_start=WEEK,
+        week_end=date(2026, 9, 27),
+        assignments=tuple(rows),
+        request_provenance_version=4,
+    )
+
+
+def historical_version(
+    current: ProjectCommunicationProjection,
+    version: int,
+) -> ProjectCommunicationProjection:
+    projects = []
+    for project_row in current.projects:
+        days = []
+        for day in project_row.days:
+            tasks = []
+            for task in day.tasks:
+                assignments = tuple(
+                    replace(
+                        row,
+                        confirmation=None,
+                        allocation_type=None,
+                        outside_schedule=None,
+                        task_id=None,
+                        task_code=None,
+                        task_description=None,
+                        include_project_manager_contact_phone=(
+                            row.include_project_manager_contact_phone
+                            if version >= 3
+                            else False
+                        ),
+                        project_manager_contact_phone=(
+                            row.project_manager_contact_phone
+                            if version >= 3
+                            else None
+                        ),
+                        assets=(row.assets if version >= 2 else ()),
+                        standard_hours=(
+                            row.standard_hours if version >= 2 else None
+                        ),
+                    )
+                    for row in task.request_assignments
+                )
+                tasks.append(replace(task, request_assignments=assignments))
+            days.append(replace(day, tasks=tuple(tasks)))
+        projects.append(replace(project_row, days=tuple(days)))
+    return replace(
+        current,
+        projects=tuple(projects),
+        request_provenance_version=version,
+        request_provenance_complete=True,
+    )
+
 
 class ProjectCommunicationMessageTests(unittest.TestCase):
     def test_855_semantic_renderer_emits_corresponding_escaped_html(self) -> None:
@@ -2220,6 +2333,871 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         encoded.pop("request_provenance_version")
         with self.assertRaises(ValueError):
             deserialize_project_projection(json.dumps(encoded))
+
+    def test_889_v4_round_trip_fingerprint_and_historical_shapes(self) -> None:
+        current = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-V4-1",
+                    "resource_id": "R-SHARED",
+                    "resource_name": "Mary",
+                    "confirmation": "Confirmée",
+                    "allocation_type": "Flexible",
+                    "outside_schedule": False,
+                    "task_id": "TASK-A",
+                    "task_code": "210",
+                },
+                {
+                    "shift_id": "S-V4-2",
+                    "resource_id": "R-SHARED",
+                    "resource_name": "Mary",
+                    "confirmation": "Tentative",
+                    "allocation_type": "Rigide",
+                    "outside_schedule": True,
+                    "task_id": "TASK-B",
+                    "task_code": "220",
+                },
+            )
+        )
+        payload = serialize_project_projection(current)
+        self.assertIn('"request_provenance_version":4', payload)
+        for key in (
+            "confirmation",
+            "allocation_type",
+            "outside_schedule",
+            "task_id",
+            "task_code",
+            "task_description",
+        ):
+            self.assertIn(f'"{key}"', payload)
+        restored = deserialize_project_projection(payload)
+        self.assertEqual(restored, current)
+        self.assertEqual(
+            project_projection_fingerprint(restored),
+            project_projection_fingerprint(current),
+        )
+
+        for version in (1, 2, 3):
+            historical = historical_version(current, version)
+            frozen = serialize_project_projection(historical)
+            frozen_payload = json.loads(frozen)
+            for project_row in frozen_payload["projects"]:
+                for day_row in project_row["days"]:
+                    for task_row in day_row["tasks"]:
+                        for assignment_row in task_row.get("request_assignments") or ():
+                            for key in (
+                                "confirmation",
+                                "allocation_type",
+                                "outside_schedule",
+                                "task_id",
+                                "task_code",
+                                "task_description",
+                            ):
+                                self.assertNotIn(key, assignment_row)
+            restored_historical = deserialize_project_projection(frozen)
+            self.assertEqual(
+                serialize_project_projection(restored_historical),
+                frozen,
+            )
+            self.assertEqual(
+                project_projection_fingerprint(restored_historical),
+                project_projection_fingerprint(historical),
+            )
+
+        identity_changed = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-V4-NEW-1",
+                    "resource_id": "R-SHARED",
+                    "resource_name": "Mary",
+                    "confirmation": "Confirmée",
+                    "allocation_type": "Flexible",
+                    "outside_schedule": False,
+                    "task_id": "TASK-A",
+                    "task_code": "210",
+                },
+                {
+                    "shift_id": "S-V4-NEW-2",
+                    "resource_id": "R-SHARED",
+                    "resource_name": "Mary",
+                    "confirmation": "Tentative",
+                    "allocation_type": "Rigide",
+                    "outside_schedule": True,
+                    "task_id": "TASK-B",
+                    "task_code": "220",
+                },
+            )
+        )
+        self.assertNotEqual(
+            project_projection_fingerprint(current),
+            project_projection_fingerprint(identity_changed),
+        )
+        self.assertEqual(
+            project_projection_fingerprint(historical_version(current, 3)),
+            project_projection_fingerprint(historical_version(identity_changed, 3)),
+        )
+
+        project_row = current.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        requirement_only = replace(
+            current,
+            projects=(
+                replace(
+                    project_row,
+                    days=(
+                        replace(
+                            day,
+                            tasks=(
+                                replace(
+                                    task,
+                                    request_assignments=tuple(
+                                        replace(
+                                            row,
+                                            requirement_id=f"TRACE-{row.requirement_id}",
+                                        )
+                                        for row in task.request_assignments
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        self.assertEqual(
+            project_projection_fingerprint(current),
+            project_projection_fingerprint(requirement_only),
+        )
+
+        task = current.projects[0].days[0].tasks[0]
+        stored_unused_phone = replace(
+            current,
+            projects=(
+                replace(
+                    current.projects[0],
+                    days=(
+                        replace(
+                            current.projects[0].days[0],
+                            tasks=(
+                                replace(
+                                    task,
+                                    request_assignments=tuple(
+                                        replace(
+                                            row,
+                                            include_project_manager_contact_phone=False,
+                                            project_manager_contact_phone=synthetic_phone("0889"),
+                                        )
+                                        for row in task.request_assignments
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        self.assertEqual(
+            project_projection_fingerprint(current),
+            project_projection_fingerprint(stored_unused_phone),
+        )
+
+    def test_889_v4_raw_capability_validation_fails_closed(self) -> None:
+        current = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-V4",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            )
+        )
+        encoded = json.loads(serialize_project_projection(current))
+        assignment = encoded["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]
+
+        missing = json.loads(json.dumps(encoded))
+        del missing["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]["confirmation"]
+        with self.assertRaisesRegex(ValueError, "v4 incomplet"):
+            deserialize_project_projection(json.dumps(missing))
+
+        malformed_bool = json.loads(json.dumps(encoded))
+        malformed_bool["projects"][0]["days"][0]["tasks"][0][
+            "request_assignments"
+        ][0]["outside_schedule"] = 1
+        with self.assertRaisesRegex(ValueError, "non booléen"):
+            deserialize_project_projection(json.dumps(malformed_bool))
+
+        downgraded = json.loads(json.dumps(encoded))
+        downgraded["request_provenance_version"] = 3
+        with self.assertRaisesRegex(ValueError, "faits Shift v4"):
+            deserialize_project_projection(json.dumps(downgraded))
+
+        boolean_version = json.loads(json.dumps(encoded))
+        boolean_version["request_provenance_version"] = True
+        with self.assertRaisesRegex(ValueError, "Version"):
+            deserialize_project_projection(json.dumps(boolean_version))
+
+        direct_old = historical_version(current, 3)
+        direct_assignment = (
+            direct_old.projects[0].days[0].tasks[0].request_assignments[0]
+        )
+        direct_old = replace(
+            direct_old,
+            projects=(
+                replace(
+                    direct_old.projects[0],
+                    days=(
+                        replace(
+                            direct_old.projects[0].days[0],
+                            tasks=(
+                                replace(
+                                    direct_old.projects[0].days[0].tasks[0],
+                                    request_assignments=(
+                                        replace(
+                                            direct_assignment,
+                                            confirmation="Confirmée",
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "v4"):
+            serialize_project_projection(direct_old)
+
+        task = current.projects[0].days[0].tasks[0]
+        extra_union = replace(
+            current,
+            projects=(
+                replace(
+                    current.projects[0],
+                    days=(
+                        replace(
+                            current.projects[0].days[0],
+                            tasks=(
+                                replace(
+                                    task,
+                                    task_ids=(*task.task_ids, "TASK-EXTRA"),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "Identités tâche v4"):
+            serialize_project_projection(extra_union)
+
+    def test_889_shift_delta_only_renders_changed_rows(self) -> None:
+        baseline_specs = (
+            {"shift_id": "S-JOHN", "resource_id": "R-JOHN", "resource_name": "John"},
+            {"shift_id": "S-MARY", "resource_id": "R-MARY", "resource_name": "Mary"},
+            {"shift_id": "S-STEVE", "resource_id": "R-STEVE", "resource_name": "Steve"},
+        )
+        baseline = v4_shift_projection(baseline_specs)
+
+        removed = v4_shift_projection((baseline_specs[0], baseline_specs[2]))
+        removed_draft = build_project_delta_batch(baseline, removed).drafts[0]
+        removed_body = removed_draft.body
+        self.assertIn("Retiré — Mary", removed_body)
+        self.assertNotIn("John", removed_body)
+        self.assertNotIn("Steve", removed_body)
+        self.assertIn("Retiré — Mary", removed_draft.body_html or "")
+        self.assertNotIn("John", removed_draft.body_html or "")
+        self.assertNotIn("Steve", removed_draft.body_html or "")
+
+        replaced_specs = (
+            baseline_specs[0],
+            {
+                "shift_id": "S-MARY",
+                "resource_id": "R-JERRY",
+                "resource_name": "Jerry",
+            },
+            baseline_specs[2],
+        )
+        replaced = v4_shift_projection(replaced_specs)
+        replaced_draft = build_project_delta_batch(baseline, replaced).drafts[0]
+        replaced_body = replaced_draft.body
+        self.assertIn("Remplacé — Mary → Jerry", replaced_body)
+        self.assertIn(email("r-mary"), [row.email for row in replaced_draft.cc_recipients])
+        self.assertIn(email("r-jerry"), [row.email for row in replaced_draft.cc_recipients])
+        self.assertNotIn("John", replaced_body)
+        self.assertNotIn("Steve", replaced_body)
+
+        distinct_specs = (
+            baseline_specs[0],
+            {
+                "shift_id": "S-JERRY",
+                "resource_id": "R-JERRY",
+                "resource_name": "Jerry",
+            },
+            baseline_specs[2],
+        )
+        distinct = v4_shift_projection(distinct_specs)
+        distinct_body = build_project_delta_batch(baseline, distinct).drafts[0].body
+        self.assertIn("Retiré — Mary", distinct_body)
+        self.assertIn("Ajouté — Jerry", distinct_body)
+        self.assertNotIn("Remplacé", distinct_body)
+
+        moved_specs = (
+            baseline_specs[0],
+            {
+                "shift_id": "S-MARY",
+                "resource_id": "R-MARY",
+                "resource_name": "Mary",
+                "day": date(2026, 9, 22),
+            },
+            baseline_specs[2],
+        )
+        moved = v4_shift_projection(moved_specs)
+        moved_body = build_project_delta_batch(baseline, moved).drafts[0].body
+        self.assertIn("Déplacé — Mary", moved_body)
+        self.assertIn("Lundi le 21 septembre 2026 → Mardi le 22 septembre 2026", moved_body)
+
+        hours_specs = (
+            baseline_specs[0],
+            {
+                "shift_id": "S-MARY",
+                "resource_id": "R-MARY",
+                "resource_name": "Mary",
+                "hours": 4.0,
+            },
+            baseline_specs[2],
+        )
+        hours = v4_shift_projection(hours_specs)
+        hours_body = build_project_delta_batch(baseline, hours).drafts[0].body
+        self.assertIn("Modifié — Mary", hours_body)
+        self.assertIn("heures 8 h → 4 h", hours_body)
+
+        confirmation_specs = (
+            baseline_specs[0],
+            {
+                "shift_id": "S-MARY",
+                "resource_id": "R-MARY",
+                "resource_name": "Mary",
+                "confirmation": "Tentative",
+            },
+            baseline_specs[2],
+        )
+        confirmation = v4_shift_projection(confirmation_specs)
+        confirmation_body = build_project_delta_batch(
+            baseline, confirmation
+        ).drafts[0].body
+        self.assertIn("Modifié — Mary", confirmation_body)
+        self.assertIn("confirmation Confirmée → Tentative", confirmation_body)
+
+        simultaneous_specs = (
+            baseline_specs[0],
+            {
+                "shift_id": "S-MARY",
+                "resource_id": "R-JERRY",
+                "resource_name": "Jerry",
+                "day": date(2026, 9, 22),
+                "hours": 4.0,
+                "confirmation": "Tentative",
+            },
+            baseline_specs[2],
+        )
+        simultaneous = v4_shift_projection(simultaneous_specs)
+        simultaneous_body = build_project_delta_batch(
+            baseline, simultaneous
+        ).drafts[0].body
+        self.assertIn("Remplacé — Mary → Jerry", simultaneous_body)
+        self.assertIn("date Lundi le 21 septembre 2026 → Mardi le 22 septembre 2026", simultaneous_body)
+        self.assertIn("heures 8 h → 4 h", simultaneous_body)
+        self.assertIn("confirmation Confirmée → Tentative", simultaneous_body)
+
+    def test_889_removing_group_representative_does_not_modify_unchanged_shift(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-JOHN-CABLE",
+                    "resource_id": "R-JOHN",
+                    "resource_name": "John",
+                    "task_id": "TASK-CABLE",
+                    "task_code": "210",
+                    "task_description": "Cable work",
+                },
+                {
+                    "shift_id": "S-MARY-CABLE",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-CABLE",
+                    "task_code": "210",
+                    "task_description": "CABLE WORK",
+                },
+            )
+        )
+        after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY-CABLE",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-CABLE",
+                    "task_code": "210",
+                    "task_description": "CABLE WORK",
+                },
+            )
+        )
+
+        draft = build_project_delta_batch(before, after).drafts[0]
+        self.assertIn("Retiré — John", draft.body)
+        self.assertIn("travaux Cable work", draft.body)
+        self.assertNotIn("Modifié — Mary", draft.body)
+        self.assertNotIn("travaux Cable work → CABLE WORK", draft.body)
+
+    def test_889_same_resource_id_name_correction_is_modified_not_replaced(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY-NAME",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            )
+        )
+        after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY-NAME",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary Updated",
+                },
+            )
+        )
+
+        draft = build_project_delta_batch(before, after).drafts[0]
+        self.assertIn("Modifié — Mary Updated", draft.body)
+        self.assertIn("nom Mary → Mary Updated", draft.body)
+        self.assertNotIn("Remplacé", draft.body)
+        same_email = email("r-mary")
+        self.assertNotIn(f"courriel {same_email} → {same_email}", draft.body)
+        self.assertNotIn("coordonnées ressource", draft.body)
+
+    def test_889_added_shift_renders_current_work_and_exceptional_state_in_text_and_html(self) -> None:
+        mat157 = ProjectCommunicationAsset(
+            allocation_id="ALLOC-MAT157",
+            asset_id="ASSET-MAT157",
+            asset_code="MAT157",
+            asset_label="Unité MAT157",
+            asset_type_label="Unité",
+            asset_category="Équipement",
+            association_kind="OWNED_SHIFT",
+        )
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-JOHN",
+                    "resource_id": "R-JOHN",
+                    "resource_name": "John",
+                },
+            )
+        )
+        after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-JOHN",
+                    "resource_id": "R-JOHN",
+                    "resource_name": "John",
+                },
+                {
+                    "shift_id": "S-JERRY",
+                    "resource_id": "R-JERRY",
+                    "resource_name": "Jerry",
+                    "task_id": "TASK-CABLE",
+                    "task_code": "220",
+                    "task_description": "CABLE WORK",
+                    "confirmation": "Tentative",
+                    "outside_schedule": True,
+                    "assets": (mat157,),
+                },
+            )
+        )
+
+        draft = build_project_delta_batch(before, after).drafts[0]
+        added_line = next(
+            line for line in draft.body.splitlines() if "Ajouté — Jerry" in line
+        )
+        for expected in (
+            "travaux CABLE WORK",
+            "MAT157",
+            "confirmation Tentative",
+            "hors horaire oui",
+        ):
+            self.assertIn(expected, added_line)
+            self.assertIn(expected, draft.body_html or "")
+
+    def test_889_removed_shift_uses_its_own_historical_work_context(self) -> None:
+        pole = {
+            "shift_id": "S-MARY-POLE",
+            "resource_id": "R-MARY",
+            "resource_name": "Mary",
+            "task_id": "TASK-POLE",
+            "task_code": "210",
+            "task_description": "POLE WORK",
+            "hours": 8.0,
+        }
+        cable = {
+            "shift_id": "S-MARY-CABLE",
+            "resource_id": "R-MARY",
+            "resource_name": "Mary",
+            "task_id": "TASK-CABLE",
+            "task_code": "220",
+            "task_description": "CABLE WORK",
+            "hours": 8.0,
+        }
+        before = v4_shift_projection((pole, cable))
+        after = v4_shift_projection((cable,))
+
+        draft = build_project_delta_batch(before, after).drafts[0]
+        removed_line = next(
+            line for line in draft.body.splitlines() if "Retiré — Mary" in line
+        )
+        self.assertIn("travaux POLE WORK", removed_line)
+        self.assertNotIn("CABLE WORK", removed_line)
+        self.assertNotIn("Modifié — Mary", draft.body)
+        self.assertIn("travaux POLE WORK", draft.body_html or "")
+
+    def test_889_p4_detects_aggregate_preserving_shift_reassociation(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-1",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "confirmation": "Confirmée",
+                    "allocation_type": "Flexible",
+                    "outside_schedule": False,
+                },
+                {
+                    "shift_id": "S-2",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "confirmation": "Tentative",
+                    "allocation_type": "Rigide",
+                    "outside_schedule": True,
+                },
+            )
+        )
+        after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-1",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "confirmation": "Tentative",
+                    "allocation_type": "Rigide",
+                    "outside_schedule": True,
+                },
+                {
+                    "shift_id": "S-2",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "confirmation": "Confirmée",
+                    "allocation_type": "Flexible",
+                    "outside_schedule": False,
+                },
+            )
+        )
+        self.assertNotEqual(
+            project_projection_fingerprint(before),
+            project_projection_fingerprint(after),
+        )
+        body = build_project_delta_batch(before, after).drafts[0].body
+        self.assertEqual(body.count("Modifié — Mary"), 2)
+        self.assertIn("confirmation Confirmée → Tentative", body)
+        self.assertIn("confirmation Tentative → Confirmée", body)
+
+        task_before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-1",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-A",
+                    "task_code": "210",
+                },
+                {
+                    "shift_id": "S-2",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-B",
+                    "task_code": "220",
+                },
+            )
+        )
+        task_after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-1",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-B",
+                    "task_code": "220",
+                },
+                {
+                    "shift_id": "S-2",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-A",
+                    "task_code": "210",
+                },
+            )
+        )
+        self.assertNotEqual(
+            project_projection_fingerprint(task_before),
+            project_projection_fingerprint(task_after),
+        )
+        task_body = build_project_delta_batch(task_before, task_after).drafts[0].body
+        self.assertEqual(task_body.count("Modifié — Mary"), 2)
+        self.assertIn("tâche ID TASK-A → TASK-B", task_body)
+        self.assertIn("code tâche 210 → 220", task_body)
+
+    def test_889_resource_communication_fact_change_is_shift_modified(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            )
+        )
+        project_row = before.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        changed_resource = replace(
+            task.resources[0],
+            contact=replace(
+                task.resources[0].contact,
+                email=email("mary-new"),
+            ),
+        )
+        after = replace(
+            before,
+            projects=(
+                replace(
+                    project_row,
+                    days=(
+                        replace(
+                            day,
+                            tasks=(
+                                replace(task, resources=(changed_resource,)),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        self.assertNotEqual(
+            project_projection_fingerprint(before),
+            project_projection_fingerprint(after),
+        )
+        body = build_project_delta_batch(before, after).drafts[0].body
+        self.assertIn("Modifié — Mary", body)
+        self.assertNotIn("Remplacé", body)
+        self.assertIn(
+            f"courriel {email('r-mary')} → {email('mary-new')}",
+            body,
+        )
+        self.assertNotIn("coordonnées ressource", body)
+        self.assertNotIn("téléphone", body)
+
+    def test_889_historical_refresh_is_explicit_until_v4_baseline(self) -> None:
+        current = v4_shift_projection(
+            (
+                {"shift_id": "S-JOHN", "resource_id": "R-JOHN", "resource_name": "John"},
+                {"shift_id": "S-MARY", "resource_id": "R-MARY", "resource_name": "Mary"},
+            )
+        )
+        for version in (1, 2, 3):
+            with self.subTest(version=version):
+                historical = historical_version(current, version)
+                refresh = build_project_delta_batch(historical, current)
+                self.assertEqual(len(refresh.drafts), 1)
+                body = refresh.drafts[0].body
+                self.assertIn("Référence historique incomplète", body)
+                self.assertIn("état courant à reconfirmer", body)
+                self.assertIn("John", body)
+                self.assertIn("Mary", body)
+                self.assertNotIn("confirmation None → Confirmée", body)
+                self.assertNotIn("allocation None → Flexible", body)
+
+                changed = v4_shift_projection(
+                    (
+                        {"shift_id": "S-JOHN", "resource_id": "R-JOHN", "resource_name": "John"},
+                        {
+                            "shift_id": "S-MARY",
+                            "resource_id": "R-MARY",
+                            "resource_name": "Mary",
+                            "hours": 4.0,
+                        },
+                    )
+                )
+                changed_refresh = build_project_delta_batch(
+                    historical,
+                    changed,
+                ).drafts[0].body
+                self.assertIn("heures 8 h → 4 h", changed_refresh)
+                self.assertIn("Référence historique incomplète", changed_refresh)
+
+        complete = build_project_delta_batch(current, current)
+        self.assertEqual(complete.drafts, ())
+
+    def test_889_pre_provenance_baseline_uses_explicit_whole_project_refresh(self) -> None:
+        current = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            )
+        )
+        current_project = current.projects[0]
+        legacy_task = replace(
+            current_project.days[0].tasks[0],
+            request_assignments=(),
+        )
+        legacy = replace(
+            current,
+            projects=(
+                replace(
+                    current_project,
+                    days=(
+                        replace(
+                            current_project.days[0],
+                            tasks=(legacy_task,),
+                        ),
+                    ),
+                ),
+            ),
+            request_provenance_version=None,
+            request_provenance_complete=False,
+        )
+        delta = build_project_delta_batch(legacy, current)
+        self.assertEqual(len(delta.drafts), 1)
+        body = delta.drafts[0].body
+        self.assertIn(
+            "Référence historique incomplète — actualisation du projet complet.",
+            body,
+        )
+        self.assertIn("Mary", body)
+        self.assertNotIn("Modifié — Mary", body)
+
+    def test_889_cross_project_move_is_isolated_remove_add(self) -> None:
+        old_project = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MOVE",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            ),
+            project_id="P-A",
+            project_number="1000",
+            manager_local="pm-a",
+        )
+        new_project = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MOVE",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            ),
+            project_id="P-B",
+            project_number="2000",
+            manager_local="pm-b",
+        )
+        before = old_project
+        after = replace(
+            new_project,
+            week_start=before.week_start,
+            week_end=before.week_end,
+        )
+        delta = build_project_delta_batch(before, after)
+        self.assertEqual(
+            {draft.message_key for draft in delta.drafts},
+            {"project:P-A", "project:P-B"},
+        )
+        by_key = {draft.message_key: draft for draft in delta.drafts}
+        self.assertIn("Retiré — Mary", by_key["project:P-A"].body)
+        self.assertIn("Ajouté — Mary", by_key["project:P-B"].body)
+        self.assertEqual(
+            [row.email for row in by_key["project:P-A"].to_recipients],
+            [email("pm-a")],
+        )
+        self.assertEqual(
+            [row.email for row in by_key["project:P-B"].to_recipients],
+            [email("pm-b")],
+        )
+
+    def test_889_project_only_change_does_not_mark_shifts_modified(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            )
+        )
+        after = replace(
+            before,
+            projects=(
+                replace(before.projects[0], project_name="Projet renommé"),
+            ),
+        )
+        delta = build_project_delta_batch(before, after)
+        self.assertEqual(len(delta.drafts), 1)
+        body = delta.drafts[0].body
+        self.assertIn("Informations du projet mises à jour.", body)
+        self.assertNotIn("Modifié — Mary", body)
+        self.assertNotIn("Ajouté — Mary", body)
+        self.assertNotIn("Retiré — Mary", body)
+
+    def test_889_delta_to_recipients_use_complete_before_after_project_context(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            ),
+            manager_local="pm-old",
+        )
+        new_manager = participant(
+            "Nouveau chargé",
+            contact_id="C-PM-NEW",
+            user_id="U-PM-NEW",
+            address=email("pm-new"),
+        )
+        after = replace(
+            before,
+            projects=(
+                replace(
+                    before.projects[0],
+                    project_manager=new_manager,
+                ),
+            ),
+        )
+        draft = build_project_delta_batch(before, after).drafts[0]
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm-new"), email("pm-old")],
+        )
+        self.assertIn("Informations du projet mises à jour.", draft.body)
+        self.assertNotIn("Modifié — Mary", draft.body)
 
     def test_no_standalone_technician_message_is_generated(self) -> None:
         batch = build_project_confirmation_batch(projection(project()))

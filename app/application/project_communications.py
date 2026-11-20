@@ -252,7 +252,7 @@ class ProjectCommunicationService:
             week_start=week,
             week_end=week_end,
             assignments=tuple(assignments),
-            request_provenance_version=3,
+            request_provenance_version=4,
         )
 
     @staticmethod
@@ -311,9 +311,20 @@ class ProjectCommunicationService:
         self,
         *,
         week_start: date,
+        mode: str = MESSAGE_KIND_WEEKLY_CONFIRMATION,
         add_generator_cc: bool = False,
         generator_principal: AuthPrincipal | None = None,
     ) -> ProjectCommunicationWorkflowPreview:
+        if mode not in {
+            MESSAGE_KIND_WEEKLY_CONFIRMATION,
+            MESSAGE_KIND_PLANNING_CHANGE,
+        }:
+            raise ApplicationValidationError(
+                "Mode de prévisualisation projet non supporté.",
+                code="project_communication_preview_mode_invalid",
+                context={"mode": mode},
+            )
+
         generator_email: str | None = None
         generator_identity: str | None = None
         if add_generator_cc:
@@ -330,21 +341,19 @@ class ProjectCommunicationService:
             if repository is not None
             else None
         )
-        if baseline is None:
+
+        if mode == MESSAGE_KIND_WEEKLY_CONFIRMATION:
             batch = build_project_confirmation_batch(projection)
-            mode = MESSAGE_KIND_WEEKLY_CONFIRMATION
-            baseline_fingerprint = None
         else:
-            baseline_fingerprint, previous = baseline
-            if baseline_fingerprint == current_fingerprint:
-                batch = ProjectCommunicationMessageBatch(
-                    drafts=(),
-                    snapshot_fingerprint=current_fingerprint,
-                    diagnostics=(),
+            if baseline is None:
+                raise ApplicationValidationError(
+                    "Aucune communication de référence n'existe encore pour cette semaine.",
+                    code="project_communication_delta_baseline_missing",
+                    context={"week_start": projection.week_start.isoformat()},
                 )
-            else:
-                batch = build_project_delta_batch(previous, projection)
-            mode = MESSAGE_KIND_PLANNING_CHANGE
+            _baseline_fingerprint, previous = baseline
+            batch = build_project_delta_batch(previous, projection)
+
         return ProjectCommunicationWorkflowPreview(
             week_start=projection.week_start,
             mode=mode,
@@ -439,16 +448,30 @@ class ProjectCommunicationService:
         expected_fingerprint: str,
         reviews: Sequence[ProjectCommunicationReviewInput],
         actor_name: str,
+        mode: str = MESSAGE_KIND_WEEKLY_CONFIRMATION,
+        expected_baseline_fingerprint: str | None = None,
         add_generator_cc: bool = False,
         generator_principal: AuthPrincipal | None = None,
         expected_generator_identity_fingerprint: str | None = None,
     ) -> CommunicationBatchRecord:
         repository = self._workflow()
-        preview = self.project_preview(week_start=week_start)
+        preview = self.project_preview(week_start=week_start, mode=mode)
         if str(expected_fingerprint or "").strip() != preview.snapshot_fingerprint:
             raise ApplicationConflictError(
                 "Le planning projet a changé depuis la prévisualisation.",
                 code="project_communication_preview_stale",
+            )
+        expected_reference = str(expected_baseline_fingerprint or "").strip() or None
+        if mode == MESSAGE_KIND_PLANNING_CHANGE:
+            if expected_reference != preview.baseline_fingerprint:
+                raise ApplicationConflictError(
+                    "La communication de référence a changé depuis la prévisualisation.",
+                    code="project_communication_delta_baseline_stale",
+                )
+        elif expected_reference is not None:
+            raise ApplicationValidationError(
+                "Le mode complet ne doit pas fournir de référence delta.",
+                code="project_communication_delta_baseline_option_mismatch",
             )
         generator_email: str | None = None
         if add_generator_cc:

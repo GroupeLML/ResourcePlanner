@@ -91,6 +91,12 @@ export default function CommunicationsPage() {
     () => drafts.some((draft) => draft.include && draft.htmlPreviewStale),
     [drafts],
   );
+  const hasProjectBatch = batches.some(
+    (batch) => batch.model_version === "project_v2",
+  );
+  const hasCommunicatedBaseline = preview?.has_communicated_baseline ?? batches.some(
+    (batch) => batch.status === "COMMUNICATED" && batch.model_version === "project_v2",
+  );
 
   async function reloadBatches() {
     setBatches(await listProjectCommunicationBatches(weekStart));
@@ -106,15 +112,20 @@ export default function CommunicationsPage() {
     });
   }, [weekStart]);
 
-  async function runPreview() {
+  async function runPreview(mode: ProjectCommunicationPreview["mode"]) {
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const row = await getProjectCommunicationPreview(weekStart, addGeneratorCc);
+      const row = await getProjectCommunicationPreview(weekStart, mode, addGeneratorCc);
       // A same-version refresh must not discard the coordinator's current review.
       const previous = preview?.week_start === row.week_start
         && preview.snapshot_fingerprint === row.snapshot_fingerprint
+        && preview.mode === row.mode
+        && (
+          row.mode === "project_confirmation"
+          || preview.baseline_fingerprint === row.baseline_fingerprint
+        )
         && preview.add_generator_cc === row.add_generator_cc
         && preview.generator_identity_fingerprint === row.generator_identity_fingerprint
         ? new Map(
@@ -188,6 +199,10 @@ export default function CommunicationsPage() {
         preview.week_start,
         preview.snapshot_fingerprint,
         drafts.map(projectCommunicationReview),
+        preview.mode,
+        preview.mode === "project_planning_change"
+          ? preview.baseline_fingerprint
+          : null,
         preview.add_generator_cc,
         preview.generator_identity_fingerprint,
       );
@@ -353,9 +368,30 @@ export default function CommunicationsPage() {
             />
             <span>M'ajouter en CC dans les communications</span>
           </label>
-          <button type="button" disabled={busy} onClick={() => void runPreview()}>
-            Générer la prévisualisation
-          </button>
+          <div className="communications-preview-actions">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void runPreview("project_confirmation")}
+            >
+              Générer la prévisualisation
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy || !hasCommunicatedBaseline}
+              onClick={() => void runPreview("project_planning_change")}
+            >
+              Générer uniquement les modifications
+            </button>
+            {!hasCommunicatedBaseline && (
+              <small>
+                {hasProjectBatch
+                  ? "Un lot existe pour cette semaine, mais aucune communication de référence n’est encore entièrement communiquée."
+                  : "Aucune communication de référence n’existe encore pour cette semaine."}
+              </small>
+            )}
+          </div>
         </div>
 
         {!preview ? (
@@ -375,7 +411,9 @@ export default function CommunicationsPage() {
 
             {drafts.length === 0 ? (
               <p className="communications-empty">
-                Aucun changement à communiquer pour cette version du planning.
+                {preview.mode === "project_planning_change"
+                  ? "Aucune modification depuis la dernière communication pour cette semaine."
+                  : "Aucun projet à communiquer pour cette version du planning."}
               </p>
             ) : (
               <div className="draft-list">

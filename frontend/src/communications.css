@@ -94,6 +94,17 @@
   gap: 0.5rem;
 }
 
+.communications-preview-actions {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: stretch;
+}
+
+.communications-preview-actions small {
+  max-width: 280px;
+  color: var(--muted, #667085);
+}
+
 .draft-list,
 .batch-list {
   display: grid;

@@ -147,9 +147,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getProjectCommunicationPreview(weekStart: string, addGeneratorCc = false) {
+export function getProjectCommunicationPreview(
+  weekStart: string,
+  mode: ProjectCommunicationPreview["mode"] = "project_confirmation",
+  addGeneratorCc = false,
+) {
   return request<ProjectCommunicationPreview>(
-    `/api/v1/communications/project-preview?week_start=${encodeURIComponent(weekStart)}&add_generator_cc=${addGeneratorCc}`,
+    `/api/v1/communications/project-preview?week_start=${encodeURIComponent(weekStart)}&mode=${encodeURIComponent(mode)}&add_generator_cc=${addGeneratorCc}`,
   );
 }
 
@@ -167,6 +171,8 @@ export function prepareProjectCommunicationBatch(
   weekStart: string,
   expectedFingerprint: string,
   reviews: ProjectCommunicationReview[],
+  mode: ProjectCommunicationPreview["mode"] = "project_confirmation",
+  expectedBaselineFingerprint: string | null = null,
   addGeneratorCc = false,
   expectedGeneratorIdentityFingerprint: string | null = null,
 ) {
@@ -174,7 +180,9 @@ export function prepareProjectCommunicationBatch(
     method: "POST",
     body: JSON.stringify({
       week_start: weekStart,
+      mode,
       expected_fingerprint: expectedFingerprint,
+      expected_baseline_fingerprint: expectedBaselineFingerprint,
       reviews,
       add_generator_cc: addGeneratorCc,
       expected_generator_identity_fingerprint: expectedGeneratorIdentityFingerprint,
