@@ -2523,8 +2523,11 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             baseline_specs[2],
         )
         replaced = v4_shift_projection(replaced_specs)
-        replaced_body = build_project_delta_batch(baseline, replaced).drafts[0].body
+        replaced_draft = build_project_delta_batch(baseline, replaced).drafts[0]
+        replaced_body = replaced_draft.body
         self.assertIn("Remplacé — Mary → Jerry", replaced_body)
+        self.assertIn(email("r-mary"), [row.email for row in replaced_draft.cc_recipients])
+        self.assertIn(email("r-jerry"), [row.email for row in replaced_draft.cc_recipients])
         self.assertNotIn("John", replaced_body)
         self.assertNotIn("Steve", replaced_body)
 
@@ -2792,6 +2795,40 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertNotIn("Modifié — Mary", body)
         self.assertNotIn("Ajouté — Mary", body)
         self.assertNotIn("Retiré — Mary", body)
+
+    def test_889_delta_to_recipients_use_complete_before_after_project_context(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            ),
+            manager_local="pm-old",
+        )
+        new_manager = participant(
+            "Nouveau chargé",
+            contact_id="C-PM-NEW",
+            user_id="U-PM-NEW",
+            address=email("pm-new"),
+        )
+        after = replace(
+            before,
+            projects=(
+                replace(
+                    before.projects[0],
+                    project_manager=new_manager,
+                ),
+            ),
+        )
+        draft = build_project_delta_batch(before, after).drafts[0]
+        self.assertEqual(
+            [row.email for row in draft.to_recipients],
+            [email("pm-new"), email("pm-old")],
+        )
+        self.assertIn("Informations du projet mises à jour.", draft.body)
+        self.assertNotIn("Modifié — Mary", draft.body)
 
     def test_no_standalone_technician_message_is_generated(self) -> None:
         batch = build_project_confirmation_batch(projection(project()))
