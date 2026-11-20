@@ -3003,10 +3003,13 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         )
         body = build_project_delta_batch(before, after).drafts[0].body
         self.assertIn("Modifié — Mary", body)
+        self.assertNotIn("Remplacé", body)
         self.assertIn(
-            f"coordonnées ressource {email('r-mary')} → {email('mary-new')}",
+            f"courriel {email('r-mary')} → {email('mary-new')}",
             body,
         )
+        self.assertNotIn("coordonnées ressource", body)
+        self.assertNotIn("téléphone", body)
 
     def test_889_historical_refresh_is_explicit_until_v4_baseline(self) -> None:
         current = v4_shift_projection(
