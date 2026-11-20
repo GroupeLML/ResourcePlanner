@@ -197,7 +197,7 @@ class _ActiveBroadcastCache:
                 self._expires_at = self._monotonic() + self.TTL_SECONDS
             self._loading = False
             self._condition.notify_all()
-            return self._value if self._generation == generation else value, False
+            return self._value, False
 
     def set_after_commit(self, value: EmergencyBroadcastRecord | None) -> None:
         with self._condition:
@@ -210,6 +210,7 @@ class _ActiveBroadcastCache:
     def invalidate(self) -> None:
         with self._condition:
             self._generation += 1
+            self._value = None
             self._loaded = False
             self._expires_at = 0.0
             self._condition.notify_all()
@@ -451,7 +452,7 @@ class EmergencyBroadcastRuntime:
                 "Emergency broadcast ending is temporarily unavailable.",
                 code="emergency_broadcast_end_unavailable",
             ) from exc
-        self._active_cache.set_after_commit(None)
+        self._active_cache.invalidate()
         return record
 
     def prune_memory(self) -> tuple[int, int]:
