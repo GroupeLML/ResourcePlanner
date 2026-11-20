@@ -864,9 +864,23 @@ Two different roadmap mutation paths exist and must not be confused.
 
 #### Structural/product roadmap changes
 
-The Dev Cockpit Safe Writeback flow remains mandatory for changes that alter product structure or intent, including scope, split/decomposition, order, dependencies, REPLACES, WorkItem identity, or other non-deterministic roadmap decisions.
+Changes that alter product structure or intent — including scope, split/decomposition, order, dependencies, REPLACES, WorkItem identity, or other non-deterministic roadmap decisions — require an explicit Product Owner decision and a controlled structural write. The control path depends on the active orchestration mode.
 
-For that path:
+**Manual Product Owner orchestration — default**
+
+When manual orchestration is active, Dev Cockpit does not need to be enabled merely to perform a structural roadmap change. The Product Owner may apply the authorized structural mutation directly to canonical issue #851 through GitHub, but must preserve the same safety properties:
+
+- the Product Owner must first state or show the exact intended machine-pipeline mutation and obtain explicit human authorization; a current user instruction that unambiguously authorizes that exact structural change satisfies this confirmation requirement;
+- immediately before applying, reread `AGENTS.md` and the complete current body plus GitHub `updated_at` of #851; read #55 as human context when relevant, but never use it as machine authority;
+- validate that the proposed block remains a valid `COCKPIT_PIPELINE_V1`, references valid parent Issues, and changes only the authorized structure/intent;
+- use optimistic concurrency against the complete #851 issue body and observed `updated_at`; if #851 changed after preview/authorization, fail closed, reread, re-preview the effective mutation, and obtain renewed confirmation when the effective structural change is no longer identical;
+- apply only the exact authorized canonical mutation;
+- reread #851 after the write and verify the strict canonical parser resolves the expected ordering/status;
+- report the resulting machine state and stop unless a separate Product Owner authorization starts the newly READY WorkItem or architecture gate.
+
+**Dev Cockpit / supported browser-extension orchestration — optional**
+
+When Dev Cockpit or the supported browser extension is explicitly active, the Dev Cockpit Safe Writeback flow remains mandatory for structural/product roadmap changes:
 
 - preview is mandatory before apply;
 - apply must require explicit confirmation;
@@ -874,6 +888,8 @@ For that path:
 - only the exact canonical pipeline mutation authorized by the proposal may be applied;
 - writeback must fail closed when the pipeline is legacy, invalid, stale, or the proposal is no longer the one previewed;
 - use optimistic concurrency against the complete issue body and GitHub `updated_at`; a concurrent roadmap edit must produce a conflict rather than being overwritten.
+
+Both paths preserve GitHub/#851 as the sole machine-state authority. Dev Cockpit is an orchestration convenience, not a prerequisite for manual Product Owner governance.
 
 #### Post-merge delivery reconciliation
 
