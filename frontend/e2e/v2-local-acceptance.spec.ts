@@ -1156,6 +1156,13 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("coord"));
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("alice"));
     await expect(draft.locator(".draft-recipients")).toContainText(testEmail("bob"));
+    const recipientGroups = draft.locator(".draft-recipients > div");
+    const toRecipientText = (await recipientGroups.nth(0).innerText()).toLocaleLowerCase();
+    const ccRecipientText = (await recipientGroups.nth(1).innerText()).toLocaleLowerCase();
+    for (const address of [testEmail("pm"), testEmail("coord")]) {
+      expect(toRecipientText).toContain(address.toLocaleLowerCase());
+      expect(ccRecipientText).not.toContain(address.toLocaleLowerCase());
+    }
     await expect(draft.getByText("Courriel manquant")).toHaveCount(0);
     await expect(draft.locator("textarea")).toHaveValue(/Chargé de projet Démo/);
     await expect(draft.locator("textarea")).not.toHaveValue(new RegExp(testPhone()));
