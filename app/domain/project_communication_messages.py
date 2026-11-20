@@ -2098,28 +2098,56 @@ def _render_project_html(message: ProjectMessageSemantic) -> str:
     return "".join(rendered)
 
 
+_REVIEW_SECTION_HEADINGS = {
+    "Responsable projet",
+    "Description",
+    "Contact chantier",
+    "Horaire",
+    "Modifications",
+}
+_REVIEW_DATE_LINE = re.compile(
+    r"^(?:Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche)"
+    r"\s+le\s+\d{1,2}\s+"
+    r"(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)"
+    r"\s+\d{4}$",
+    re.IGNORECASE,
+)
+
+
+def _parse_project_review_semantic(body: str) -> ProjectMessageSemantic:
+    normalized = body.replace("\r\n", "\n").replace("\r", "\n")
+    lines: list[ProjectMessageLine] = []
+    header_seen = False
+    for raw_line in normalized.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped:
+            lines.append(_line("blank"))
+            continue
+        if not header_seen:
+            lines.append(_line("project_header", raw_line))
+            header_seen = True
+            continue
+        if stripped in _REVIEW_SECTION_HEADINGS:
+            lines.append(_line("section", raw_line))
+        elif _REVIEW_DATE_LINE.fullmatch(stripped):
+            lines.append(_line("date", raw_line))
+        elif raw_line.lstrip().startswith("• "):
+            prefix_index = raw_line.index("• ")
+            lines.append(_line("bullet", raw_line[prefix_index + 2 :]))
+        elif stripped == PROJECT_RESPONSIBILITY_FOOTER:
+            lines.append(_line("footer", raw_line))
+        else:
+            lines.append(_line("text", raw_line))
+    return ProjectMessageSemantic(lines=tuple(lines))
+
+
 def render_project_review_html(body: str) -> str:
-    """Regenerate safe HTML from coordinator-authoritative plain text."""
+    """Regenerate safe structured HTML from coordinator-authoritative plain text."""
 
     raw = str(body)
     if not raw.strip():
         raise ValueError("Le corps révisé du courriel projet ne peut pas être vide.")
-
-    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
-    rendered = [
-        '<div style="font-family:Arial,Helvetica,sans-serif;line-height:1.25;max-width:640px;">'
-    ]
-    for line in normalized.split("\n"):
-        if line == "":
-            rendered.append(
-                '<div style="height:12px;line-height:12px;">&nbsp;</div>'
-            )
-        else:
-            rendered.append(
-                f'<div style="margin:0;white-space:pre-wrap;">{escape(line)}</div>'
-            )
-    rendered.append("</div>")
-    return "".join(rendered)
+    return _render_project_html(_parse_project_review_semantic(raw))
 
 def _subject(
     project: ProjectCommunicationProject,

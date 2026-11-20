@@ -99,6 +99,21 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertIn("value={draft.body}", page)
         self.assertNotIn("body_html:", page)
 
+    def test_892_to_display_uses_human_name_without_changing_review_authority(self) -> None:
+        page = PAGE.read_text(encoding="utf-8")
+        api = API.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "{resourceDisplayName(recipient.display_name)} · {recipient.email ?? \"Courriel manquant\"}",
+            page,
+        )
+        self.assertIn(
+            "{resourceDisplayName(recipient.display_name)} · {recipient.email}",
+            page,
+        )
+        self.assertIn('JSON.stringify({ body })', api)
+        self.assertNotIn("body_html:", page)
+
     def test_871_preparation_serializes_only_canonical_review_fields(self) -> None:
         page = PAGE.read_text(encoding="utf-8")
 

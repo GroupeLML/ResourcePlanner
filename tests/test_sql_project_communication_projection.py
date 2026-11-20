@@ -25,6 +25,7 @@ from app.server.security import static_auth_resolver
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.domain.project_communication import employee_assigned_assets
 from app.domain.project_communication_messages import (
+    PROJECT_RESPONSIBILITY_FOOTER,
     deserialize_project_projection,
     project_projection_fingerprint,
 )
@@ -3976,16 +3977,21 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
                 edited_subject = "Coordination libre <#881> & équipe"
                 edited_body = (
-                    "Bonjour équipe,\n\n"
+                    "P-251 - Projet révisé #892\n\n"
+                    "Responsable projet\n"
+                    "Chargé de projet Démo — révisé\n\n"
+                    "Description\n"
                     "Paragraphe ajouté par la coordonnatrice.\n"
-                    "Libellé personnalisé : nouvelle formulation.\n"
-                    "Le texte généré a été remplacé librement.\n\n"
-                    "<script>alert('x')</script> & contenu sécurisé"
+                    "Libellé personnalisé : nouvelle formulation.\n\n"
+                    "Contact chantier\n"
+                    "Aucun contact chantier renseigné\n\n"
+                    "Horaire\n"
+                    "Lundi le 23 novembre 2026\n"
+                    "• Alice\n"
+                    "• Bob\n\n"
+                    + PROJECT_RESPONSIBILITY_FOOTER
+                    + "\n<script>alert('x')</script> & contenu sécurisé"
                 )
-                self.assertNotIn("Responsable projet", edited_body)
-                self.assertNotIn("Description", edited_body)
-                self.assertNotIn("Contact chantier", edited_body)
-                self.assertNotIn("Horaire", edited_body)
 
                 html_preview = client.post(
                     "/api/v1/communications/project-preview-html",
@@ -3993,6 +3999,18 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(html_preview.status_code, 200, html_preview.text)
                 edited_html = html_preview.json()["body_html"]
+                self.assertIn("<strong>P-251 - Projet révisé #892</strong>", edited_html)
+                self.assertIn("<strong><u>Responsable projet</u></strong>", edited_html)
+                self.assertIn("<strong><u>Description</u></strong>", edited_html)
+                self.assertIn("<strong><u>Contact chantier</u></strong>", edited_html)
+                self.assertIn("<strong><u>Horaire</u></strong>", edited_html)
+                self.assertIn("<strong>Lundi le 23 novembre 2026</strong>", edited_html)
+                self.assertIn("<ul", edited_html)
+                self.assertIn(">Alice</li>", edited_html)
+                self.assertIn(
+                    f'<div style="margin-top:12px;">{PROJECT_RESPONSIBILITY_FOOTER}</div>',
+                    edited_html,
+                )
                 self.assertIn("Paragraphe ajouté par la coordonnatrice.", edited_html)
                 self.assertIn(
                     "Libellé personnalisé : nouvelle formulation.",
@@ -4195,10 +4213,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(rendered.status_code, 200, rendered.text)
                 html = rendered.json()["body_html"]
-                self.assertIn("Responsable projet", html)
-                self.assertIn("Description", html)
+                self.assertIn("<strong><u>Responsable projet</u></strong>", html)
+                self.assertIn("<strong><u>Description</u></strong>", html)
                 self.assertIn("Installation approuvée révisée", html)
-                self.assertNotIn("<strong><u>Responsable projet</u></strong>", html)
+                self.assertNotIn("<script>", html)
 
                 rejected = client.post(
                     "/api/v1/communications/project-preview-html",

@@ -392,7 +392,10 @@ function ShiftCard({
   const assetDiagnostics = shift.asset_diagnostics ?? [];
   // Scope-neighbor visibility intentionally suppresses manager identity/color.
   const managerColorId = !scopeNeighbor ? shift.project_manager_color_id : null;
-  const managerColorLabel = !scopeNeighbor ? shift.project_manager_color_label : null;
+  const managerColorLabel = !scopeNeighbor
+    ? resourceDisplayName(shift.project_manager_color_label)
+    : null;
+  const requesterLabel = !scopeNeighbor ? resourceDisplayName(shift.requester) : "";
   const meta = [
     shift.allocation_type,
     shift.source !== "AUTO" && !scopeNeighbor ? shift.source : null,
@@ -422,7 +425,7 @@ function ShiftCard({
     shift.project_name,
     shift.demand_number ? `Demande ${shift.demand_number}` : null,
     managerColorLabel ? `Responsable: ${managerColorLabel}` : null,
-    shift.requester ? `Demandeur: ${shift.requester}` : null,
+    requesterLabel ? `Demandeur: ${requesterLabel}` : null,
     shift.note,
   ].filter(Boolean).join("\n");
 

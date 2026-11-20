@@ -380,6 +380,54 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ne peut pas être vide"):
             render_project_review_html("   \n")
 
+    def test_892_review_html_reconstructs_project_structure_safely(self) -> None:
+        reviewed = (
+            "1000 - Projet révisé\n\n"
+            "Responsable projet\n"
+            "Marie Tremblay\n\n"
+            "Description\n"
+            "Texte ordinaire ajouté <équipe>.\n\n"
+            "Contact chantier\n"
+            "Aucun contact chantier renseigné\n\n"
+            "Horaire\n"
+            "Lundi le 23 novembre 2026\n"
+            "• Marie Tremblay\n"
+            "• Jean Gagnon\n\n"
+            "Modifications\n"
+            "• Libellé révisé\n\n"
+            + PROJECT_RESPONSIBILITY_FOOTER
+            + "\n<script>alert('x')</script>"
+        )
+
+        reviewed_html = render_project_review_html(reviewed)
+
+        self.assertIn("<strong>1000 - Projet révisé</strong>", reviewed_html)
+        for heading in (
+            "Responsable projet",
+            "Description",
+            "Contact chantier",
+            "Horaire",
+            "Modifications",
+        ):
+            self.assertIn(f"<strong><u>{heading}</u></strong>", reviewed_html)
+        self.assertIn(
+            "<strong>Lundi le 23 novembre 2026</strong>",
+            reviewed_html,
+        )
+        self.assertIn("<ul", reviewed_html)
+        self.assertIn("<li", reviewed_html)
+        self.assertIn(">Marie Tremblay</li>", reviewed_html)
+        self.assertIn("Texte ordinaire ajouté &lt;équipe&gt;.", reviewed_html)
+        self.assertIn(
+            f'<div style="margin-top:12px;">{PROJECT_RESPONSIBILITY_FOOTER}</div>',
+            reviewed_html,
+        )
+        self.assertIn(
+            "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;",
+            reviewed_html,
+        )
+        self.assertNotIn("<script>", reviewed_html)
+
     def test_855_capture_authoritative_order_emphasis_footer_and_shift_rules(self) -> None:
         asset = ProjectCommunicationAsset(
             allocation_id="ALLOC-MAT151",
