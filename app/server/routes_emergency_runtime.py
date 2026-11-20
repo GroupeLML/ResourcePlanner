@@ -27,6 +27,10 @@ class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AcknowledgmentRequest(StrictRequest):
+    pass
+
+
 class BroadcastCreateRequest(StrictRequest):
     creation_command_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
@@ -132,6 +136,7 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
     @router.post("/api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment")
     async def acknowledge(
         broadcast_id: str,
+        _body: AcknowledgmentRequest,
         request: Request,
         response: Response,
     ) -> dict[str, object]:
