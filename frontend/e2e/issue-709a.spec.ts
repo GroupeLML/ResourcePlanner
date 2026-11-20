@@ -70,7 +70,8 @@ test("857 — numéro projet dans badge PM, fallback neutre et confidentialité 
           project_name: "Projet badge responsable",
           project_manager: "Nom secondaire à ne pas utiliser pour le tooltip",
           project_manager_color_id: MANAGER_COLOR_ID,
-          project_manager_color_label: "Jean Tremblay",
+          project_manager_color_label: "12345 - Jean Tremblay",
+          requester: "67890 — Jean Gagnon",
         },
         {
           ...common,
@@ -118,6 +119,11 @@ test("857 — numéro projet dans badge PM, fallback neutre et confidentialité 
     await expect(card.locator(".shift-pm-dot")).toHaveCount(0);
     await expect(badge).toHaveAttribute("title", "Projet 5110 — Responsable : Jean Tremblay");
     await expect(badge).toHaveAttribute("aria-label", "Projet 5110 — Responsable : Jean Tremblay");
+    const mainTitle = await card.locator(".shift-card-main").getAttribute("title");
+    expect(mainTitle || "").toContain("Responsable: Jean Tremblay");
+    expect(mainTitle || "").toContain("Demandeur: Jean Gagnon");
+    expect(mainTitle || "").not.toContain("12345");
+    expect(mainTitle || "").not.toContain("67890");
     await expect(card.getByText("#DMO-2026-0108", { exact: true })).toBeVisible();
     await expect(card.locator(".confirmation-badge")).toHaveText("Confirmée");
     await expect(card.locator(".shift-hours")).toHaveText("1 h");
