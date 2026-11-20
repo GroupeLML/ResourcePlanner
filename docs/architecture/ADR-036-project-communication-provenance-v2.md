@@ -4,6 +4,12 @@ Status: Accepted
 Date: 2026-11-17  
 WorkItem: #855 / R30
 
+## Relationship to ADR-037
+
+[ADR-037 — Project communication provenance v4 and Shift-level delta semantics](ADR-037-project-communication-provenance-v4-and-shift-deltas.md) supersedes the traceability-only treatment of `shift_id` in sections 2 and 7 **for provenance v4 only**: P4 includes canonical Shift identity and its associated communication facts so same-ID changes and different-ID removal/addition remain distinguishable.
+
+Comparisons whose current projection is v4 follow ADR-037's Shift matching and explicit historical-refresh contract. Historical P0/P1/P2/P3 serialization and fingerprint algorithms remain unchanged. This ADR remains Accepted; its other decisions, including asset/availability authority, immutable prepared content, and persisted text/HTML transport authority, remain applicable.
+
 ## Context
 
 #830 introduced request-owned chantier-contact provenance into the immutable `project_v2` communication snapshot. #855 additionally needs the final renderer to know, for each physical human Shift, which canonical asset associations apply and how many standard hours apply to that resource on that date.
