@@ -723,6 +723,34 @@ def _run_retention_cleanup(database_url: str) -> tuple[int, int]:
         engine.dispose()
 
 
+def _wait_for_receipt(
+    database_url: str,
+    broadcast_id: str,
+    user_id: str,
+    *,
+    timeout_seconds: float = 3.0,
+) -> bool:
+    engine = create_sql_engine(database_url)
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while time.monotonic() < deadline:
+            with engine.connect() as connection:
+                exists = connection.scalar(
+                    select(func.count())
+                    .select_from(EmergencyBroadcastAcknowledgment)
+                    .where(
+                        EmergencyBroadcastAcknowledgment.broadcast_id == broadcast_id,
+                        EmergencyBroadcastAcknowledgment.user_id == user_id,
+                    )
+                )
+            if int(exists or 0) == 1:
+                return True
+            time.sleep(0.025)
+        return False
+    finally:
+        engine.dispose()
+
+
 async def _ack_wave(
     base_url: str,
     admin: Credential,
@@ -794,7 +822,12 @@ async def _ack_wave(
 
     lost_user = users[distinct]
     await _raw_lost_response(base_url, lost_user, broadcast_id)
-    await asyncio.sleep(0.15)
+    lost_response_committed = await asyncio.to_thread(
+        _wait_for_receipt,
+        database_url,
+        broadcast_id,
+        lost_user.user_id,
+    )
     async with httpx.AsyncClient(
         base_url=base_url,
         cookies=_cookies(lost_user),
@@ -833,6 +866,7 @@ async def _ack_wave(
         "duplicate_requests": duplicates,
         "target_requests": len(targets),
         "lost_response_retry": True,
+        "lost_response_committed_before_retry": lost_response_committed,
         "latency": _latencies(latencies),
         "http_codes": {
             str(code): statuses.count(code)
@@ -849,6 +883,7 @@ async def _ack_wave(
             all(code == 200 for code in statuses)
             and int(receipt_count or 0) == expected_receipts
             and stable
+            and lost_response_committed
             and cleanup_deleted_receipts >= 1
             and cleanup_deleted_parents >= 1
         ),
@@ -929,12 +964,15 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
             "ordinary_p95_ok": _degradation_ok(
                 baseline_p95, float(ordinary["p95_ms"])
             ),
+            "ordinary_all_200": set(scenario["ordinary_statuses"]) <= {"200"}
+                and int(ordinary["count"]) > 0,
             "ordinary_p99_ok": _degradation_ok(
                 baseline_p99, float(ordinary["p99_ms"])
             ),
             "status_p95_ok": float(status["p95_ms"]) <= 250.0,
             "status_p99_ok": float(status["p99_ms"]) <= 750.0,
-            "status_all_200": set(status_codes) <= {"200"},
+            "status_all_200": set(status_codes) <= {"200"}
+                and int(status["count"]) > 0,
             "event_loop_p99_ok": float(loop["p99"]) <= 100.0,
             "deadlocks_zero": deadlock_delta == 0,
             "delivery_p95_ok": (
@@ -948,7 +986,8 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         check["passed"] = all(
             bool(value)
             for key, value in check.items()
-            if key.endswith("_ok") or key in {"status_all_200", "deadlocks_zero"}
+            if key.endswith("_ok")
+            or key in {"status_all_200", "ordinary_all_200", "deadlocks_zero"}
         )
         scenario_checks.append(check)
 
@@ -975,8 +1014,13 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         int(sql_initial["shift_count"]) == int(sql_final["shift_count"])
         and int(sql_initial["demand_count"]) == int(sql_final["demand_count"])
     )
+    baseline_all_200 = (
+        set(baseline["statuses"]) <= {"200"}
+        and int(baseline["ordinary_api"]["count"]) > 0
+    )
     passed = (
-        all(bool(item["passed"]) for item in scenario_checks)
+        baseline_all_200
+        and all(bool(item["passed"]) for item in scenario_checks)
         and bool(wave_check["passed"])
         and business_unchanged
         and all(xact_abort_recovery.values())
@@ -997,6 +1041,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         "sql_initial": sql_initial,
         "xact_abort_recovery": xact_abort_recovery,
         "baseline": baseline,
+        "baseline_all_200": baseline_all_200,
         "scenarios": scenarios,
         "scenario_acceptance": scenario_checks,
         "ack_waves": waves,
