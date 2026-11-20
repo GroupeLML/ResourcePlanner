@@ -2013,15 +2013,40 @@ def _build_draft(
     week_start: date,
     message_kind: str,
     cc_sources: Sequence[ProjectCommunicationProject],
+    to_sources: Sequence[ProjectCommunicationProject] | None = None,
     change_kind: str | None = None,
     semantic_override: ProjectMessageSemantic | None = None,
 ) -> ProjectCommunicationDraft:
     message_key = f"project:{project.project_id}"
+    resolved_to_sources = tuple(to_sources or (project,))
     to_recipients, cc_recipients = canonical_project_recipients(
-        _to_recipients(project),
+        tuple(
+            participant
+            for source in resolved_to_sources
+            for participant in _to_recipients(source)
+        ),
         _cc_recipients(cc_sources),
     )
-    diagnostics = _recipient_diagnostics(project, cc_sources)
+    diagnostic_values: list[ProjectMessageDiagnostic] = []
+    seen_diagnostics: set[tuple[str, str, str, str, str]] = set()
+    for index, source in enumerate(resolved_to_sources):
+        source_diagnostics = _recipient_diagnostics(
+            source,
+            cc_sources if index == 0 else (),
+        )
+        for diagnostic in source_diagnostics:
+            key = (
+                diagnostic.code,
+                diagnostic.severity,
+                diagnostic.entity_type,
+                diagnostic.entity_id,
+                diagnostic.message,
+            )
+            if key in seen_diagnostics:
+                continue
+            seen_diagnostics.add(key)
+            diagnostic_values.append(diagnostic)
+    diagnostics = tuple(diagnostic_values)
     subject = _subject(
         project,
         week_start,
@@ -2230,6 +2255,14 @@ def build_project_delta_batch(
                     week_start=current.week_start,
                     message_kind=MESSAGE_KIND_PLANNING_CHANGE,
                     cc_sources=cc_sources,
+                    to_sources=(
+                        project,
+                        *tuple(
+                            value
+                            for value in cc_sources
+                            if value is not project
+                        ),
+                    ),
                     change_kind=change.kind,
                     semantic_override=semantic,
                 )
@@ -2241,6 +2274,14 @@ def build_project_delta_batch(
                     week_start=current.week_start,
                     message_kind=MESSAGE_KIND_PLANNING_CHANGE,
                     cc_sources=cc_sources,
+                    to_sources=(
+                        project,
+                        *tuple(
+                            value
+                            for value in cc_sources
+                            if value is not project
+                        ),
+                    ),
                     change_kind=change.kind,
                 )
             )
