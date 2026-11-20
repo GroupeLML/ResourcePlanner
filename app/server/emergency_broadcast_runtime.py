@@ -333,13 +333,15 @@ class AsyncAdmission(Generic[T]):
                     code="emergency_runtime_overloaded",
                 ) from exc
             async with self._state_lock:
+                self._waiting = max(0, self._waiting - 1)
                 self._in_flight += 1
             return await work()
         finally:
             async with self._state_lock:
-                self._waiting = max(0, self._waiting - 1)
                 if acquired:
                     self._in_flight = max(0, self._in_flight - 1)
+                else:
+                    self._waiting = max(0, self._waiting - 1)
             if acquired:
                 self._semaphore.release()
 
