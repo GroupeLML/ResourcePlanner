@@ -4213,10 +4213,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(rendered.status_code, 200, rendered.text)
                 html = rendered.json()["body_html"]
-                self.assertIn("Responsable projet", html)
-                self.assertIn("Description", html)
+                self.assertIn("<strong><u>Responsable projet</u></strong>", html)
+                self.assertIn("<strong><u>Description</u></strong>", html)
                 self.assertIn("Installation approuvée révisée", html)
-                self.assertNotIn("<strong><u>Responsable projet</u></strong>", html)
+                self.assertNotIn("<script>", html)
 
                 rejected = client.post(
                     "/api/v1/communications/project-preview-html",
