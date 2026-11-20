@@ -81,13 +81,13 @@ class EmergencyBroadcastSqlServerConcurrencyTests(unittest.TestCase):
             values = connection.execute(
                 text(
                     "SELECT "
-                    "SESSIONPROPERTY('ANSI_NULLS'), "
-                    "SESSIONPROPERTY('ANSI_PADDING'), "
-                    "SESSIONPROPERTY('ANSI_WARNINGS'), "
-                    "SESSIONPROPERTY('ARITHABORT'), "
-                    "SESSIONPROPERTY('CONCAT_NULL_YIELDS_NULL'), "
-                    "SESSIONPROPERTY('QUOTED_IDENTIFIER'), "
-                    "SESSIONPROPERTY('NUMERIC_ROUNDABORT')"
+                    "CAST(SESSIONPROPERTY('ANSI_NULLS') AS int), "
+                    "CAST(SESSIONPROPERTY('ANSI_PADDING') AS int), "
+                    "CAST(SESSIONPROPERTY('ANSI_WARNINGS') AS int), "
+                    "CAST(SESSIONPROPERTY('ARITHABORT') AS int), "
+                    "CAST(SESSIONPROPERTY('CONCAT_NULL_YIELDS_NULL') AS int), "
+                    "CAST(SESSIONPROPERTY('QUOTED_IDENTIFIER') AS int), "
+                    "CAST(SESSIONPROPERTY('NUMERIC_ROUNDABORT') AS int)"
                 )
             ).one()
         self.assertEqual(tuple(int(value) for value in values), (1, 1, 1, 1, 1, 1, 0))
