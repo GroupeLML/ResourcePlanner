@@ -260,6 +260,7 @@ def _xact_abort_recovery(database_url: str) -> dict[str, bool]:
         try:
             cursor = raw.cursor()
             cursor.execute(f"SET XACT_ABORT {mode}")
+            cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
             cursor.execute(
                 f"CREATE TABLE {table_name} (id int NOT NULL PRIMARY KEY)"
             )
