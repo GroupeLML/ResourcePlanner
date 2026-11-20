@@ -88,6 +88,7 @@ function EmergencyDialog({
         return;
       }
       if (event.key !== "Tab") return;
+
       const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
       );
@@ -170,11 +171,12 @@ export default function EmergencyBroadcastProvider({
   children: ReactNode;
 }) {
   const { principal, loading } = useAuth();
-  const [broadcast, setBroadcast] = useState<KnownBroadcast | null>(null);
+  const [broadcast, setBroadcastState] = useState<KnownBroadcast | null>(null);
   const [pollError, setPollError] = useState<string | null>(null);
   const [ackError, setAckError] = useState<string | null>(null);
   const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null);
 
+  const broadcastRef = useRef<KnownBroadcast | null>(null);
   const timerRef = useRef<number | null>(null);
   const statusControllerRef = useRef<AbortController | null>(null);
   const ackControllerRef = useRef<AbortController | null>(null);
@@ -183,6 +185,7 @@ export default function EmergencyBroadcastProvider({
   const failureCountRef = useRef(0);
   const contentCacheRef = useRef<Map<string, KnownBroadcast>>(new Map());
   const locallyAcknowledgedRef = useRef<Set<string>>(new Set());
+  const pollRef = useRef<(() => Promise<void>) | null>(null);
   const mountedRef = useRef(true);
 
   const identityKey = useMemo(
@@ -196,6 +199,11 @@ export default function EmergencyBroadcastProvider({
       : "",
     [principal],
   );
+
+  const setBroadcast = useCallback((value: KnownBroadcast | null) => {
+    broadcastRef.current = value;
+    setBroadcastState(value);
+  }, []);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -220,11 +228,12 @@ export default function EmergencyBroadcastProvider({
     failureCountRef.current = 0;
     contentCacheRef.current.clear();
     locallyAcknowledgedRef.current.clear();
+    pollRef.current = null;
     setBroadcast(null);
     setPollError(null);
     setAckError(null);
     setAcknowledgingId(null);
-  }, [clearTimer]);
+  }, [clearTimer, setBroadcast]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -248,13 +257,17 @@ export default function EmergencyBroadcastProvider({
       const requestGeneration = ++requestGenerationRef.current;
       const controller = new AbortController();
       statusControllerRef.current = controller;
-      const timeout = window.setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS);
+      let timedOut = false;
+      const timeout = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, STATUS_TIMEOUT_MS);
 
       try {
-        const known = broadcast
-          ? { id: broadcast.id, version: broadcast.version }
-          : null;
+        const current = broadcastRef.current;
+        const known = current ? { id: current.id, version: current.version } : null;
         let status = await getEmergencyRuntimeStatus(controller.signal, known);
+
         if (
           status.active_broadcast
           && status.active_broadcast.content === null
@@ -291,39 +304,37 @@ export default function EmergencyBroadcastProvider({
             const acknowledged = Boolean(active.acknowledged_at)
               || locallyAcknowledgedRef.current.has(active.id);
             if (acknowledged) {
-              setBroadcast((current) => current?.id === active.id ? null : current);
+              if (broadcastRef.current?.id === active.id) setBroadcast(null);
               setAckError(null);
             } else {
-              setBroadcast((current) => {
-                if (
-                  current
-                  && current.id !== resolved.id
-                  && requestGeneration < requestGenerationRef.current
-                ) {
-                  return current;
-                }
-                return resolved;
-              });
+              setBroadcast(resolved);
             }
           }
         }
 
-        schedule(randomBetween(POLL_MIN_MS, POLL_MAX_MS), () => void poll());
+        schedule(randomBetween(POLL_MIN_MS, POLL_MAX_MS), () => {
+          void pollRef.current?.();
+        });
       } catch (reason) {
         if (
           stopped
           || lifecycleGenerationRef.current !== lifecycleGeneration
-          || isAbort(reason)
+          || (isAbort(reason) && !timedOut)
         ) {
           return;
         }
+
         const index = Math.min(failureCountRef.current, BACKOFF_MS.length - 1);
         failureCountRef.current += 1;
         setPollError(errorMessage(
           reason,
-          "Impossible de confirmer l’état de la diffusion d’urgence.",
+          timedOut
+            ? "Le contrôle d’urgence a dépassé son délai. Une nouvelle tentative sera effectuée."
+            : "Impossible de confirmer l’état de la diffusion d’urgence.",
         ));
-        schedule(jitterBackoff(BACKOFF_MS[index]), () => void poll());
+        schedule(jitterBackoff(BACKOFF_MS[index]), () => {
+          void pollRef.current?.();
+        });
       } finally {
         window.clearTimeout(timeout);
         if (statusControllerRef.current === controller) {
@@ -332,39 +343,59 @@ export default function EmergencyBroadcastProvider({
       }
     };
 
+    pollRef.current = poll;
+
     const expedite = () => {
       if (stopped || lifecycleGenerationRef.current !== lifecycleGeneration) return;
       if (statusControllerRef.current) return;
-      schedule(randomBetween(0, RESUME_MAX_MS), () => void poll());
+      schedule(randomBetween(0, RESUME_MAX_MS), () => {
+        void pollRef.current?.();
+      });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") expedite();
     };
 
     window.addEventListener("focus", expedite);
     window.addEventListener("online", expedite);
     window.addEventListener("pageshow", expedite);
-    document.addEventListener("visibilitychange", expedite);
+    document.addEventListener("visibilitychange", onVisibility);
     schedule(0, () => void poll());
 
     return () => {
       stopped = true;
+      pollRef.current = null;
       clearTimer();
       statusControllerRef.current?.abort();
       window.removeEventListener("focus", expedite);
       window.removeEventListener("online", expedite);
       window.removeEventListener("pageshow", expedite);
-      document.removeEventListener("visibilitychange", expedite);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [broadcast?.id, broadcast?.version, clearTimer, identityKey, loading, principal?.local_user_id, schedule]);
+  }, [
+    clearTimer,
+    identityKey,
+    loading,
+    principal?.local_user_id,
+    schedule,
+    setBroadcast,
+  ]);
 
   const acknowledge = useCallback(async () => {
-    const target = broadcast;
+    const target = broadcastRef.current;
     if (!target || acknowledgingId) return;
+
     setAcknowledgingId(target.id);
     setAckError(null);
 
     const lifecycleGeneration = lifecycleGenerationRef.current;
     const controller = new AbortController();
     ackControllerRef.current = controller;
-    const timeout = window.setTimeout(() => controller.abort(), ACK_TIMEOUT_MS);
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, ACK_TIMEOUT_MS);
 
     try {
       const result = await acknowledgeEmergencyBroadcast(target.id, controller.signal);
@@ -374,27 +405,29 @@ export default function EmergencyBroadcastProvider({
       ) {
         return;
       }
-      locallyAcknowledgedRef.current.add(result.acknowledgment.broadcast_id);
-      setBroadcast((current) => (
-        current?.id === result.acknowledgment.broadcast_id ? null : current
-      ));
+
+      const acknowledgedId = result.acknowledgment.broadcast_id;
+      locallyAcknowledgedRef.current.add(acknowledgedId);
+      if (broadcastRef.current?.id === acknowledgedId) {
+        setBroadcast(null);
+      }
       setAckError(null);
+
       schedule(randomBetween(POLL_MIN_MS, POLL_MAX_MS), () => {
-        window.dispatchEvent(new Event("resourceplanner:emergency-refresh"));
+        void pollRef.current?.();
       });
     } catch (reason) {
       if (
         lifecycleGenerationRef.current !== lifecycleGeneration
-        || isAbort(reason)
+        || (isAbort(reason) && !timedOut)
       ) {
-        if (isAbort(reason)) {
-          setAckError("Le serveur n’a pas confirmé la réception. Réessayez.");
-        }
         return;
       }
       setAckError(errorMessage(
         reason,
-        "Le serveur n’a pas confirmé la réception. Réessayez.",
+        timedOut
+          ? "Le serveur n’a pas confirmé la réception avant le délai. Réessayez."
+          : "Le serveur n’a pas confirmé la réception. Réessayez.",
       ));
     } finally {
       window.clearTimeout(timeout);
@@ -405,12 +438,13 @@ export default function EmergencyBroadcastProvider({
         setAcknowledgingId(null);
       }
     }
-  }, [acknowledgingId, broadcast, schedule]);
+  }, [acknowledgingId, schedule, setBroadcast]);
 
   useEffect(() => {
     if (!broadcast) return undefined;
     const root = document.getElementById("resourceplanner-application");
     if (!root) return undefined;
+
     const inertRoot = root as HTMLElement & { inert: boolean };
     inertRoot.inert = true;
     root.setAttribute("aria-hidden", "true");
