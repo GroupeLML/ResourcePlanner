@@ -60,6 +60,11 @@ class FrontendCommunicationsContractTests(unittest.TestCase):
         self.assertIn('"project_confirmation"', page)
         self.assertIn('"project_planning_change"', page)
         self.assertIn("hasCommunicatedBaseline", page)
+        self.assertIn("hasProjectBatch", page)
+        self.assertIn(
+            "Un lot existe pour cette semaine, mais aucune communication de référence n’est encore entièrement communiquée.",
+            page,
+        )
         self.assertIn(
             "Aucune modification depuis la dernière communication pour cette semaine.",
             page,
