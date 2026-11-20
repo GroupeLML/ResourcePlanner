@@ -730,6 +730,14 @@ class SqliteV2CutoverTests(unittest.TestCase):
             KEEP,
         )
         self.assertEqual(
+            TABLE_POLICIES["emergency_broadcasts"].classification,
+            KEEP,
+        )
+        self.assertEqual(
+            TABLE_POLICIES["emergency_broadcast_acknowledgments"].classification,
+            KEEP,
+        )
+        self.assertEqual(
             RELATIONSHIP_CONTROLS["request_shift_survivor_protections"],
             (
                 "id",
