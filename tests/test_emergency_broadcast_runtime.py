@@ -194,9 +194,14 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
         with TestClient(user_app) as user:
             status = user.get("/api/v1/runtime/status")
             self.assertEqual(status.status_code, 200, status.text)
-            self.assertEqual(status.json()["user_id"], "USER-894")
-            self.assertEqual(status.json()["broadcast"]["id"], broadcast_id)
-            self.assertIsNone(status.json()["acknowledgment"])
+            self.assertEqual(status.json()["active_broadcast"]["id"], broadcast_id)
+            self.assertIsNone(status.json()["active_broadcast"]["acknowledged_at"])
+            self.assertEqual(
+                status.json()["active_broadcast"]["content"]["title"],
+                "AVIS IMPORTANT",
+            )
+            self.assertIn("observation_epoch", status.json())
+            self.assertIn("server_time_utc", status.json())
             self.assertEqual(status.headers["cache-control"], "no-store, private")
             self.assertEqual(status.headers["vary"], "Cookie")
 
@@ -277,8 +282,8 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
             ).json()["broadcast"]["id"]
 
             status = user.get("/api/v1/runtime/status")
-            self.assertEqual(status.json()["broadcast"]["id"], second)
-            self.assertIsNone(status.json()["acknowledgment"])
+            self.assertEqual(status.json()["active_broadcast"]["id"], second)
+            self.assertIsNone(status.json()["active_broadcast"]["acknowledged_at"])
 
     def test_ended_broadcast_acknowledgment_is_still_idempotent(self) -> None:
         admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
