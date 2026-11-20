@@ -13,7 +13,12 @@ from fastapi.testclient import TestClient
 
 from app.application.security import AuthPrincipal, ROLE_ADMIN, ROLE_TECHNICIAN
 from app.infrastructure.sql import AppUser, Base, create_sql_engine
-from app.server.emergency_broadcast_runtime import PresenceRegistry
+from app.domain.emergency_broadcast import EmergencyBroadcastAcknowledgmentRecord
+from app.server.emergency_broadcast_runtime import (
+    PresenceRegistry,
+    _ActiveBroadcastCache,
+    _PositiveReceiptCache,
+)
 from app.server.http import create_api_app
 from app.server.security import (
     install_authorization_middleware,
@@ -99,6 +104,54 @@ class EmergencyPresenceTests(unittest.TestCase):
         snapshot = presence.snapshot()
         self.assertEqual(snapshot.tracked_count, 2)
         self.assertFalse(snapshot.complete)
+
+
+class EmergencyRuntimeCacheTests(unittest.TestCase):
+    def test_active_cache_hits_within_one_second_and_refreshes_after_ttl(self) -> None:
+        clock = FakeClock()
+        cache = _ActiveBroadcastCache(monotonic=clock.monotonic)
+        calls = 0
+
+        def load():
+            nonlocal calls
+            calls += 1
+            return None
+
+        self.assertEqual(cache.get(load), (None, False))
+        self.assertEqual(cache.get(load), (None, True))
+        self.assertEqual(calls, 1)
+
+        clock.advance(1.01)
+        self.assertEqual(cache.get(load), (None, False))
+        self.assertEqual(calls, 2)
+
+    def test_positive_receipt_cache_is_broadcast_scoped_and_bounded(self) -> None:
+        clock = FakeClock()
+        cache = _PositiveReceiptCache(monotonic=clock.monotonic)
+        cache.CAPACITY = 2
+        receipt_a = EmergencyBroadcastAcknowledgmentRecord(
+            broadcast_id="A",
+            user_id="MARY",
+            acknowledged_at=clock.utc_now(),
+        )
+        receipt_b = EmergencyBroadcastAcknowledgmentRecord(
+            broadcast_id="B",
+            user_id="MARY",
+            acknowledged_at=clock.utc_now(),
+        )
+        cache.put(receipt_a)
+        self.assertIs(cache.get("A", "MARY"), receipt_a)
+        self.assertIsNone(cache.get("B", "MARY"))
+        cache.put(receipt_b)
+        cache.put(
+            EmergencyBroadcastAcknowledgmentRecord(
+                broadcast_id="C",
+                user_id="JOHN",
+                acknowledged_at=clock.utc_now(),
+            )
+        )
+        self.assertIsNone(cache.get("A", "MARY"))
+        self.assertIs(cache.get("B", "MARY"), receipt_b)
 
 
 class EmergencyAuthOffloadTests(unittest.TestCase):
@@ -205,6 +258,89 @@ class EmergencyRuntimeHttpTests(unittest.TestCase):
             self.assertIn("server_time_utc", status.json())
             self.assertEqual(status.headers["cache-control"], "no-store, private")
             self.assertEqual(status.headers["vary"], "Cookie")
+
+    def test_known_broadcast_hint_omits_content_but_keeps_identity_and_receipt_state(self) -> None:
+        admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
+        with TestClient(admin_app) as admin:
+            created = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "AVIS IMPORTANT",
+                    "message": "Sauvegardez votre travail.",
+                    "confirmed": True,
+                },
+            )
+            broadcast = created.json()["broadcast"]
+
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        with TestClient(user_app) as user:
+            status = user.get(
+                "/api/v1/runtime/status",
+                params={
+                    "known_broadcast_id": broadcast["id"],
+                    "known_broadcast_version": broadcast["version"],
+                },
+            )
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["active_broadcast"]["id"], broadcast["id"])
+        self.assertIsNone(status.json()["active_broadcast"]["content"])
+
+    def test_status_observation_writes_no_receipt_or_planning_state(self) -> None:
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        runtime = user_app.state.emergency_broadcast_runtime
+        with runtime.factory() as session:
+            before_receipts = session.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT COUNT(*) FROM emergency_broadcast_acknowledgments"
+                )
+            ).scalar_one()
+            before_planning = session.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT COUNT(*) FROM planning_mutation_state"
+                )
+            ).scalar_one()
+
+        with TestClient(user_app) as user:
+            response = user.get("/api/v1/runtime/status")
+            self.assertEqual(response.status_code, 200)
+
+        engine = create_sql_engine(self.database_url)
+        try:
+            with engine.connect() as connection:
+                after_receipts = connection.execute(
+                    __import__("sqlalchemy").text(
+                        "SELECT COUNT(*) FROM emergency_broadcast_acknowledgments"
+                    )
+                ).scalar_one()
+                after_planning = connection.execute(
+                    __import__("sqlalchemy").text(
+                        "SELECT COUNT(*) FROM planning_mutation_state"
+                    )
+                ).scalar_one()
+        finally:
+            engine.dispose()
+        self.assertEqual(after_receipts, before_receipts)
+        self.assertEqual(after_planning, before_planning)
+
+    def test_status_sql_failure_is_retryable_503_not_authentication_loss(self) -> None:
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        runtime = user_app.state.emergency_broadcast_runtime
+        runtime.service.active = lambda: (_ for _ in ()).throw(RuntimeError("db down"))
+        runtime._active_cache.invalidate()
+
+        with TestClient(user_app) as user:
+            response = user.get("/api/v1/runtime/status")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "emergency_broadcast_status_unavailable",
+        )
+        self.assertNotEqual(
+            response.json()["error"]["code"],
+            "authentication_required",
+        )
 
     def test_normal_user_cannot_use_admin_operations_but_can_ack_only_self(self) -> None:
         admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
