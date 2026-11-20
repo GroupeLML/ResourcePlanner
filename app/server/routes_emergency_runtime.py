@@ -4,7 +4,6 @@ import asyncio
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 from fastapi import APIRouter, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,7 +24,7 @@ class StrictRequest(BaseModel):
 
 
 class BroadcastCreateRequest(StrictRequest):
-    creation_command_id: str = Field(default_factory=lambda: str(uuid4()))
+    creation_command_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     message: str = Field(min_length=1)
     confirmed: bool
