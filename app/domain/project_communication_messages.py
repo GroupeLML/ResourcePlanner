@@ -421,7 +421,10 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                             raise ValueError(
                                 "Description tâche Shift v4 manquante ou invalide"
                             )
-                        if assignment.task_description != task.task_description:
+                        if (
+                            assignment.task_description.strip().casefold()
+                            != task.task_description.strip().casefold()
+                        ):
                             raise ValueError(
                                 "Description tâche Shift v4 incohérente avec le contexte"
                             )
@@ -465,21 +468,17 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                                 "Heures Shift v2+ incohérentes avec le total ressource"
                             )
                         if version == 4:
-                            if resource.confirmations != tuple(
-                                dict.fromkeys(
-                                    confirmations_by_resource.get(
-                                        resource.resource_id, []
-                                    )
+                            if set(resource.confirmations) != set(
+                                confirmations_by_resource.get(
+                                    resource.resource_id, []
                                 )
                             ):
                                 raise ValueError(
                                     "Confirmations Shift v4 incohérentes avec l'agrégat ressource"
                                 )
-                            if resource.allocation_types != tuple(
-                                dict.fromkeys(
-                                    allocations_by_resource.get(
-                                        resource.resource_id, []
-                                    )
+                            if set(resource.allocation_types) != set(
+                                allocations_by_resource.get(
+                                    resource.resource_id, []
                                 )
                             ):
                                 raise ValueError(
