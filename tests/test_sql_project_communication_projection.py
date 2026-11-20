@@ -3976,16 +3976,21 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
                 edited_subject = "Coordination libre <#881> & équipe"
                 edited_body = (
-                    "Bonjour équipe,\n\n"
+                    "P-251 - Projet révisé #892\n\n"
+                    "Responsable projet\n"
+                    "Chargé de projet Démo — révisé\n\n"
+                    "Description\n"
                     "Paragraphe ajouté par la coordonnatrice.\n"
-                    "Libellé personnalisé : nouvelle formulation.\n"
-                    "Le texte généré a été remplacé librement.\n\n"
-                    "<script>alert('x')</script> & contenu sécurisé"
+                    "Libellé personnalisé : nouvelle formulation.\n\n"
+                    "Contact chantier\n"
+                    "Aucun contact chantier renseigné\n\n"
+                    "Horaire\n"
+                    "Lundi le 23 novembre 2026\n"
+                    "• Alice\n"
+                    "• Bob\n\n"
+                    + PROJECT_RESPONSIBILITY_FOOTER
+                    + "\n<script>alert('x')</script> & contenu sécurisé"
                 )
-                self.assertNotIn("Responsable projet", edited_body)
-                self.assertNotIn("Description", edited_body)
-                self.assertNotIn("Contact chantier", edited_body)
-                self.assertNotIn("Horaire", edited_body)
 
                 html_preview = client.post(
                     "/api/v1/communications/project-preview-html",
@@ -3993,6 +3998,18 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(html_preview.status_code, 200, html_preview.text)
                 edited_html = html_preview.json()["body_html"]
+                self.assertIn("<strong>P-251 - Projet révisé #892</strong>", edited_html)
+                self.assertIn("<strong><u>Responsable projet</u></strong>", edited_html)
+                self.assertIn("<strong><u>Description</u></strong>", edited_html)
+                self.assertIn("<strong><u>Contact chantier</u></strong>", edited_html)
+                self.assertIn("<strong><u>Horaire</u></strong>", edited_html)
+                self.assertIn("<strong>Lundi le 23 novembre 2026</strong>", edited_html)
+                self.assertIn("<ul", edited_html)
+                self.assertIn(">Alice</li>", edited_html)
+                self.assertIn(
+                    f'<div style="margin-top:12px;">{PROJECT_RESPONSIBILITY_FOOTER}</div>',
+                    edited_html,
+                )
                 self.assertIn("Paragraphe ajouté par la coordonnatrice.", edited_html)
                 self.assertIn(
                     "Libellé personnalisé : nouvelle formulation.",
