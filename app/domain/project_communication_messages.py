@@ -132,6 +132,7 @@ class ProjectCommunicationShiftFact:
     day: date
     task_description: str
     assignment: ProjectCommunicationRequestAssignment
+    resource_contact: ProjectCommunicationParticipant | None
     operational_responsible: ContactResolution | None
 
 
@@ -646,12 +647,19 @@ def _project_shift_facts(
                 assignment.shift_id: assignment.operational_responsible
                 for assignment in task.responsibility_assignments
             }
+            resource_contact_by_id = {
+                resource.resource_id: resource.contact
+                for resource in task.resources
+            }
             for assignment in task.request_assignments:
                 facts[assignment.shift_id] = ProjectCommunicationShiftFact(
                     project_id=project.project_id,
                     day=day.day,
                     task_description=task.task_description,
                     assignment=assignment,
+                    resource_contact=resource_contact_by_id.get(
+                        assignment.resource_id
+                    ),
                     operational_responsible=responsibility_by_shift.get(
                         assignment.shift_id
                     ),
@@ -683,6 +691,11 @@ def _shift_v4_payload(
         fact.day.isoformat(),
         row.resource_id,
         row.resource_name,
+        (
+            _participant_payload(fact.resource_contact)
+            if fact.resource_contact is not None
+            else None
+        ),
         round(float(row.hours), 2),
         row.confirmation,
         row.allocation_type,
@@ -1427,6 +1440,18 @@ def _historical_shift_changes(
     changed: list[str] = []
     if old.resource_id != new.resource_id or old.resource_name != new.resource_name:
         changed.append("resource")
+    old_resource_contact = (
+        _participant_payload(before.resource_contact)
+        if before.resource_contact is not None
+        else None
+    )
+    new_resource_contact = (
+        _participant_payload(after.resource_contact)
+        if after.resource_contact is not None
+        else None
+    )
+    if old_resource_contact != new_resource_contact:
+        changed.append("resource_contact")
     if before.day != after.day:
         changed.append("day")
     if round(float(old.hours), 2) != round(float(new.hours), 2):
@@ -1622,6 +1647,14 @@ def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
         if "day" in delta.changed_fields and delta.kind != "moved":
             extras.append(
                 f"date {french_long_date(before.day)} → {french_long_date(after.day)}"
+            )
+        if "resource_contact" in delta.changed_fields:
+            old_contact = before.resource_contact
+            new_contact = after.resource_contact
+            extras.append(
+                "coordonnées ressource "
+                f"{(old_contact.email if old_contact is not None else None) or '—'} → "
+                f"{(new_contact.email if new_contact is not None else None) or '—'}"
             )
         if "hours" in delta.changed_fields:
             extras.append(
