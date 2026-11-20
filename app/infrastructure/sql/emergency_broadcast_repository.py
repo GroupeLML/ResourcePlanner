@@ -287,12 +287,9 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
     def delete_acknowledgments_for_expired(
         self,
         *,
-        broadcast_ids: Sequence[str],
+        ended_before: datetime,
         limit: int = 1000,
     ) -> int:
-        ids = tuple(dict.fromkeys(str(value) for value in broadcast_ids if value))
-        if not ids:
-            return 0
         bounded = max(1, min(int(limit), 1000))
         with self._factory() as session:
             keys = tuple(
@@ -301,8 +298,20 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                         EmergencyBroadcastAcknowledgment.broadcast_id,
                         EmergencyBroadcastAcknowledgment.user_id,
                     )
+                    .join(
+                        EmergencyBroadcast,
+                        EmergencyBroadcast.id
+                        == EmergencyBroadcastAcknowledgment.broadcast_id,
+                    )
                     .where(
-                        EmergencyBroadcastAcknowledgment.broadcast_id.in_(ids)
+                        EmergencyBroadcast.state == BROADCAST_ENDED,
+                        EmergencyBroadcast.ended_at.is_not(None),
+                        EmergencyBroadcast.ended_at < ended_before,
+                    )
+                    .order_by(
+                        EmergencyBroadcast.ended_at,
+                        EmergencyBroadcastAcknowledgment.broadcast_id,
+                        EmergencyBroadcastAcknowledgment.user_id,
                     )
                     .limit(bounded)
                 )
@@ -314,7 +323,14 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                     tuple_(
                         EmergencyBroadcastAcknowledgment.broadcast_id,
                         EmergencyBroadcastAcknowledgment.user_id,
-                    ).in_(keys)
+                    ).in_(keys),
+                    EmergencyBroadcastAcknowledgment.broadcast_id.in_(
+                        select(EmergencyBroadcast.id).where(
+                            EmergencyBroadcast.state == BROADCAST_ENDED,
+                            EmergencyBroadcast.ended_at.is_not(None),
+                            EmergencyBroadcast.ended_at < ended_before,
+                        )
+                    ),
                 )
             )
             session.commit()
@@ -355,6 +371,12 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                     EmergencyBroadcast.state == BROADCAST_ENDED,
                     EmergencyBroadcast.ended_at.is_not(None),
                     EmergencyBroadcast.ended_at < ended_before,
+                    ~select(EmergencyBroadcastAcknowledgment.broadcast_id)
+                    .where(
+                        EmergencyBroadcastAcknowledgment.broadcast_id
+                        == EmergencyBroadcast.id
+                    )
+                    .exists(),
                 )
             )
             session.commit()
