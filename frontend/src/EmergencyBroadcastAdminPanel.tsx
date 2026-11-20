@@ -77,12 +77,22 @@ export default function EmergencyBroadcastAdminPanel() {
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
     try {
-      await Promise.all([refreshStatus(signal), refreshHistory(signal)]);
-      setError(null);
-    } catch (reason) {
-      if (reason instanceof DOMException && reason.name === "AbortError") return;
-      setStatusStale(true);
-      setError(message(reason, "Impossible de confirmer l’état courant des diffusions."));
+      const [statusResult, historyResult] = await Promise.allSettled([
+        refreshStatus(signal),
+        refreshHistory(signal),
+      ]);
+      if (statusResult.status === "rejected") setStatusStale(true);
+      if (historyResult.status === "rejected") setHistoryStale(true);
+      const failure = statusResult.status === "rejected"
+        ? statusResult.reason
+        : historyResult.status === "rejected"
+          ? historyResult.reason
+          : null;
+      if (failure instanceof DOMException && failure.name === "AbortError") return;
+      setError(failure ? message(
+        failure,
+        "Impossible de confirmer toutes les données de diffusion.",
+      ) : null);
     } finally {
       setRefreshing(false);
     }
