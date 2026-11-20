@@ -2499,6 +2499,29 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "v4"):
             serialize_project_projection(direct_old)
 
+        task = current.projects[0].days[0].tasks[0]
+        extra_union = replace(
+            current,
+            projects=(
+                replace(
+                    current.projects[0],
+                    days=(
+                        replace(
+                            current.projects[0].days[0],
+                            tasks=(
+                                replace(
+                                    task,
+                                    task_ids=(*task.task_ids, "TASK-EXTRA"),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "Identités tâche v4"):
+            serialize_project_projection(extra_union)
+
     def test_889_shift_delta_only_renders_changed_rows(self) -> None:
         baseline_specs = (
             {"shift_id": "S-JOHN", "resource_id": "R-JOHN", "resource_name": "John"},
