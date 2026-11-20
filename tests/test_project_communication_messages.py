@@ -251,14 +251,20 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertIn("Projet &lt;Alpha&gt; &amp; Beta", draft.body_html)
         self.assertIn("Alice &lt;Tech&gt;", draft.body_html)
         self.assertNotIn("Projet <Alpha>", draft.body_html)
-        reviewed = draft.body.replace(
-            "Projet <Alpha> & Beta",
-            "Projet <Gamma> & Delta",
+        reviewed = (
+            "Bonjour <équipe> & partenaires\n\n"
+            "Texte entièrement libre.\n"
+            "<script>alert('x')</script>"
         )
         reviewed_html = render_project_review_html(reviewed)
-        self.assertIn("Projet &lt;Gamma&gt; &amp; Delta", reviewed_html)
-        self.assertIn("<strong><u>Responsable projet</u></strong>", reviewed_html)
+        self.assertIn("Bonjour &lt;équipe&gt; &amp; partenaires", reviewed_html)
+        self.assertIn("Texte entièrement libre.", reviewed_html)
+        self.assertIn("&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;", reviewed_html)
+        self.assertNotIn("<script>", reviewed_html)
+        self.assertNotIn("<strong><u>Responsable projet</u></strong>", reviewed_html)
         self.assertTrue(reviewed_html.endswith("</div>"))
+        with self.assertRaisesRegex(ValueError, "ne peut pas être vide"):
+            render_project_review_html("   \n")
 
     def test_855_capture_authoritative_order_emphasis_footer_and_shift_rules(self) -> None:
         asset = ProjectCommunicationAsset(

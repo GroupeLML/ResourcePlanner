@@ -3081,110 +3081,229 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         )
 
 
-    def test_855_manual_review_regenerates_html_and_rejects_client_html_authority(self) -> None:
+    def test_881_free_review_persists_and_delivers_exact_server_rendered_content(self) -> None:
         with TemporaryDirectory() as directory:
             database_url = self._database(directory)
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
             app = create_api_app(
                 database_url,
                 auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
+                smtp_client=smtp,
             )
             with TestClient(app) as client:
-                preview = client.get(
+                preview_response = client.get(
                     "/api/v1/communications/project-preview?week_start=2026-09-23"
                 )
-                self.assertEqual(preview.status_code, 200, preview.text)
-                draft = preview.json()["drafts"][0]
+                self.assertEqual(preview_response.status_code, 200, preview_response.text)
+                preview = preview_response.json()
+                draft = preview["drafts"][0]
                 original_fingerprint = draft["content_fingerprint"]
-
-                edited = draft["body"].replace(
-                    "Chargé de projet Démo",
-                    "Chargé de projet <sécurisé> & conservé",
+                expected_to = tuple(
+                    row["email"] for row in draft["to_recipients"] if row.get("email")
                 )
-                prepared = client.post(
+                expected_cc = tuple(
+                    row["email"] for row in draft["cc_recipients"] if row.get("email")
+                )
+
+                edited_subject = "Coordination libre <#881> & équipe"
+                edited_body = (
+                    "Bonjour équipe,\n\n"
+                    "Paragraphe ajouté par la coordonnatrice.\n"
+                    "Libellé personnalisé : nouvelle formulation.\n"
+                    "Le texte généré a été remplacé librement.\n\n"
+                    "<script>alert('x')</script> & contenu sécurisé"
+                )
+                self.assertNotIn("Responsable projet", edited_body)
+                self.assertNotIn("Description", edited_body)
+                self.assertNotIn("Contact chantier", edited_body)
+                self.assertNotIn("Horaire", edited_body)
+
+                html_preview = client.post(
+                    "/api/v1/communications/project-preview-html",
+                    json={"body": edited_body},
+                )
+                self.assertEqual(html_preview.status_code, 200, html_preview.text)
+                edited_html = html_preview.json()["body_html"]
+                self.assertIn("Paragraphe ajouté par la coordonnatrice.", edited_html)
+                self.assertIn(
+                    "Libellé personnalisé : nouvelle formulation.",
+                    edited_html,
+                )
+                self.assertIn(
+                    "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt; &amp; contenu sécurisé",
+                    edited_html,
+                )
+                self.assertNotIn("<script>", edited_html)
+
+                rejected_html_authority = client.post(
+                    "/api/v1/communications/project-preview-html",
+                    json={
+                        "body": edited_body,
+                        "body_html": "<script>client authority</script>",
+                    },
+                )
+                self.assertEqual(
+                    rejected_html_authority.status_code,
+                    422,
+                    rejected_html_authority.text,
+                )
+
+                for field, value in (("subject", "   "), ("body", "   ")):
+                    review = {
+                        "message_key": draft["message_key"],
+                        "include": True,
+                        "subject": edited_subject,
+                        "body": edited_body,
+                    }
+                    review[field] = value
+                    blank = client.post(
+                        "/api/v1/communications/project-batches",
+                        json={
+                            "week_start": "2026-09-23",
+                            "expected_fingerprint": preview["snapshot_fingerprint"],
+                            "reviews": [review],
+                        },
+                    )
+                    self.assertEqual(blank.status_code, 422, blank.text)
+                    self.assertEqual(
+                        blank.json()["error"]["code"],
+                        "project_communication_message_blank",
+                    )
+
+                stale = client.post(
                     "/api/v1/communications/project-batches",
                     json={
                         "week_start": "2026-09-23",
-                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
+                        "expected_fingerprint": "0" * 64,
                         "reviews": [
                             {
                                 "message_key": draft["message_key"],
                                 "include": True,
-                                "subject": draft["subject"],
-                                "body": edited,
+                                "subject": edited_subject,
+                                "body": edited_body,
+                            }
+                        ],
+                    },
+                )
+                self.assertEqual(stale.status_code, 409, stale.text)
+                self.assertEqual(
+                    stale.json()["error"]["code"],
+                    "project_communication_preview_stale",
+                )
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview["snapshot_fingerprint"],
+                        "reviews": [
+                            {
+                                "message_key": draft["message_key"],
+                                "include": True,
+                                "subject": edited_subject,
+                                "body": edited_body,
                             }
                         ],
                     },
                 )
                 self.assertEqual(prepared.status_code, 201, prepared.text)
-                message = prepared.json()["messages"][0]
-                self.assertEqual(message["body"], edited)
-                self.assertIn(
-                    "Chargé de projet &lt;sécurisé&gt; &amp; conservé",
-                    message["body_html"],
-                )
-                self.assertNotIn("<sécurisé>", message["body_html"])
-                self.assertIn(
-                    "<strong><u>Responsable projet</u></strong>",
-                    message["body_html"],
-                )
+                batch = prepared.json()
+                message = batch["messages"][0]
+                self.assertEqual(message["project_id"], draft["project_id"])
+                self.assertEqual(tuple(message["to_emails"]), expected_to)
+                self.assertEqual(tuple(message["cc_emails"]), expected_cc)
+                self.assertEqual(message["subject"], edited_subject)
+                self.assertEqual(message["body"], edited_body)
+                self.assertEqual(message["body_html"], edited_html)
                 self.assertNotEqual(message["content_fingerprint"], original_fingerprint)
 
-                missing_footer = client.post(
-                    "/api/v1/communications/project-batches",
-                    json={
-                        "week_start": "2026-09-23",
-                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
-                        "reviews": [
-                            {
-                                "message_key": draft["message_key"],
-                                "include": True,
-                                "body": draft["body"].rsplit("\n", 2)[0],
-                            }
-                        ],
-                    },
+                batch_id = batch["id"]
+                approved = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/approve"
                 )
-                self.assertEqual(missing_footer.status_code, 422, missing_footer.text)
-                self.assertEqual(
-                    missing_footer.json()["error"]["code"],
-                    "project_communication_review_template_invalid",
+                self.assertEqual(approved.status_code, 200, approved.text)
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
                 )
+                self.assertEqual(created.status_code, 200, created.text)
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
 
-                missing_bullet = client.post(
-                    "/api/v1/communications/project-batches",
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
                     json={
-                        "week_start": "2026-09-23",
-                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
-                        "reviews": [
-                            {
-                                "message_key": draft["message_key"],
-                                "include": True,
-                                "body": draft["body"].replace("• ", "", 1),
-                            }
-                        ],
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
                     },
                 )
-                self.assertEqual(missing_bullet.status_code, 422, missing_bullet.text)
-                self.assertEqual(
-                    missing_bullet.json()["error"]["code"],
-                    "project_communication_review_template_invalid",
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
                 )
+                self.assertEqual(sent.status_code, 200, sent.text)
 
-                rejected = client.post(
-                    "/api/v1/communications/project-batches",
-                    json={
-                        "week_start": "2026-09-23",
-                        "expected_fingerprint": preview.json()["snapshot_fingerprint"],
-                        "reviews": [
-                            {
-                                "message_key": draft["message_key"],
-                                "include": True,
-                                "body": draft["body"],
-                                "body_html": "<script>client authority</script>",
-                            }
-                        ],
-                    },
-                )
-                self.assertEqual(rejected.status_code, 422, rejected.text)
+            self.assertEqual(transport.create_calls, 1)
+            self.assertEqual(len(transport.messages), 1)
+            graph_message = transport.messages[0]
+            self.assertEqual(graph_message.subject, edited_subject)
+            self.assertEqual(graph_message.body, edited_body)
+            self.assertEqual(graph_message.body_html, edited_html)
+            self.assertEqual(graph_message.to_emails, expected_to)
+            self.assertEqual(graph_message.cc_emails, expected_cc)
+
+            mime = BytesParser(policy=policy.default).parsebytes(downloaded.content)
+            self.assertEqual(str(mime["Subject"]), edited_subject)
+            parts = list(mime.iter_parts())
+            self.assertEqual(
+                parts[0].get_content().replace("\r\n", "\n").rstrip("\n"),
+                edited_body,
+            )
+            self.assertEqual(parts[1].get_content().strip(), edited_html)
+
+            self.assertEqual(smtp.attempt_subjects, [edited_subject])
+            self.assertEqual(smtp.attempt_bodies, [edited_body])
+            self.assertEqual(smtp.attempt_html, [edited_html])
+            self.assertEqual(smtp.attempt_to, [expected_to])
+            self.assertEqual(smtp.attempt_cc, [expected_cc])
+
+            engine = create_sql_engine(database_url)
+            factory = create_session_factory(engine)
+            try:
+                with factory() as session:
+                    persisted = session.get(CommunicationBatchRow, batch_id)
+                    assert persisted is not None
+                    self.assertEqual(persisted.snapshot_fingerprint, preview["snapshot_fingerprint"])
+                    self.assertIsNotNone(persisted.project_snapshot_json)
+                    snapshot = deserialize_project_projection(
+                        persisted.project_snapshot_json or ""
+                    )
+                    self.assertEqual(snapshot.request_provenance_version, 3)
+                    self.assertEqual(
+                        snapshot.projects[0].project_id,
+                        draft["project_id"],
+                    )
+                    request_ids = {
+                        assignment.workforce_request_id
+                        for day in snapshot.projects[0].days
+                        for task in day.tasks
+                        for assignment in task.request_assignments
+                    }
+                    self.assertIn("D1", request_ids)
+            finally:
+                engine.dispose()
 
     def test_871_server_html_preview_renders_review_and_rejects_client_html(self) -> None:
         with TemporaryDirectory() as directory:
@@ -3209,9 +3328,10 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(rendered.status_code, 200, rendered.text)
                 html = rendered.json()["body_html"]
-                self.assertIn("<strong><u>Responsable projet</u></strong>", html)
-                self.assertIn("<strong><u>Description</u></strong>", html)
+                self.assertIn("Responsable projet", html)
+                self.assertIn("Description", html)
                 self.assertIn("Installation approuvée révisée", html)
+                self.assertNotIn("<strong><u>Responsable projet</u></strong>", html)
 
                 rejected = client.post(
                     "/api/v1/communications/project-preview-html",

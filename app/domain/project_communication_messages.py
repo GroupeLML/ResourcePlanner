@@ -808,16 +808,6 @@ PROJECT_RESPONSIBILITY_FOOTER = (
     "sur votre projet pour assurer une bonne coordination de chantier et les "
     "informer de tout détail supplémentaire nécessaire."
 )
-_SECTION_LABELS = (
-    "Responsable projet",
-    "Description",
-    "Contact chantier",
-    "Horaire",
-)
-_DATE_LINE_PATTERN = re.compile(
-    r"^(Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche) le "
-    r"\d{1,2} [A-Za-zÀ-ÿ]+ \d{4}$"
-)
 _EMPLOYEE_NUMBER_PREFIX = re.compile(r"^\s*\d+\s*[-–—]\s*(.+)$")
 
 
@@ -1282,65 +1272,28 @@ def _render_project_html(message: ProjectMessageSemantic) -> str:
     return "".join(rendered)
 
 
-def _semantic_from_review_body(body: str) -> ProjectMessageSemantic:
-    raw_lines = str(body).splitlines()
-    nonempty = [(index, value) for index, value in enumerate(raw_lines) if value.strip()]
-    if not nonempty:
-        raise ValueError("Le corps révisé du courriel projet ne peut pas être vide.")
-    if nonempty[-1][1].strip() != PROJECT_RESPONSIBILITY_FOOTER:
-        raise ValueError(
-            "Le message obligatoire de responsabilité doit rester intact à la fin du courriel."
-        )
-
-    section_positions: list[int] = []
-    for label in _SECTION_LABELS:
-        positions = [
-            index
-            for index, value in enumerate(raw_lines)
-            if value.strip() == label
-        ]
-        if len(positions) != 1:
-            raise ValueError(
-                f"La section obligatoire « {label} » doit apparaître exactement une fois."
-            )
-        section_positions.append(positions[0])
-    if section_positions != sorted(section_positions):
-        raise ValueError("L'ordre obligatoire des sections du courriel projet a été modifié.")
-    if nonempty[0][0] >= section_positions[0]:
-        raise ValueError("L'en-tête projet obligatoire est manquant.")
-
-    semantic: list[ProjectMessageLine] = []
-    first_nonempty = nonempty[0][0]
-    for index, value in enumerate(raw_lines):
-        stripped = value.strip()
-        if not stripped:
-            semantic.append(_line("blank"))
-        elif index == first_nonempty:
-            semantic.append(_line("project_header", stripped))
-        elif stripped in _SECTION_LABELS:
-            semantic.append(_line("section", stripped))
-        elif stripped == PROJECT_RESPONSIBILITY_FOOTER:
-            semantic.append(_line("footer", stripped))
-        elif _DATE_LINE_PATTERN.match(stripped):
-            semantic.append(_line("date", stripped))
-        elif stripped.startswith("• "):
-            semantic.append(_line("bullet", stripped[2:].strip()))
-        else:
-            semantic.append(_line("text", stripped))
-    return ProjectMessageSemantic(lines=tuple(semantic))
-
-
-def project_review_structure_signature(body: str) -> tuple[str, ...]:
-    """Return the template structure that a manual review is allowed to preserve."""
-
-    return tuple(line.kind for line in _semantic_from_review_body(body).lines)
-
-
 def render_project_review_html(body: str) -> str:
-    """Regenerate safe HTML while preserving the mandatory project template."""
+    """Regenerate safe HTML from coordinator-authoritative plain text."""
 
-    return _render_project_html(_semantic_from_review_body(body))
+    raw = str(body)
+    if not raw.strip():
+        raise ValueError("Le corps révisé du courriel projet ne peut pas être vide.")
 
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+    rendered = [
+        '<div style="font-family:Arial,Helvetica,sans-serif;line-height:1.25;max-width:640px;">'
+    ]
+    for line in normalized.split("\n"):
+        if line == "":
+            rendered.append(
+                '<div style="height:12px;line-height:12px;">&nbsp;</div>'
+            )
+        else:
+            rendered.append(
+                f'<div style="margin:0;white-space:pre-wrap;">{escape(line)}</div>'
+            )
+    rendered.append("</div>")
+    return "".join(rendered)
 
 def _subject(
     project: ProjectCommunicationProject,

@@ -25,7 +25,6 @@ from ..domain.project_communication_messages import (
     build_project_confirmation_batch,
     build_project_delta_batch,
     project_projection_fingerprint,
-    project_review_structure_signature,
     render_project_review_html,
 )
 from .communications import (
@@ -380,17 +379,17 @@ class ProjectCommunicationService:
             return draft, True
         subject = draft.subject if review.subject is None else review.subject.strip()
         body = draft.body if review.body is None else review.body.strip()
+        included = bool(review.include)
+        if included and (not subject or not body):
+            raise ApplicationValidationError(
+                "Le sujet et le corps sont requis pour un message inclus.",
+                code="project_communication_message_blank",
+                context={"message_key": draft.message_key},
+            )
         try:
             if body == draft.body:
                 body_html = draft.body_html
             else:
-                if (
-                    project_review_structure_signature(body)
-                    != project_review_structure_signature(draft.body)
-                ):
-                    raise ValueError(
-                        "La structure obligatoire du courriel projet ne peut pas être modifiée."
-                    )
                 body_html = render_project_review_html(body)
         except ValueError as exc:
             raise ApplicationValidationError(
@@ -402,7 +401,7 @@ class ProjectCommunicationService:
             and body == draft.body
             and body_html == draft.body_html
         ):
-            return draft, bool(review.include)
+            return draft, included
         content_fingerprint = hashlib.sha256(
             (
                 draft.content_fingerprint
@@ -422,7 +421,7 @@ class ProjectCommunicationService:
                 body_html=body_html,
                 content_fingerprint=content_fingerprint,
             ),
-            bool(review.include),
+            included,
         )
 
     def prepare_project_batch(
