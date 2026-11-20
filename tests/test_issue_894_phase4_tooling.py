@@ -50,6 +50,7 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("SET XACT_ABORT {mode}", function_source)
         self.assertIn('"#rp894_xact_off"', function_source)
         self.assertIn('"#rp894_xact_on"', function_source)
+        self.assertIn("DROP TABLE IF EXISTS {table_name}", function_source)
         self.assertIn("CREATE TABLE {table_name}", function_source)
 
     def test_ack_waves_cover_100_250_and_250_plus_63_duplicates(self) -> None:
