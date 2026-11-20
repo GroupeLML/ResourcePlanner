@@ -91,6 +91,9 @@ export default function CommunicationsPage() {
     () => drafts.some((draft) => draft.include && draft.htmlPreviewStale),
     [drafts],
   );
+  const hasProjectBatch = batches.some(
+    (batch) => batch.model_version === "project_v2",
+  );
   const hasCommunicatedBaseline = preview?.has_communicated_baseline ?? batches.some(
     (batch) => batch.status === "COMMUNICATED" && batch.model_version === "project_v2",
   );
@@ -383,7 +386,9 @@ export default function CommunicationsPage() {
             </button>
             {!hasCommunicatedBaseline && (
               <small>
-                Aucune communication de référence n’existe encore pour cette semaine.
+                {hasProjectBatch
+                  ? "Un lot existe pour cette semaine, mais aucune communication de référence n’est encore entièrement communiquée."
+                  : "Aucune communication de référence n’existe encore pour cette semaine."}
               </small>
             )}
           </div>
