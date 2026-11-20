@@ -159,7 +159,7 @@ export function createEmergencyBroadcast(
     confirmed: true;
   },
 ): Promise<{ broadcast: EmergencyBroadcastAdminRecord }> {
-  return requestJson("/api/v1/admin/runtime/broadcasts", {
+  return requestJson<{ broadcast: EmergencyBroadcastAdminRecord }>("/api/v1/admin/runtime/broadcasts", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -168,7 +168,7 @@ export function createEmergencyBroadcast(
 export function endEmergencyBroadcast(
   broadcastId: string,
 ): Promise<{ broadcast: EmergencyBroadcastAdminRecord }> {
-  return requestJson(
+  return requestJson<{ broadcast: EmergencyBroadcastAdminRecord }>(
     `/api/v1/admin/runtime/broadcasts/${encodeURIComponent(broadcastId)}/end`,
     { method: "POST", body: JSON.stringify({}) },
   );
@@ -177,7 +177,7 @@ export function endEmergencyBroadcast(
 export function getEmergencyAdminStatus(
   signal?: AbortSignal,
 ): Promise<EmergencyAdminStatus> {
-  return requestJson("/api/v1/admin/runtime/status", { method: "GET", signal });
+  return requestJson<EmergencyAdminStatus>("/api/v1/admin/runtime/status", { method: "GET", signal });
 }
 
 export function getEmergencyBroadcastHistory(
@@ -189,7 +189,7 @@ export function getEmergencyBroadcastHistory(
     cursor: String(cursor),
     limit: String(limit),
   });
-  return requestJson(
+  return requestJson<EmergencyBroadcastHistoryPage>(
     `/api/v1/admin/runtime/broadcasts?${query.toString()}`,
     { method: "GET", signal },
   );
@@ -205,7 +205,7 @@ export function getEmergencyAcknowledgmentHistory(
     cursor: String(cursor),
     limit: String(limit),
   });
-  return requestJson(
+  return requestJson<EmergencyAcknowledgmentHistoryPage>(
     `/api/v1/admin/runtime/broadcasts/${encodeURIComponent(broadcastId)}/acknowledgments?${query.toString()}`,
     { method: "GET", signal },
   );
