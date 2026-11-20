@@ -243,10 +243,11 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         _private_no_store(response)
         records = await asyncio.to_thread(
             runtime.repository.list_history,
-            limit=min(100, limit + cursor),
+            limit=limit + 1,
+            offset=cursor,
         )
-        page = records[cursor : cursor + limit]
-        next_cursor = cursor + len(page) if cursor + len(page) < len(records) else None
+        page = records[:limit]
+        next_cursor = cursor + limit if len(records) > limit else None
         return {
             "items": [_broadcast_payload(record) for record in page],
             "next_cursor": next_cursor,
@@ -263,14 +264,15 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         records = await asyncio.to_thread(
             runtime.repository.list_acknowledgments,
             broadcast_id=broadcast_id,
-            limit=min(250, limit + cursor),
+            limit=limit + 1,
+            offset=cursor,
         )
-        page = records[cursor : cursor + limit]
+        page = records[:limit]
         labels = await asyncio.to_thread(
             runtime.repository.user_labels,
             tuple(record.user_id for record in page),
         )
-        next_cursor = cursor + len(page) if cursor + len(page) < len(records) else None
+        next_cursor = cursor + limit if len(records) > limit else None
         return {
             "items": [
                 {
