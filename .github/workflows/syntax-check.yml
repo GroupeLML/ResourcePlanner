@@ -791,7 +791,12 @@ jobs:
 
           docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets:ro"             -v "$evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py rollback-smoke               --credentials /secrets/sessions.json               --output /evidence/rollback-smoke.json
 
-          docker inspect backend frontend             > "$evidence/rollback-runtime-inspect.json"
+          {
+            docker inspect backend --format 'backend image={{.Config.Image}} image_id={{.Image}} status={{.State.Status}}'
+            docker inspect frontend --format 'frontend image={{.Config.Image}} image_id={{.Image}} status={{.State.Status}}'
+            docker image inspect "$rollback_backend" --format 'backend_revision={{ index .Config.Labels "org.opencontainers.image.revision" }}'
+            docker image inspect "$rollback_frontend" --format 'frontend_revision={{ index .Config.Labels "org.opencontainers.image.revision" }}'
+          } > "$evidence/rollback-runtime-provenance.txt"
 
       - name: Upload Phase 4 evidence
         if: always()
