@@ -94,6 +94,9 @@ jobs:
           tools/check_web_runtime.py
           tools/check_installed_web.py
           tools/smoke_running_web.py
+          tools/issue_894_phase4_server.py
+          tools/issue_894_phase4_load.py
+          tools/issue_894_phase4_stats.py
           tools/cutover_inventory.py
       - name: Guard Web/SQL boundaries from V1 imports
         run: python tools/cutover_inventory.py --check-boundaries
@@ -649,6 +652,7 @@ jobs:
           set -euo pipefail
           docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets"             -w /workspace             -e PYTHONPATH=/app:/workspace             -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py seed               --database-url "$RP894_DATABASE_URL"               --users 500               --output /secrets/sessions.json
 
+          sh -n tools/build_issue_894_rollback_bundle.sh
           docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_issue_894_phase4_capacity               tests.test_issue_894_phase4_tooling
 
       - name: Start feature stack and prove real restart durability
