@@ -2346,11 +2346,17 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "?week_start=2026-09-23"
                 )
                 self.assertEqual(full_again.status_code, 200, full_again.text)
+                full_payload = full_again.json()
                 self.assertEqual(
-                    full_again.json()["mode"],
+                    full_payload["mode"],
                     "project_confirmation",
                 )
-                self.assertIn("6 h", full_again.json()["drafts"][0]["body"])
+                self.assertEqual(len(full_payload["drafts"]), 1)
+                self.assertEqual(full_payload["drafts"][0]["project_id"], "P1")
+                full_body = full_payload["drafts"][0]["body"]
+                self.assertIn("Technicien ressource", full_body)
+                self.assertIn("Ressource sans utilisateur", full_body)
+                self.assertNotIn("Modifié —", full_body)
 
                 delta = client.get(
                     "/api/v1/communications/project-preview"
@@ -4591,7 +4597,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["week_start"], "2026-09-21")
         self.assertEqual(payload["week_end"], "2026-09-27")
-        self.assertEqual(payload["request_provenance_version"], 3)
+        self.assertEqual(payload["request_provenance_version"], 4)
         self.assertTrue(payload["request_provenance_complete"])
         assignment = payload["projects"][0]["days"][0]["tasks"][0][
             "request_assignments"
@@ -4600,6 +4606,12 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
         self.assertIn("standard_hours", assignment)
         self.assertIn("include_project_manager_contact_phone", assignment)
         self.assertIn("project_manager_contact_phone", assignment)
+        self.assertIn("confirmation", assignment)
+        self.assertIn("allocation_type", assignment)
+        self.assertIn("outside_schedule", assignment)
+        self.assertIn("task_id", assignment)
+        self.assertIn("task_code", assignment)
+        self.assertIn("task_description", assignment)
         self.assertEqual(payload["projects"][0]["project_number"], "1000")
         self.assertEqual(
             payload["projects"][0]["days"][0]["tasks"][0]["task_description"],
