@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 import unittest
 
-from sqlalchemy import ForeignKeyConstraint, create_engine, inspect
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, create_engine, inspect
 from sqlalchemy.dialects import mssql, postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
