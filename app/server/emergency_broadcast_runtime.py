@@ -27,6 +27,7 @@ T = TypeVar("T")
 @dataclass(frozen=True, slots=True)
 class PresenceObservation:
     user_id: str
+    display_name: str
     last_seen_at: datetime
     active: bool
 
@@ -73,7 +74,7 @@ class PresenceRegistry:
         self._monotonic = monotonic
         self._utc_now = utc_now or (lambda: datetime.now(timezone.utc))
         self._lock = threading.Lock()
-        self._observed: dict[str, tuple[float, datetime]] = {}
+        self._observed: dict[str, tuple[float, datetime, str]] = {}
         self._started_monotonic = monotonic()
         self._observation_epoch = str(uuid4())
         self._last_overflow_monotonic: float | None = None
@@ -85,15 +86,16 @@ class PresenceRegistry:
     def _prune_locked(self, now_mono: float) -> int:
         expired = [
             user_id
-            for user_id, (seen_mono, _seen_at) in self._observed.items()
+            for user_id, (seen_mono, _seen_at, _display_name) in self._observed.items()
             if now_mono - seen_mono > self.RETENTION_SECONDS
         ]
         for user_id in expired:
             self._observed.pop(user_id, None)
         return len(expired)
 
-    def observe(self, user_id: str) -> bool:
+    def observe(self, user_id: str, *, display_name: str = "") -> bool:
         value = str(user_id or "").strip()
+        label = str(display_name or "").strip()[:255]
         if not value:
             return False
         now_mono = self._monotonic()
@@ -101,7 +103,11 @@ class PresenceRegistry:
         with self._lock:
             existing = self._observed.get(value)
             if existing is not None:
-                self._observed[value] = (max(existing[0], now_mono), max(existing[1], now_at))
+                self._observed[value] = (
+                    max(existing[0], now_mono),
+                    max(existing[1], now_at),
+                    label or existing[2],
+                )
                 return True
             if len(self._observed) >= self.CAPACITY:
                 self._prune_locked(now_mono)
@@ -109,7 +115,7 @@ class PresenceRegistry:
                 inactive = sorted(
                     (
                         (seen_mono, user_id_value)
-                        for user_id_value, (seen_mono, _seen_at) in self._observed.items()
+                        for user_id_value, (seen_mono, _seen_at, _display_name) in self._observed.items()
                         if now_mono - seen_mono > self.ACTIVE_SECONDS
                     )
                 )
@@ -118,7 +124,7 @@ class PresenceRegistry:
             if len(self._observed) >= self.CAPACITY:
                 self._last_overflow_monotonic = now_mono
                 return False
-            self._observed[value] = (now_mono, now_at)
+            self._observed[value] = (now_mono, now_at, label)
             return True
 
     def prune(self) -> int:
@@ -140,10 +146,11 @@ class PresenceRegistry:
             observations = tuple(
                 PresenceObservation(
                     user_id=user_id,
+                    display_name=display_name,
                     last_seen_at=seen_at,
                     active=now_mono - seen_mono <= self.ACTIVE_SECONDS,
                 )
-                for user_id, (seen_mono, seen_at) in sorted(self._observed.items())
+                for user_id, (seen_mono, seen_at, display_name) in sorted(self._observed.items())
             )
         return PresenceSnapshot(
             generated_at=now_at,
@@ -177,8 +184,8 @@ class _ActiveBroadcastCache:
             if self._loaded and now < self._expires_at:
                 return self._value, True
             generation = self._generation
-            if self._loading:
-                self._condition.wait(timeout=self.TTL_SECONDS)
+            while self._loading:
+                self._condition.wait()
                 now = self._monotonic()
                 if self._loaded and now < self._expires_at:
                     return self._value, True
@@ -332,15 +339,10 @@ class EmergencyBroadcastRuntime:
         self.presence = PresenceRegistry()
         self._active_cache = _ActiveBroadcastCache()
         self._receipt_cache = _PositiveReceiptCache()
-        self.status_admission: AsyncAdmission[object] = AsyncAdmission(
-            max_in_flight=32,
-            max_waiting=64,
-            acquire_timeout_seconds=0.25,
-        )
-        self.command_admission: AsyncAdmission[object] = AsyncAdmission(
-            max_in_flight=32,
+        self.feature_admission: AsyncAdmission[object] = AsyncAdmission(
+            max_in_flight=6,
             max_waiting=512,
-            acquire_timeout_seconds=5.0,
+            acquire_timeout_seconds=3.0,
         )
         self._metrics_lock = threading.Lock()
         self._metrics = {
