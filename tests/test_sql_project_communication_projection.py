@@ -2372,9 +2372,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
     def test_889_delta_requires_communicated_baseline_and_full_preview_remains_available(self) -> None:
         with TemporaryDirectory() as directory:
+            transport = FakeProjectDraftTransport()
             app = create_api_app(
                 self._database(directory),
                 auth_resolver=TEST_ADMIN_AUTH_RESOLVER,
+                communication_transport=transport,
             )
             with TestClient(app) as client:
                 full = client.get(
@@ -2425,6 +2427,21 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     "?week_start=2026-09-23&mode=project_planning_change"
                 )
                 self.assertEqual(delta_after_approved.status_code, 422)
+
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{prepared.json()['id']}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertGreater(transport.create_calls, 0)
+                delta_after_graph = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(delta_after_graph.status_code, 422)
+                self.assertEqual(
+                    delta_after_graph.json()["error"]["code"],
+                    "project_communication_delta_baseline_missing",
+                )
 
     def test_889_delta_preparation_rejects_changed_reference_baseline(self) -> None:
         with TemporaryDirectory() as directory:
