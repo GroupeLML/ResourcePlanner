@@ -212,12 +212,12 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                 (broadcast_id, user_id),
             )
 
-    def acknowledge(
+    def acknowledge_with_outcome(
         self,
         *,
         broadcast_id: str,
         user_id: str,
-    ) -> EmergencyBroadcastAcknowledgmentRecord:
+    ) -> tuple[EmergencyBroadcastAcknowledgmentRecord, bool]:
         for attempt in range(3):
             row = EmergencyBroadcastAcknowledgment(
                 broadcast_id=broadcast_id,
@@ -228,7 +228,7 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                     session.add(row)
                     session.commit()
                     session.refresh(row)
-                    return _ack_record(row)
+                    return _ack_record(row), True
             except IntegrityError as exc:
                 if _is_duplicate_integrity(exc):
                     canonical = self._read_ack(
@@ -236,7 +236,7 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                         user_id=user_id,
                     )
                     if canonical is not None:
-                        return _ack_record(canonical)
+                        return _ack_record(canonical), False
                 if self.get(broadcast_id) is None:
                     raise ApplicationNotFoundError(
                         "Emergency broadcast was not found.",
@@ -253,6 +253,18 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                     ) from exc
                 time.sleep(random.uniform(0.025, 0.1))
         raise AssertionError("unreachable")
+
+    def acknowledge(
+        self,
+        *,
+        broadcast_id: str,
+        user_id: str,
+    ) -> EmergencyBroadcastAcknowledgmentRecord:
+        record, _created = self.acknowledge_with_outcome(
+            broadcast_id=broadcast_id,
+            user_id=user_id,
+        )
+        return record
 
     def get_acknowledgment(
         self,
