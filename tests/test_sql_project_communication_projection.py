@@ -2486,8 +2486,9 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
                 edited_subject = "Delta #889 approuvé"
                 edited_body = (
-                    "Modification validée par la coordonnatrice.\n\n"
-                    "Texte libre <sécurisé> & conservé."
+                    draft["body"]
+                    + "\n\nModification validée par la coordonnatrice."
+                    + "\nTexte libre <sécurisé> & conservé."
                 )
                 prepared = client.post(
                     "/api/v1/communications/project-batches",
@@ -2512,6 +2513,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 message = prepared.json()["messages"][0]
                 self.assertEqual(message["subject"], edited_subject)
                 self.assertEqual(message["body"], edited_body)
+                self.assertIn("heures 8 h → 6 h", message["body"])
                 self.assertIn("&lt;sécurisé&gt; &amp; conservé.", message["body_html"])
                 expected_html = message["body_html"]
                 expected_to = tuple(message["to_emails"])
