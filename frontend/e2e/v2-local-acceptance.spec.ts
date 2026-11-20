@@ -1183,7 +1183,22 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await page.getByRole("button", { name: "Générer la prévisualisation" }).click();
     await expect(draft.locator("textarea")).toHaveValue(/Chargé de projet Démo/);
     await expect(draft.locator("textarea")).toHaveValue(new RegExp(testPhone()));
-    await draft.locator(".draft-subject").fill("Confirmation E2E — P-251");
+    await draft.locator(".draft-subject").fill("Confirmation E2E — P-251 — révisée");
+    const freeBody = [
+      "Coordination libre #881",
+      "",
+      "Paragraphe ajouté par la coordonnatrice.",
+      "Libellé personnalisé : texte réécrit librement.",
+      "<script>not-html-authority</script> & texte sécurisé",
+    ].join("\n");
+    await draft.locator("textarea").fill(freeBody);
+    await expect(page.getByRole("button", { name: "Préparer le lot" })).toBeDisabled();
+    await draft.getByRole("button", { name: "Actualiser l’aperçu HTML" }).click();
+    await expect(draft.getByTestId("project-html-preview")).toContainText(
+      "<script>not-html-authority</script> & texte sécurisé",
+    );
+    await expect(draft.getByTestId("project-html-preview").locator("script")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Préparer le lot" })).toBeEnabled();
 
     const prepareRequestPromise = page.waitForRequest((request) => (
       request.method() === "POST"
@@ -1207,7 +1222,7 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(addGeneratorCc).not.toBeChecked();
 
     const batch = page.locator(".batch-row").first();
-    await expect(batch).toContainText("Sujet : Confirmation E2E — P-251");
+    await expect(batch).toContainText("Sujet : Confirmation E2E — P-251 — révisée");
     await expect(batch).toContainText(
       `To : ${testEmail("pm")}, ${testEmail("coord")}`,
     );
