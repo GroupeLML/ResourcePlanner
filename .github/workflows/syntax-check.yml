@@ -562,6 +562,7 @@ jobs:
           printf 'RP894_HEAD_SHA=%s\n' "$head_sha" >> "$GITHUB_ENV"
           printf 'RP894_BASE_SHA=%s\n' "$base_sha" >> "$GITHUB_ENV"
           mkdir -p "$GITHUB_WORKSPACE/phase4-evidence"
+          chmod 0777 "$GITHUB_WORKSPACE/phase4-evidence"
           printf 'head_sha=%s\nbase_sha=%s\nahead_behind=%s\n'             "$head_sha" "$base_sha" "$counts"             > "$GITHUB_WORKSPACE/phase4-evidence/git-state.txt"
 
       - name: Build exact-head feature images and verify provenance
@@ -585,7 +586,7 @@ jobs:
           password="RpA1_$(openssl rand -hex 16)"
           secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"
           mkdir -p "$secrets_dir"
-          chmod 700 "$secrets_dir"
+          chmod 0777 "$secrets_dir"
           sql_env_file="$secrets_dir/sql.env"
           printf 'MSSQL_SA_%s=%s\n' 'PASSWORD' "$password" > "$sql_env_file"
           chmod 600 "$sql_env_file"
@@ -661,6 +662,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/phase4-evidence/performance"
+          chmod 0777 "$GITHUB_WORKSPACE/phase4-evidence/performance"
           docker run -d             --name backend             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence/performance:/home/resourceplanner/.resourceplanner/logs"             -w /app             -e PYTHONPATH=/app             -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL"             -e RESOURCEPLANNER_HOST=0.0.0.0             -e RESOURCEPLANNER_PORT=8000             -e RESOURCEPLANNER_LOG_LEVEL=info             -e RESOURCEPLANNER_AUTH_MODE=oidc             -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration             -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-phase4             -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback             -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false             -e RESOURCEPLANNER_API_DOCS_ENABLED=false             -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false             resourceplanner-894-feature-backend             python /workspace/tools/issue_894_phase4_server.py
 
           for attempt in $(seq 1 60); do
