@@ -345,12 +345,12 @@ def build_project_communication_projection(
                 site_contact_phone=row.site_contact_phone,
                 include_project_manager_contact_phone=(
                     row.include_project_manager_contact_phone
-                    if request_provenance_version == 3
+                    if request_provenance_version in (3, 4)
                     else False
                 ),
                 project_manager_contact_phone=(
                     row.project_manager_contact_phone
-                    if request_provenance_version == 3
+                    if request_provenance_version in (3, 4)
                     else None
                 ),
                 assets=tuple(row.assets),
