@@ -2274,14 +2274,6 @@ def build_project_delta_batch(
                     week_start=current.week_start,
                     message_kind=MESSAGE_KIND_PLANNING_CHANGE,
                     cc_sources=cc_sources,
-                    to_sources=(
-                        project,
-                        *tuple(
-                            value
-                            for value in cc_sources
-                            if value is not project
-                        ),
-                    ),
                     change_kind=change.kind,
                 )
             )
