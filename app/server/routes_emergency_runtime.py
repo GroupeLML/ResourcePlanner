@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -230,7 +231,7 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
             ),
             "broadcast": _broadcast_payload(active),
             "users": users,
-            "diagnostics": runtime.diagnostics().__dict__,
+            "diagnostics": asdict(runtime.diagnostics()),
         }
 
     @router.get("/api/v1/admin/runtime/broadcasts")
