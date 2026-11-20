@@ -1437,11 +1437,17 @@ def _historical_shift_changes(
         new.site_contact_phone,
     ):
         changed.append("site_contact")
-    if _responsible_payload(before.operational_responsible) if before.operational_responsible is not None else None != (
+    old_responsible = (
+        _responsible_payload(before.operational_responsible)
+        if before.operational_responsible is not None
+        else None
+    )
+    new_responsible = (
         _responsible_payload(after.operational_responsible)
         if after.operational_responsible is not None
         else None
-    ):
+    )
+    if old_responsible != new_responsible:
         changed.append("responsible")
     if previous_version >= 2:
         if round(float(old.standard_hours or 0.0), 2) != round(
@@ -1715,7 +1721,7 @@ def _project_delta_semantic_message(
         lines.append(_line("text", value))
 
     lines.extend((_line("blank"), _line("section", "Modifications")))
-    if project_context_changed and not deltas:
+    if project_context_changed:
         lines.append(_line("bullet", "Informations du projet mises à jour."))
     for delta in deltas:
         lines.append(_line("bullet", _shift_delta_line(delta)))
@@ -2554,12 +2560,12 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 site_contact_phone=value.get("site_contact_phone"),
                                 include_project_manager_contact_phone=(
                                     value["include_project_manager_contact_phone"]
-                                    if provenance_version == 3
+                                    if provenance_version in (3, 4)
                                     else False
                                 ),
                                 project_manager_contact_phone=(
                                     value.get("project_manager_contact_phone")
-                                    if provenance_version == 3
+                                    if provenance_version in (3, 4)
                                     else None
                                 ),
                                 assets=tuple(
@@ -2574,7 +2580,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                     )
                                     for asset in (
                                         value["assets"]
-                                        if provenance_version in (2, 3)
+                                        if provenance_version in (2, 3, 4)
                                         else value.get("assets") or ()
                                     )
                                 ),
