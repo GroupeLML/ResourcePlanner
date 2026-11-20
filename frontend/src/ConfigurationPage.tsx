@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import ApprovalScopesPanel from "./ApprovalScopesPanel";
+import EmergencyBroadcastAdminPanel from "./EmergencyBroadcastAdminPanel";
 import ResourceClassesPanel from "./ResourceClassesPanel";
 import {
   SmtpConfiguration,
@@ -203,6 +204,8 @@ export default function ConfigurationPage() {
 
       {error && <div className="error-panel"><strong>Erreur</strong><span>{error}</span></div>}
       {notice && <div className="configuration-notice">{notice}</div>}
+
+      <EmergencyBroadcastAdminPanel />
 
       <ResourceClassesPanel />
 
