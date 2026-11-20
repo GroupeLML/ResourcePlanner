@@ -24,7 +24,8 @@ class Issue894Phase3ContractTests(unittest.TestCase):
         self.assertIn("csrfHeaders()", api)
         self.assertIn("/api/v1/runtime/status", api)
         self.assertIn("/acknowledgment", api)
-        self.assertNotIn("user_id:", api)
+        self.assertIn("body: JSON.stringify({})", api)
+        self.assertNotIn("JSON.stringify({ user_id", api)
 
     def test_provider_has_completion_polling_backoff_and_identity_guards(self) -> None:
         provider = (FRONTEND / "EmergencyBroadcastProvider.tsx").read_text(encoding="utf-8")
