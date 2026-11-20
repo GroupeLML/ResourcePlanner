@@ -55,19 +55,19 @@ def upgrade() -> None:
         sa.Column("state", sa.String(16), nullable=False),
         sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ended_by_user_id", sa.String(36), nullable=True),
-        sa.CheckConstraint("version = 1", name="ck_emergency_broadcasts_version_one"),
+        sa.CheckConstraint("version = 1", name="version_one"),
         sa.CheckConstraint(
             "state IN ('ACTIVE', 'ENDED')",
-            name="ck_emergency_broadcasts_state_valid",
+            name="state_valid",
         ),
         sa.CheckConstraint(
             "(state = 'ACTIVE' AND ended_at IS NULL AND ended_by_user_id IS NULL) "
             "OR (state = 'ENDED' AND ended_at IS NOT NULL AND ended_by_user_id IS NOT NULL)",
-            name="ck_emergency_broadcasts_end_fields_match_state",
+            name="end_fields_match_state",
         ),
         sa.CheckConstraint(
             "ended_at IS NULL OR ended_at >= activated_at",
-            name="ck_emergency_broadcasts_ended_after_activation",
+            name="ended_after_activation",
         ),
         sa.ForeignKeyConstraint(
             ["created_by_user_id"],
