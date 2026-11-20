@@ -334,6 +334,15 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         cursor: int = Query(default=0, ge=0),
     ) -> dict[str, object]:
         _private_no_store(response)
+        broadcast = await _bounded_db_read(runtime.service.get, broadcast_id)
+        if broadcast is None:
+            from ..application.errors import ApplicationNotFoundError
+
+            raise ApplicationNotFoundError(
+                "Emergency broadcast was not found.",
+                code="emergency_broadcast_not_found",
+                context={"broadcast_id": broadcast_id},
+            )
         records = await _bounded_db_read(
             runtime.repository.list_acknowledgments,
             broadcast_id=broadcast_id,
@@ -352,6 +361,10 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
                     "user_id": record.user_id,
                     "display_name": labels.get(record.user_id, ""),
                     "acknowledged_at": record.acknowledged_at,
+                    "late": (
+                        broadcast.ended_at is not None
+                        and record.acknowledged_at > broadcast.ended_at
+                    ),
                 }
                 for record in page
             ],
