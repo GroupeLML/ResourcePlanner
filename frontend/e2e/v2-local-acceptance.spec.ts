@@ -1123,6 +1123,27 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(managerPhoneInput).toBeDisabled();
 
     await navigateMain(page, "Communications");
+    await page.route("**/api/v1/communications/project-preview?**", async (route) => {
+      const response = await route.fetch();
+      const payload = await response.json() as {
+        drafts?: Array<{
+          project_id: string;
+          to_recipients: Array<{ display_name: string; email: string | null }>;
+        }>;
+      };
+      const projectDraft = payload.drafts?.find((row) => row.project_id === "P-251");
+      const managerRecipient = projectDraft?.to_recipients.find(
+        (recipient) => recipient.email === testEmail("pm"),
+      );
+      if (managerRecipient && !managerRecipient.display_name.startsWith("12345 - ")) {
+        managerRecipient.display_name = `12345 - ${managerRecipient.display_name}`;
+      }
+      await route.fulfill({
+        response,
+        contentType: "application/json",
+        body: JSON.stringify(payload),
+      });
+    });
     await expect(page.getByRole("heading", { name: "Communications de planification" })).toBeVisible();
     await expect(page.getByText("Destinataires gérés dans Utilisateurs")).toBeVisible();
     await expect(page.locator(".contact-row")).toHaveCount(0);
@@ -1168,6 +1189,8 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
       expect(toRecipientText).toContain(address.toLocaleLowerCase());
       expect(ccRecipientText).not.toContain(address.toLocaleLowerCase());
     }
+    expect(toRecipientText).not.toContain("12345 -");
+    expect(toRecipientText).toContain("chargé de projet démo");
     await expect(draft.getByText("Courriel manquant")).toHaveCount(0);
     await expect(draft.locator("textarea")).toHaveValue(/Chargé de projet Démo/);
     await expect(draft.locator("textarea")).not.toHaveValue(new RegExp(testPhone()));
@@ -1196,20 +1219,33 @@ test("V2 local acceptance path runs through React, Chromium, FastAPI and SQLite"
     await expect(draft.locator("textarea")).toHaveValue(/Chargé de projet Démo/);
     await expect(draft.locator("textarea")).toHaveValue(new RegExp(testPhone()));
     await draft.locator(".draft-subject").fill("Confirmation E2E — P-251 — révisée");
-    const freeBody = [
-      "Coordination libre #881",
-      "",
-      "Paragraphe ajouté par la coordonnatrice.",
-      "Libellé personnalisé : texte réécrit librement.",
-      "<script>not-html-authority</script> & texte sécurisé",
-    ].join("\n");
-    await draft.locator("textarea").fill(freeBody);
+    const generatedBody = await draft.locator("textarea").inputValue();
+    const generatedLines = generatedBody.split("\n");
+    const dateLine = generatedLines.find((line) =>
+      /^(Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche) le /.test(line),
+    );
+    expect(dateLine).toBeTruthy();
+    const structuredBody = generatedBody
+      .replace("Chargé de projet Démo", "Chargé de projet Démo — révisé")
+      + "\nTexte libre ajouté <équipe>."
+      + "\n• Puce ajoutée par la coordonnatrice"
+      + "\n<script>not-html-authority</script> & texte sécurisé";
+    await draft.locator("textarea").fill(structuredBody);
     await expect(page.getByRole("button", { name: "Préparer le lot" })).toBeDisabled();
     await draft.getByRole("button", { name: "Actualiser l’aperçu HTML" }).click();
-    await expect(draft.getByTestId("project-html-preview")).toContainText(
+    const htmlPreview = draft.getByTestId("project-html-preview");
+    await expect(htmlPreview.locator("strong").first()).toContainText("P-251");
+    await expect(htmlPreview.locator("strong u", { hasText: "Responsable projet" })).toBeVisible();
+    await expect(htmlPreview.locator("strong u", { hasText: "Description" })).toBeVisible();
+    await expect(htmlPreview.locator("strong u", { hasText: "Contact chantier" })).toBeVisible();
+    await expect(htmlPreview.locator("strong u", { hasText: "Horaire" })).toBeVisible();
+    await expect(htmlPreview.locator("strong", { hasText: dateLine! })).toBeVisible();
+    await expect(htmlPreview.locator("li", { hasText: "Puce ajoutée par la coordonnatrice" })).toBeVisible();
+    await expect(htmlPreview).toContainText("Texte libre ajouté <équipe>.");
+    await expect(htmlPreview).toContainText(
       "<script>not-html-authority</script> & texte sécurisé",
     );
-    await expect(draft.getByTestId("project-html-preview").locator("script")).toHaveCount(0);
+    await expect(htmlPreview.locator("script")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Préparer le lot" })).toBeEnabled();
 
     const prepareRequestPromise = page.waitForRequest((request) => (
