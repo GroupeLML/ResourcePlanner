@@ -784,7 +784,6 @@ def _to_recipients(
 ) -> tuple[ProjectCommunicationParticipant, ...]:
     recipients: list[ProjectCommunicationParticipant] = []
     seen_identities: set[tuple[str, str]] = set()
-    seen_emails: set[str] = set()
     for participant in (
         project.project_manager,
         *project.project_co_managers,
@@ -795,35 +794,21 @@ def _to_recipients(
             identity = ("contact", participant.contact_id)
         elif participant.user_id:
             identity = ("user", participant.user_id)
-        email = (participant.email or "").strip().casefold()
         if identity is not None and identity in seen_identities:
-            continue
-        if email and email in seen_emails:
             continue
         if identity is not None:
             seen_identities.add(identity)
-        if email:
-            seen_emails.add(email)
         recipients.append(participant)
     return tuple(recipients)
 
 
 def _cc_recipients(
     projects: Sequence[ProjectCommunicationProject],
-    *,
-    exclude_emails: Sequence[str] = (),
 ) -> tuple[ProjectCommunicationParticipant, ...]:
-    excluded = {
-        str(email or "").strip().casefold()
-        for email in exclude_emails
-        if str(email or "").strip()
-    }
     by_email: dict[str, ProjectCommunicationParticipant] = {}
     for participant in _resource_participants(projects).values():
         email = (participant.email or "").strip()
         if not participant.active or not email:
-            continue
-        if email.casefold() in excluded:
             continue
         by_email.setdefault(email.casefold(), participant)
     return tuple(
