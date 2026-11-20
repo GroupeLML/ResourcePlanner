@@ -938,6 +938,46 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
             "C-CO-NO-MAIL",
         )
 
+    def test_871_manager_employee_prefix_is_presentation_only(self) -> None:
+        for raw_name in (
+            "12345 - Jean Tremblay",
+            "12345 – Jean Tremblay",
+            "12345 — Jean Tremblay",
+        ):
+            with self.subTest(raw_name=raw_name):
+                source = project()
+                source = replace(
+                    source,
+                    project_manager=replace(
+                        source.project_manager,
+                        display_name=raw_name,
+                    ),
+                )
+                draft = build_project_confirmation_batch(
+                    projection(source)
+                ).drafts[0]
+                self.assertIn("Responsable projet\nJean Tremblay", draft.body)
+                self.assertNotIn(raw_name, draft.body)
+                self.assertIn(">Jean Tremblay</div>", draft.body_html or "")
+                self.assertNotIn(raw_name, draft.body_html or "")
+                self.assertEqual(
+                    draft.to_recipients[0].display_name,
+                    raw_name,
+                )
+
+        unchanged = "Jean 12345 Tremblay"
+        source = project()
+        source = replace(
+            source,
+            project_manager=replace(
+                source.project_manager,
+                display_name=unchanged,
+            ),
+        )
+        draft = build_project_confirmation_batch(projection(source)).drafts[0]
+        self.assertIn(f"Responsable projet\n{unchanged}", draft.body)
+        self.assertIn(unchanged, draft.body_html or "")
+
     def test_body_groups_multiple_days_tasks_and_includes_responsible_phone(self) -> None:
         draft = build_project_confirmation_batch(
             projection(project(second_day=True))

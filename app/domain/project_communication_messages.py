@@ -885,7 +885,7 @@ def _distinct_resolved_responsibles(
     )
 
 
-def _display_resource_name(value: str) -> str:
+def _display_employee_name(value: str) -> str:
     cleaned = str(value or "").strip()
     matched = _EMPLOYEE_NUMBER_PREFIX.match(cleaned)
     return matched.group(1).strip() if matched else cleaned
@@ -1047,7 +1047,7 @@ def _shift_resource_line(
     *,
     responsible: ContactResolution | None = None,
 ) -> str:
-    text = _display_resource_name(assignment.resource_name)
+    text = _display_employee_name(assignment.resource_name)
     if (
         assignment.standard_hours is not None
         and float(assignment.hours) < float(assignment.standard_hours)
@@ -1116,7 +1116,7 @@ def _day_schedule_lines(
         for _task, assignment in sorted(
             rows,
             key=lambda value: (
-                _display_resource_name(value[1].resource_name).casefold(),
+                _display_employee_name(value[1].resource_name).casefold(),
                 value[1].shift_id,
             ),
         ):
@@ -1140,7 +1140,7 @@ def _day_schedule_lines(
         legacy_resources,
         key=lambda value: (value.resource_name.casefold(), value.resource_id),
     ):
-        lines.append(_line("bullet", _display_resource_name(resource.resource_name)))
+        lines.append(_line("bullet", _display_employee_name(resource.resource_name)))
     return tuple(lines)
 
 
@@ -1167,7 +1167,10 @@ def _project_semantic_message(
         (
             _line("blank"),
             _line("section", "Responsable projet"),
-            _line("text", project.project_manager.display_name),
+            _line(
+                "text",
+                _display_employee_name(project.project_manager.display_name),
+            ),
         )
     )
     manager_phone_lines = _manager_phone_lines(project)
