@@ -13,6 +13,7 @@ from app.domain.operational_contacts import (
 )
 from app.domain.project_communication import (
     ProjectCommunicationAsset,
+    ProjectCommunicationAssignment,
     ProjectCommunicationDay,
     ProjectCommunicationParticipant,
     ProjectCommunicationProject,
@@ -21,6 +22,7 @@ from app.domain.project_communication import (
     ProjectCommunicationRequestAssignment,
     ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
+    build_project_communication_projection,
 )
 from app.domain.project_communication_messages import (
     DIAGNOSTIC_CC_EMAIL_MISSING,
@@ -236,6 +238,117 @@ def projection(*projects: ProjectCommunicationProject) -> ProjectCommunicationPr
         request_provenance_version=1,
         request_provenance_complete=True,
     )
+
+def v4_shift_projection(
+    shifts: tuple[dict[str, object], ...],
+    *,
+    project_id: str = "P1",
+    project_number: str = "1000",
+    project_name: str | None = None,
+    manager_local: str = "pm",
+) -> ProjectCommunicationProjection:
+    rows = []
+    manager = participant(
+        f"Chargé {project_number}",
+        contact_id=f"C-PM-{project_id}",
+        user_id=f"U-PM-{project_id}",
+        address=email(manager_local),
+    )
+    for value in shifts:
+        resource_id = str(value["resource_id"])
+        resource_name = str(value["resource_name"])
+        rows.append(
+            ProjectCommunicationAssignment(
+                shift_id=str(value["shift_id"]),
+                requirement_id=str(value.get("requirement_id") or f"REQ-{value['shift_id']}"),
+                project_id=project_id,
+                project_number=project_number,
+                project_name=project_name or f"Projet {project_number}",
+                day=value.get("day", WEEK),
+                hours=float(value.get("hours", 8.0)),
+                allocation_type=str(value.get("allocation_type", "Flexible")),
+                outside_schedule=value.get("outside_schedule", False),
+                confirmation=str(value.get("confirmation", "Confirmée")),
+                task_id=value.get("task_id", "TASK-889"),
+                task_code=value.get("task_code", "210"),
+                task_description=str(value.get("task_description", "Travaux #889")),
+                resource_id=resource_id,
+                resource_name=resource_name,
+                resource_contact=participant(
+                    resource_name,
+                    contact_id=f"C-{resource_id}",
+                    user_id=f"U-{resource_id}",
+                    address=email(resource_id.lower()),
+                ),
+                project_manager=manager,
+                operational_responsible=responsible(
+                    contact_id=f"C-RESP-{project_id}",
+                    name=f"Responsable {project_number}",
+                ),
+                workforce_request_id=str(value.get("workforce_request_id", "D-889")),
+                request_number=str(value.get("request_number", "DMO-889")),
+                site_contact_name=value.get("site_contact_name"),
+                site_contact_phone=value.get("site_contact_phone"),
+                include_project_manager_contact_phone=False,
+                project_manager_contact_phone=None,
+                assets=tuple(value.get("assets", ())),
+                standard_hours=float(value.get("standard_hours", 8.0)),
+            )
+        )
+    return build_project_communication_projection(
+        week_start=WEEK,
+        week_end=date(2026, 9, 27),
+        assignments=tuple(rows),
+        request_provenance_version=4,
+    )
+
+
+def historical_version(
+    current: ProjectCommunicationProjection,
+    version: int,
+) -> ProjectCommunicationProjection:
+    projects = []
+    for project_row in current.projects:
+        days = []
+        for day in project_row.days:
+            tasks = []
+            for task in day.tasks:
+                assignments = tuple(
+                    replace(
+                        row,
+                        confirmation=None,
+                        allocation_type=None,
+                        outside_schedule=None,
+                        task_id=None,
+                        task_code=None,
+                        task_description=None,
+                        include_project_manager_contact_phone=(
+                            row.include_project_manager_contact_phone
+                            if version >= 3
+                            else False
+                        ),
+                        project_manager_contact_phone=(
+                            row.project_manager_contact_phone
+                            if version >= 3
+                            else None
+                        ),
+                        assets=(row.assets if version >= 2 else ()),
+                        standard_hours=(
+                            row.standard_hours if version >= 2 else None
+                        ),
+                    )
+                    for row in task.request_assignments
+                )
+                tasks.append(replace(task, request_assignments=assignments))
+            days.append(replace(day, tasks=tuple(tasks)))
+        projects.append(replace(project_row, days=tuple(days)))
+    return replace(
+        current,
+        projects=tuple(projects),
+        request_provenance_version=version,
+        request_provenance_complete=True,
+    )
+
 
 class ProjectCommunicationMessageTests(unittest.TestCase):
     def test_855_semantic_renderer_emits_corresponding_escaped_html(self) -> None:
