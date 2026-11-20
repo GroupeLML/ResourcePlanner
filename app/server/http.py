@@ -61,6 +61,7 @@ from ..infrastructure.sql import (
     transactional_session,
 )
 from .erp_sync_orchestration import ErpSyncOrchestrator
+from .concurrency import run_sync_cancellation_safe
 from .emergency_broadcast_runtime import EmergencyBroadcastRuntime
 from .composition import (
     build_approval_progress_service,
@@ -671,7 +672,7 @@ def create_api_app(
                 if now < next_sql_cleanup:
                     continue
                 try:
-                    await asyncio.to_thread(emergency_runtime.cleanup_retention)
+                    await run_sync_cancellation_safe(emergency_runtime.cleanup_retention)
                 except Exception:
                     # Feature retention failure is observable through bounded
                     # diagnostics and must never take down normal startup/runtime.
