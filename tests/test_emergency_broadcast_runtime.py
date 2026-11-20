@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -159,13 +159,15 @@ class EmergencyAuthOffloadTests(unittest.TestCase):
     def test_high_frequency_sync_auth_can_run_off_event_loop(self) -> None:
         request = type("RequestStub", (), {})()
         expected = principal("USER-OFFLOAD", ROLE_TECHNICIAN)
+        worker_started = threading.Event()
+        worker_release = threading.Event()
 
         def slow_resolver(_request):
-            time.sleep(0.12)
+            worker_started.set()
+            worker_release.wait(timeout=1.0)
             return expected
 
-        async def scenario() -> tuple[float, AuthPrincipal | None]:
-            started = time.perf_counter()
+        async def scenario() -> AuthPrincipal | None:
             task = asyncio.create_task(
                 resolve_principal(
                     slow_resolver,
@@ -173,13 +175,14 @@ class EmergencyAuthOffloadTests(unittest.TestCase):
                     offload_sync=True,
                 )
             )
-            await asyncio.sleep(0.01)
-            elapsed = time.perf_counter() - started
-            resolved = await task
-            return elapsed, resolved
+            while not worker_started.is_set():
+                await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            worker_release.set()
+            return await task
 
-        elapsed, resolved = asyncio.run(scenario())
-        self.assertLess(elapsed, 0.08)
+        resolved = asyncio.run(scenario())
         self.assertEqual(resolved, expected)
 
 
