@@ -17,6 +17,7 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
             LOAD,
             ROOT / "tools" / "issue_894_phase4_server.py",
             ROOT / "tools" / "issue_894_phase4_stats.py",
+            ROOT / "tools" / "issue_894_phase4_performance_report.py",
         ):
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
