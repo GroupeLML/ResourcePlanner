@@ -2508,10 +2508,14 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         baseline = v4_shift_projection(baseline_specs)
 
         removed = v4_shift_projection((baseline_specs[0], baseline_specs[2]))
-        removed_body = build_project_delta_batch(baseline, removed).drafts[0].body
+        removed_draft = build_project_delta_batch(baseline, removed).drafts[0]
+        removed_body = removed_draft.body
         self.assertIn("Retiré — Mary", removed_body)
         self.assertNotIn("John", removed_body)
         self.assertNotIn("Steve", removed_body)
+        self.assertIn("Retiré — Mary", removed_draft.body_html or "")
+        self.assertNotIn("John", removed_draft.body_html or "")
+        self.assertNotIn("Steve", removed_draft.body_html or "")
 
         replaced_specs = (
             baseline_specs[0],
