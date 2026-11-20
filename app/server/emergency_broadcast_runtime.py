@@ -133,6 +133,22 @@ class PresenceRegistry:
         with self._lock:
             return self._prune_locked(now_mono)
 
+    def caller_state(self, user_id: str, *, tracked: bool) -> dict[str, object]:
+        now_mono = self._monotonic()
+        with self._lock:
+            warming = now_mono - self._started_monotonic < self.ACTIVE_SECONDS
+            incomplete = (
+                self._last_overflow_monotonic is not None
+                and now_mono - self._last_overflow_monotonic
+                < self.INCOMPLETE_HOLD_SECONDS
+            )
+            currently_tracked = str(user_id or "").strip() in self._observed
+        return {
+            "tracked": bool(tracked and currently_tracked),
+            "warming": warming,
+            "complete": not warming and not incomplete,
+        }
+
     def snapshot(self) -> PresenceSnapshot:
         now_mono = self._monotonic()
         now_at = self._utc_now()
