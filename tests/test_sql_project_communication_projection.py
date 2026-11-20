@@ -2035,7 +2035,7 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     engine.dispose()
                 delta = origin.get(
                     "/api/v1/communications/project-preview"
-                    "?week_start=2026-09-23&add_generator_cc=true"
+                    "?week_start=2026-09-23&mode=project_planning_change&add_generator_cc=true"
                 )
                 self.assertEqual(delta.status_code, 200, delta.text)
                 self.assertEqual(delta.json()["mode"], "project_planning_change")
