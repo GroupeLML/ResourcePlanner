@@ -20,6 +20,7 @@ from ..domain.emergency_broadcast import (
     EmergencyBroadcastRecord,
     EndEmergencyBroadcastCommand,
 )
+from .concurrency import run_sync_cancellation_safe
 from .emergency_broadcast_runtime import EmergencyBroadcastRuntime
 
 
@@ -84,7 +85,7 @@ def _private_no_store(response: Response) -> None:
 
 async def _bounded_db_read(call, /, *args, **kwargs):
     try:
-        return await asyncio.to_thread(call, *args, **kwargs)
+        return await run_sync_cancellation_safe(call, *args, **kwargs)
     except ApplicationError:
         raise
     except Exception as exc:
@@ -98,40 +99,64 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
     router = APIRouter(tags=["emergency-runtime"])
 
     @router.get("/api/v1/runtime/status")
-    async def runtime_status(request: Request, response: Response) -> dict[str, object]:
+    async def runtime_status(
+        request: Request,
+        response: Response,
+        known_broadcast_id: str | None = None,
+        known_broadcast_version: int | None = Query(default=None, ge=1),
+    ) -> dict[str, object]:
         _private_no_store(response)
+        principal: AuthPrincipal = request.state.auth_principal
         user_id = _principal_user_id(request)
-        runtime.presence.observe(user_id)
+        tracked = runtime.presence.observe(
+            user_id,
+            display_name=principal.display_name,
+        )
         runtime._increment("status_requests")
-
-        async def work() -> dict[str, object]:
-            try:
-                active = await asyncio.to_thread(runtime.active_broadcast)
-                receipt = (
-                    await asyncio.to_thread(
-                        runtime.acknowledgment,
-                        broadcast_id=active.id,
-                        user_id=user_id,
-                    )
-                    if active is not None
-                    else None
-                )
-            except Exception:
-                runtime._increment("status_errors")
-                raise
-            return {
-                "api": "v1",
-                "user_id": user_id,
-                "broadcast": _broadcast_payload(active),
-                "acknowledgment": _receipt_payload(receipt),
-            }
-
         try:
-            return await runtime.status_admission.run(work)
-        except Exception as exc:
-            if getattr(exc, "code", None) == "emergency_runtime_overloaded":
-                runtime._increment("status_overloads")
+            active = await run_sync_cancellation_safe(runtime.active_broadcast)
+            receipt = (
+                await run_sync_cancellation_safe(
+                    runtime.acknowledgment,
+                    broadcast_id=active.id,
+                    user_id=user_id,
+                )
+                if active is not None
+                else None
+            )
+        except Exception:
+            runtime._increment("status_errors")
             raise
+
+        presence = runtime.presence.caller_state(user_id, tracked=tracked)
+        active_payload: dict[str, object] | None = None
+        if active is not None:
+            content_known = (
+                str(known_broadcast_id or "").strip() == active.id
+                and known_broadcast_version == active.version
+            )
+            active_payload = {
+                "id": active.id,
+                "version": active.version,
+                "activated_at": active.activated_at,
+                "acknowledged_at": (
+                    receipt.acknowledged_at if receipt is not None else None
+                ),
+                "content": (
+                    None
+                    if content_known
+                    else {
+                        "title": active.title,
+                        "message": active.message,
+                    }
+                ),
+            }
+        return {
+            "server_time_utc": datetime.now(timezone.utc),
+            "observation_epoch": runtime.presence.observation_epoch,
+            "presence": presence,
+            "active_broadcast": active_payload,
+        }
 
     @router.post("/api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment")
     async def acknowledge(
@@ -143,15 +168,15 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         _private_no_store(response)
         user_id = _principal_user_id(request)
 
-        async def work() -> dict[str, object]:
-            record = await asyncio.to_thread(
-                runtime.acknowledge,
-                broadcast_id=broadcast_id,
-                user_id=user_id,
-            )
-            return {"acknowledgment": _receipt_payload(record)}
-
-        return await runtime.command_admission.run(work)
+        record, created = await run_sync_cancellation_safe(
+            runtime.acknowledge,
+            broadcast_id=broadcast_id,
+            user_id=user_id,
+        )
+        return {
+            "status": "acknowledged" if created else "already_acknowledged",
+            "acknowledgment": _receipt_payload(record),
+        }
 
     @router.post(
         "/api/v1/admin/runtime/broadcasts",
@@ -170,19 +195,16 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
             )
         actor_user_id = _principal_user_id(request)
 
-        async def work() -> dict[str, object]:
-            record = await asyncio.to_thread(
-                runtime.create,
-                CreateEmergencyBroadcastCommand(
-                    actor_user_id=actor_user_id,
-                    creation_command_id=body.creation_command_id,
-                    title=body.title,
-                    message=body.message,
-                ),
-            )
-            return {"broadcast": _broadcast_payload(record)}
-
-        return await runtime.command_admission.run(work)
+        record = await run_sync_cancellation_safe(
+            runtime.create,
+            CreateEmergencyBroadcastCommand(
+                actor_user_id=actor_user_id,
+                creation_command_id=body.creation_command_id,
+                title=body.title,
+                message=body.message,
+            ),
+        )
+        return {"broadcast": _broadcast_payload(record)}
 
     @router.post("/api/v1/admin/runtime/broadcasts/{broadcast_id}/end")
     async def end_broadcast(
@@ -193,23 +215,20 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         _private_no_store(response)
         actor_user_id = _principal_user_id(request)
 
-        async def work() -> dict[str, object]:
-            record = await asyncio.to_thread(
-                runtime.end,
-                EndEmergencyBroadcastCommand(
-                    actor_user_id=actor_user_id,
-                    broadcast_id=broadcast_id,
-                ),
-            )
-            return {"broadcast": _broadcast_payload(record)}
-
-        return await runtime.command_admission.run(work)
+        record = await run_sync_cancellation_safe(
+            runtime.end,
+            EndEmergencyBroadcastCommand(
+                actor_user_id=actor_user_id,
+                broadcast_id=broadcast_id,
+            ),
+        )
+        return {"broadcast": _broadcast_payload(record)}
 
     @router.get("/api/v1/admin/runtime/status")
     async def admin_status(response: Response) -> dict[str, object]:
         _private_no_store(response)
         snapshot = runtime.presence.snapshot()
-        active = await asyncio.to_thread(runtime.active_broadcast)
+        active = await run_sync_cancellation_safe(runtime.active_broadcast)
         observed_users = snapshot.observations
         receipts = (
             await _bounded_db_read(
