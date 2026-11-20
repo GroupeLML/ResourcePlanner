@@ -443,14 +443,18 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
         ids = tuple(dict.fromkeys(str(value) for value in user_ids if value))
         if not ids:
             return ()
+        records: list[EmergencyBroadcastAcknowledgmentRecord] = []
         with self._factory() as session:
-            rows = session.scalars(
-                select(EmergencyBroadcastAcknowledgment).where(
-                    EmergencyBroadcastAcknowledgment.broadcast_id == broadcast_id,
-                    EmergencyBroadcastAcknowledgment.user_id.in_(ids),
+            for start in range(0, len(ids), 1000):
+                chunk = ids[start : start + 1000]
+                rows = session.scalars(
+                    select(EmergencyBroadcastAcknowledgment).where(
+                        EmergencyBroadcastAcknowledgment.broadcast_id == broadcast_id,
+                        EmergencyBroadcastAcknowledgment.user_id.in_(chunk),
+                    )
                 )
-            )
-            return tuple(_ack_record(row) for row in rows)
+                records.extend(_ack_record(row) for row in rows)
+        return tuple(records)
 
     def user_labels(self, user_ids: Sequence[str]) -> dict[str, str]:
         from .identity_models import AppUser
@@ -458,11 +462,17 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
         ids = tuple(dict.fromkeys(str(value) for value in user_ids if value))
         if not ids:
             return {}
+        labels: dict[str, str] = {}
         with self._factory() as session:
-            rows = session.execute(
-                select(AppUser.id, AppUser.display_name).where(AppUser.id.in_(ids))
-            )
-            return {str(row.id): str(row.display_name) for row in rows}
+            for start in range(0, len(ids), 1000):
+                chunk = ids[start : start + 1000]
+                rows = session.execute(
+                    select(AppUser.id, AppUser.display_name).where(AppUser.id.in_(chunk))
+                )
+                labels.update(
+                    {str(row.id): str(row.display_name) for row in rows}
+                )
+        return labels
 
 
     def retention_backlog(
