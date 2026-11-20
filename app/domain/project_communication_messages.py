@@ -744,12 +744,46 @@ def _resource_participants(
     return resources
 
 
+def canonical_project_recipients(
+    to_recipients: Sequence[ProjectCommunicationParticipant],
+    cc_recipients: Sequence[ProjectCommunicationParticipant],
+) -> tuple[
+    tuple[ProjectCommunicationParticipant, ...],
+    tuple[ProjectCommunicationParticipant, ...],
+]:
+    """Deduplicate transport addresses case-insensitively with To priority."""
+
+    def normalized_email(participant: ProjectCommunicationParticipant) -> str:
+        return str(participant.email or "").strip().casefold()
+
+    normalized_to: list[ProjectCommunicationParticipant] = []
+    to_emails: set[str] = set()
+    for participant in to_recipients:
+        email = normalized_email(participant)
+        if email and email in to_emails:
+            continue
+        if email:
+            to_emails.add(email)
+        normalized_to.append(participant)
+
+    normalized_cc: list[ProjectCommunicationParticipant] = []
+    cc_emails: set[str] = set()
+    for participant in cc_recipients:
+        email = normalized_email(participant)
+        if email and (email in to_emails or email in cc_emails):
+            continue
+        if email:
+            cc_emails.add(email)
+        normalized_cc.append(participant)
+
+    return tuple(normalized_to), tuple(normalized_cc)
+
+
 def _to_recipients(
     project: ProjectCommunicationProject,
 ) -> tuple[ProjectCommunicationParticipant, ...]:
     recipients: list[ProjectCommunicationParticipant] = []
     seen_identities: set[tuple[str, str]] = set()
-    seen_emails: set[str] = set()
     for participant in (
         project.project_manager,
         *project.project_co_managers,
@@ -760,35 +794,21 @@ def _to_recipients(
             identity = ("contact", participant.contact_id)
         elif participant.user_id:
             identity = ("user", participant.user_id)
-        email = (participant.email or "").strip().casefold()
         if identity is not None and identity in seen_identities:
-            continue
-        if email and email in seen_emails:
             continue
         if identity is not None:
             seen_identities.add(identity)
-        if email:
-            seen_emails.add(email)
         recipients.append(participant)
     return tuple(recipients)
 
 
 def _cc_recipients(
     projects: Sequence[ProjectCommunicationProject],
-    *,
-    exclude_emails: Sequence[str] = (),
 ) -> tuple[ProjectCommunicationParticipant, ...]:
-    excluded = {
-        str(email or "").strip().casefold()
-        for email in exclude_emails
-        if str(email or "").strip()
-    }
     by_email: dict[str, ProjectCommunicationParticipant] = {}
     for participant in _resource_participants(projects).values():
         email = (participant.email or "").strip()
         if not participant.active or not email:
-            continue
-        if email.casefold() in excluded:
             continue
         by_email.setdefault(email.casefold(), participant)
     return tuple(
@@ -1351,13 +1371,9 @@ def _build_draft(
     change_kind: str | None = None,
 ) -> ProjectCommunicationDraft:
     message_key = f"project:{project.project_id}"
-    to_recipients = _to_recipients(project)
-    cc_recipients = _cc_recipients(
-        cc_sources,
-        exclude_emails=tuple(
-            participant.email or ""
-            for participant in to_recipients
-        ),
+    to_recipients, cc_recipients = canonical_project_recipients(
+        _to_recipients(project),
+        _cc_recipients(cc_sources),
     )
     diagnostics = _recipient_diagnostics(project, cc_sources)
     subject = _subject(

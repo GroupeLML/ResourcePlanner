@@ -1891,6 +1891,141 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                 ]
                 self.assertEqual(values.count(generator.casefold()), 1)
 
+    def test_882_generator_matching_to_is_deduplicated_across_persisted_and_transport_surfaces(self) -> None:
+        generator = "PM" + chr(64) + TEST_DOMAIN.upper()
+        normalized_generator = ("pm" + chr(64) + TEST_DOMAIN).casefold()
+        with TemporaryDirectory() as directory:
+            database_url = self._database(directory)
+            transport = FakeProjectDraftTransport()
+            smtp = FakeSmtpDeliveryClient()
+            app = create_api_app(
+                database_url,
+                auth_resolver=self._generator_resolver(generator, "generator-882"),
+                communication_transport=transport,
+                smtp_client=smtp,
+            )
+            with TestClient(app) as client:
+                preview_response = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&add_generator_cc=true"
+                )
+                self.assertEqual(preview_response.status_code, 200, preview_response.text)
+                preview = preview_response.json()
+                draft = preview["drafts"][0]
+                preview_to = [
+                    row["email"] for row in draft["to_recipients"] if row["email"]
+                ]
+                preview_cc = [
+                    row["email"] for row in draft["cc_recipients"] if row["email"]
+                ]
+                self.assertEqual(
+                    [value.casefold() for value in preview_to].count(normalized_generator),
+                    1,
+                )
+                self.assertNotIn(
+                    normalized_generator,
+                    {value.casefold() for value in preview_cc},
+                )
+
+                prepared = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "expected_fingerprint": preview["snapshot_fingerprint"],
+                        "expected_generator_identity_fingerprint": preview[
+                            "generator_identity_fingerprint"
+                        ],
+                        "add_generator_cc": True,
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared.status_code, 201, prepared.text)
+                message = prepared.json()["messages"][0]
+                persisted_to = tuple(message["to_emails"])
+                persisted_cc = tuple(message["cc_emails"])
+                self.assertEqual(
+                    [value.casefold() for value in persisted_to].count(
+                        normalized_generator
+                    ),
+                    1,
+                )
+                self.assertNotIn(
+                    normalized_generator,
+                    {value.casefold() for value in persisted_cc},
+                )
+
+                batch_id = prepared.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{batch_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                created = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/create-drafts"
+                )
+                self.assertEqual(created.status_code, 200, created.text)
+                downloaded = client.get(
+                    f"/api/v1/communications/project-batches/{batch_id}/draft-download"
+                )
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+
+                configured = client.put(
+                    "/api/v1/admin/settings/smtp",
+                    json={
+                        "host": "smtp.example.invalid",
+                        "port": 587,
+                        "security": "STARTTLS",
+                        "username": None,
+                        "password": None,
+                        "clear_password": False,
+                        "from_email": "planning" + chr(64) + TEST_DOMAIN,
+                        "from_name": "RessourcePlanner",
+                        "reply_to": None,
+                        "timeout_seconds": 20,
+                        "enabled": True,
+                    },
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                sent = client.post(
+                    f"/api/v1/communications/project-batches/{batch_id}/send-smtp"
+                )
+                self.assertEqual(sent.status_code, 200, sent.text)
+
+            self.assertEqual(len(transport.messages), 1)
+            graph = transport.messages[0]
+            self.assertEqual(graph.to_emails, persisted_to)
+            self.assertEqual(graph.cc_emails, persisted_cc)
+
+            mime = BytesParser(policy=policy.default).parsebytes(downloaded.content)
+            eml_to = tuple(
+                value.strip() for value in str(mime["To"] or "").split(",") if value.strip()
+            )
+            eml_cc = tuple(
+                value.strip() for value in str(mime["Cc"] or "").split(",") if value.strip()
+            )
+            self.assertEqual(
+                {value.casefold() for value in eml_to},
+                {value.casefold() for value in persisted_to},
+            )
+            self.assertEqual(
+                {value.casefold() for value in eml_cc},
+                {value.casefold() for value in persisted_cc},
+            )
+            self.assertTrue(
+                {value.casefold() for value in eml_to}.isdisjoint(
+                    {value.casefold() for value in eml_cc}
+                )
+            )
+
+            self.assertEqual(smtp.attempt_to, [persisted_to])
+            self.assertEqual(smtp.attempt_cc, [persisted_cc])
+            self.assertTrue(
+                {value.casefold() for value in smtp.attempt_to[0]}.isdisjoint(
+                    {value.casefold() for value in smtp.attempt_cc[0]}
+                )
+            )
+
     def test_http_preview_exposes_one_project_message_with_to_cc_and_diagnostics(self) -> None:
         with TemporaryDirectory() as directory:
             app = create_api_app(

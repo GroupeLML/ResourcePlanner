@@ -24,6 +24,7 @@ from ..domain.project_communication_messages import (
     ProjectMessageDiagnostic,
     build_project_confirmation_batch,
     build_project_delta_batch,
+    canonical_project_recipients,
     project_projection_fingerprint,
     render_project_review_html,
 )
@@ -283,12 +284,6 @@ class ProjectCommunicationService:
         principal: AuthPrincipal,
         email: str,
     ) -> ProjectCommunicationDraft:
-        existing = {
-            str(recipient.email or "").strip().casefold()
-            for recipient in (*draft.to_recipients, *draft.cc_recipients)
-        }
-        if email.casefold() in existing:
-            return draft
         generator = ProjectCommunicationParticipant(
             contact_id=None,
             user_id=principal.local_user_id,
@@ -297,7 +292,20 @@ class ProjectCommunicationService:
             phone=None,
             active=True,
         )
-        return replace(draft, cc_recipients=(*draft.cc_recipients, generator))
+        to_recipients, cc_recipients = canonical_project_recipients(
+            draft.to_recipients,
+            (*draft.cc_recipients, generator),
+        )
+        if (
+            to_recipients == draft.to_recipients
+            and cc_recipients == draft.cc_recipients
+        ):
+            return draft
+        return replace(
+            draft,
+            to_recipients=to_recipients,
+            cc_recipients=cc_recipients,
+        )
 
     def project_preview(
         self,
