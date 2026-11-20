@@ -164,6 +164,31 @@ class EmergencyBroadcastService:
             user_id=user_id,
         )
 
+    def acknowledge_with_outcome(
+        self,
+        *,
+        broadcast_id: str,
+        authenticated_user_id: str,
+    ) -> tuple[EmergencyBroadcastAcknowledgmentRecord, bool]:
+        normalized_broadcast_id = self._broadcast_id(broadcast_id)
+        user_id = self._user_id(
+            authenticated_user_id,
+            field="authenticated_user_id",
+        )
+        repository_method = getattr(self._repository, "acknowledge_with_outcome", None)
+        if repository_method is None:
+            return (
+                self._repository.acknowledge(
+                    broadcast_id=normalized_broadcast_id,
+                    user_id=user_id,
+                ),
+                True,
+            )
+        return repository_method(
+            broadcast_id=normalized_broadcast_id,
+            user_id=user_id,
+        )
+
     def acknowledgment(
         self,
         *,
