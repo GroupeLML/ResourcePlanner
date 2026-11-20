@@ -237,12 +237,12 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                     )
                     if canonical is not None:
                         return _ack_record(canonical)
-                    if self.get(broadcast_id) is None:
-                        raise ApplicationNotFoundError(
-                            "Emergency broadcast was not found.",
-                            code="emergency_broadcast_not_found",
-                            context={"broadcast_id": broadcast_id},
-                        ) from exc
+                if self.get(broadcast_id) is None:
+                    raise ApplicationNotFoundError(
+                        "Emergency broadcast was not found.",
+                        code="emergency_broadcast_not_found",
+                        context={"broadcast_id": broadcast_id},
+                    ) from exc
                 raise
             except DBAPIError as exc:
                 if not _is_deadlock(exc) or attempt >= 2:
