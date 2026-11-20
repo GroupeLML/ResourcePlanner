@@ -687,7 +687,7 @@ jobs:
             sleep 2
           done
 
-          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py restart-verify               --credentials /secrets/sessions.json               --state "$GITHUB_WORKSPACE/phase4-evidence/restart-state.json"             | tee "$GITHUB_WORKSPACE/phase4-evidence/restart-proof.json"
+          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py restart-verify               --credentials /secrets/sessions.json               --state /evidence/restart-state.json             | tee "$GITHUB_WORKSPACE/phase4-evidence/restart-proof.json"
 
       - name: Run full mixed-load and HTTP ACK certification
         id: load
