@@ -364,7 +364,7 @@ class EmergencyBroadcastRuntime:
             acquire_timeout_seconds=3.0,
         )
         self._metrics_lock = threading.Lock()
-        self._metrics = {
+        self._metrics: dict[str, object] = {
             "status_requests": 0,
             "status_overloads": 0,
             "status_errors": 0,
