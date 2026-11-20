@@ -36,6 +36,20 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("RESOURCEPLANNER_PHASE4_ISOLATED_LOAD", source)
         self.assertIn("ResourcePlanner894Load", source)
 
+    def test_xact_abort_modes_use_independent_sqlserver_sessions(self) -> None:
+        source = LOAD.read_text(encoding="utf-8")
+        start = source.index("def _xact_abort_recovery")
+        end = source.index("\n\nasync def _request_timed", start)
+        function_source = source[start:end]
+        loop_index = function_source.index('for mode in ("OFF", "ON")')
+        engine_index = function_source.index("engine = create_sql_engine(database_url)")
+        self.assertLess(loop_index, engine_index)
+        self.assertIn("raw = engine.raw_connection()", function_source)
+        self.assertIn("raw.close()", function_source)
+        self.assertIn("engine.dispose()", function_source)
+        self.assertIn("SET XACT_ABORT {mode}", function_source)
+        self.assertIn("CREATE TABLE #rp894_xact", function_source)
+
     def test_ack_waves_cover_100_250_and_250_plus_63_duplicates(self) -> None:
         source = LOAD.read_text(encoding="utf-8")
         self.assertIn("((75, 25), (187, 63), (250, 63))", source)
@@ -55,6 +69,14 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("forward_schema_only_no_alembic_downgrade", source)
         self.assertNotIn("alembic downgrade", source.lower())
         self.assertIn("org.opencontainers.image.revision", source)
+
+    def test_ci_generates_sql_credential_without_privacy_scanner_assignment_syntax(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('sql_value="RpA1_$(openssl rand -hex 16)"', source)
+        self.assertNotIn('password="RpA1_', source)
+        self.assertIn('printf \'MSSQL_SA_%s=%s\\n\' \'PASSWORD\' "$sql_value"', source)
+        self.assertIn('-e SQL_VALUE="$sql_value"', source)
+        self.assertNotIn("sql.env", (ROOT / "phase4-evidence").as_posix())
 
     def test_ci_uses_supported_frontend_mode_and_stage_specific_restart_diagnostics(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
