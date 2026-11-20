@@ -404,14 +404,14 @@ def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
                             raise ValueError(
                                 "Hors horaire Shift v4 doit être booléen"
                             )
-                        if (
-                            assignment.task_id is not None
-                            and not isinstance(assignment.task_id, str)
+                        if assignment.task_id is not None and (
+                            not isinstance(assignment.task_id, str)
+                            or not assignment.task_id.strip()
                         ):
                             raise ValueError("Identité tâche Shift v4 invalide")
-                        if (
-                            assignment.task_code is not None
-                            and not isinstance(assignment.task_code, str)
+                        if assignment.task_code is not None and (
+                            not isinstance(assignment.task_code, str)
+                            or not assignment.task_code.strip()
                         ):
                             raise ValueError("Code tâche Shift v4 invalide")
                         if (
