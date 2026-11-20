@@ -205,12 +205,12 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         _private_no_store(response)
         snapshot = runtime.presence.snapshot()
         active = await asyncio.to_thread(runtime.active_broadcast)
-        active_users = tuple(item for item in snapshot.observations if item.active)
+        observed_users = snapshot.observations
         receipts = (
             await _bounded_db_read(
                 runtime.repository.acknowledgments_for_users,
                 broadcast_id=active.id,
-                user_ids=tuple(item.user_id for item in active_users),
+                user_ids=tuple(item.user_id for item in observed_users),
             )
             if active is not None
             else ()
@@ -218,7 +218,7 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         by_user = {record.user_id: record for record in receipts}
         labels = await _bounded_db_read(
             runtime.repository.user_labels,
-            tuple(item.user_id for item in active_users),
+            tuple(item.user_id for item in observed_users),
         )
         users = [
             {
@@ -233,7 +233,7 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
                 ),
                 "pending": active is not None and item.user_id not in by_user,
             }
-            for item in active_users
+            for item in observed_users
         ]
         return {
             "generated_at": snapshot.generated_at,
@@ -242,9 +242,13 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
             "presence_complete": snapshot.complete,
             "tracked_user_count": snapshot.tracked_count,
             "active_user_count": snapshot.active_count,
-            "active_pending_count": sum(1 for item in users if item["pending"]),
+            "active_pending_count": sum(
+                1 for item in users if item["active"] and item["pending"]
+            ),
             "active_acknowledged_count": sum(
-                1 for item in users if item["acknowledged_at"] is not None
+                1
+                for item in users
+                if item["active"] and item["acknowledged_at"] is not None
             ),
             "broadcast": _broadcast_payload(active),
             "users": users,
