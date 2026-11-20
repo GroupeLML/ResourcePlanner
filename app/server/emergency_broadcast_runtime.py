@@ -49,6 +49,7 @@ class EmergencyRuntimeDiagnostics:
     status_overloads: int
     status_errors: int
     acknowledgment_successes: int
+    acknowledgment_duplicates: int
     acknowledgment_errors: int
     active_cache_hits: int
     active_cache_refreshes: int
@@ -350,6 +351,7 @@ class EmergencyBroadcastRuntime:
             "status_overloads": 0,
             "status_errors": 0,
             "acknowledgment_successes": 0,
+            "acknowledgment_duplicates": 0,
             "acknowledgment_errors": 0,
             "active_cache_hits": 0,
             "active_cache_refreshes": 0,
@@ -413,9 +415,13 @@ class EmergencyBroadcastRuntime:
         *,
         broadcast_id: str,
         user_id: str,
-    ) -> EmergencyBroadcastAcknowledgmentRecord:
+    ) -> tuple[EmergencyBroadcastAcknowledgmentRecord, bool]:
+        cached = self._receipt_cache.get(broadcast_id, user_id)
+        if cached is not None:
+            self._increment("acknowledgment_duplicates")
+            return cached, False
         try:
-            receipt = self.service.acknowledge(
+            receipt, created = self.service.acknowledge_with_outcome(
                 broadcast_id=broadcast_id,
                 authenticated_user_id=user_id,
             )
@@ -429,7 +435,9 @@ class EmergencyBroadcastRuntime:
             ) from exc
         self._receipt_cache.put(receipt)
         self._increment("acknowledgment_successes")
-        return receipt
+        if not created:
+            self._increment("acknowledgment_duplicates")
+        return receipt, created
 
     def create(self, command):
         try:
