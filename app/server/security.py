@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-import asyncio
 import inspect
 from typing import Any
 
@@ -27,6 +26,7 @@ from ..application.security import (
     PERMISSION_READ_WORK_PACKAGES,
     PERMISSION_SYNC_PROJECTS,
 )
+from .concurrency import run_sync_cancellation_safe
 from .performance import performance_phase
 
 
@@ -250,7 +250,7 @@ async def resolve_principal(
     offload_sync: bool = False,
 ) -> AuthPrincipal | None:
     if offload_sync and not inspect.iscoroutinefunction(resolver):
-        resolved = await asyncio.to_thread(resolver, request)
+        resolved = await run_sync_cancellation_safe(resolver, request)
     else:
         resolved = resolver(request)
     if inspect.isawaitable(resolved):
@@ -265,12 +265,18 @@ async def _csrf_allowed(
     offload_sync: bool = False,
 ) -> bool:
     if offload_sync and not inspect.iscoroutinefunction(guard):
-        result = await asyncio.to_thread(guard, request)
+        result = await run_sync_cancellation_safe(guard, request)
     else:
         result = guard(request)
     if inspect.isawaitable(result):
         return bool(await result)
     return bool(result)
+
+
+def _is_emergency_feature_path(path: str) -> bool:
+    return path == "/api/v1/runtime/status" or path.startswith(
+        "/api/v1/runtime/broadcasts/"
+    ) or path.startswith("/api/v1/admin/runtime")
 
 
 def install_authorization_middleware(
@@ -287,13 +293,23 @@ def install_authorization_middleware(
         if not path.startswith("/api/v1/"):
             return await call_next(request)
 
+        emergency_feature = _is_emergency_feature_path(path)
         high_frequency_runtime = path == "/api/v1/runtime/status"
         with performance_phase("auth"):
-            principal = await resolve_principal(
-                resolver,
-                request,
-                offload_sync=high_frequency_runtime,
-            )
+            try:
+                principal = await resolve_principal(
+                    resolver,
+                    request,
+                    offload_sync=high_frequency_runtime,
+                )
+            except Exception:
+                if emergency_feature:
+                    return _error(
+                        503,
+                        "emergency_runtime_auth_unavailable",
+                        "L'authentification du statut d'urgence est temporairement indisponible.",
+                    )
+                raise
             if principal is None:
                 return _error(
                     401,
@@ -322,11 +338,21 @@ def install_authorization_middleware(
                 and principal.auth_mode in {"oidc", "break_glass"}
                 and request.method.upper() in _UNSAFE_METHODS
             ):
-                if not await _csrf_allowed(
-                    csrf_guard,
-                    request,
-                    offload_sync=path.startswith("/api/v1/runtime/"),
-                ):
+                try:
+                    csrf_allowed = await _csrf_allowed(
+                        csrf_guard,
+                        request,
+                        offload_sync=emergency_feature,
+                    )
+                except Exception:
+                    if emergency_feature:
+                        return _error(
+                            503,
+                            "emergency_runtime_auth_unavailable",
+                            "La validation de la session est temporairement indisponible.",
+                        )
+                    raise
+                if not csrf_allowed:
                     return _error(
                         403,
                         "csrf_validation_failed",
