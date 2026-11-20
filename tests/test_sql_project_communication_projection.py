@@ -2370,6 +2370,59 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
                     delta_payload["baseline_fingerprint"],
                 )
 
+                prepared_delta = client.post(
+                    "/api/v1/communications/project-batches",
+                    json={
+                        "week_start": "2026-09-23",
+                        "mode": "project_planning_change",
+                        "expected_fingerprint": delta_payload["snapshot_fingerprint"],
+                        "expected_baseline_fingerprint": delta_payload[
+                            "baseline_fingerprint"
+                        ],
+                        "reviews": [],
+                    },
+                )
+                self.assertEqual(prepared_delta.status_code, 201, prepared_delta.text)
+                delta_id = prepared_delta.json()["id"]
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{delta_id}/approve"
+                    ).status_code,
+                    200,
+                )
+                self.assertEqual(
+                    client.post(
+                        f"/api/v1/communications/project-batches/{delta_id}/mark-communicated"
+                    ).status_code,
+                    200,
+                )
+
+                no_change = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(no_change.status_code, 200, no_change.text)
+                self.assertEqual(no_change.json()["drafts"], [])
+
+                engine = create_sql_engine(database_url)
+                factory = create_session_factory(engine)
+                try:
+                    with factory.begin() as session:
+                        shift = session.get(Shift, "S1")
+                        assert shift is not None
+                        shift.hours = Decimal("5")
+                finally:
+                    engine.dispose()
+
+                next_delta = client.get(
+                    "/api/v1/communications/project-preview"
+                    "?week_start=2026-09-23&mode=project_planning_change"
+                )
+                self.assertEqual(next_delta.status_code, 200, next_delta.text)
+                next_body = next_delta.json()["drafts"][0]["body"]
+                self.assertIn("heures 6 h → 5 h", next_body)
+                self.assertNotIn("heures 8 h → 5 h", next_body)
+
     def test_889_delta_requires_communicated_baseline_and_full_preview_remains_available(self) -> None:
         with TemporaryDirectory() as directory:
             transport = FakeProjectDraftTransport()
