@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOAD = ROOT / "tools" / "issue_894_phase4_load.py"
 ROLLBACK = ROOT / "tools" / "build_issue_894_rollback_bundle.sh"
 SERVER = ROOT / "tools" / "issue_894_phase4_server.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "syntax-check.yml"
 
 
 class Issue894Phase4ToolingTests(unittest.TestCase):
@@ -54,6 +55,19 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("forward_schema_only_no_alembic_downgrade", source)
         self.assertNotIn("alembic downgrade", source.lower())
         self.assertIn("org.opencontainers.image.revision", source)
+
+    def test_ci_uses_supported_frontend_mode_and_stage_specific_restart_diagnostics(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("RESOURCEPLANNER_ENVIRONMENT=TEST", source)
+        self.assertIn("RESOURCEPLANNER_ENVIRONMENT=PROD", source)
+        self.assertIn("wait_phase4_ready initial-backend", source)
+        self.assertIn("wait_phase4_ready initial-proxy", source)
+        self.assertIn("wait_phase4_ready restarted-backend", source)
+        self.assertIn("wait_phase4_ready restarted-proxy", source)
+        self.assertIn("phase4_diagnostics restart-state-verification", source)
+        self.assertIn("restart-${stage}-diagnostics.txt", source)
+        self.assertIn("docker logs --tail=200 backend", source)
+        self.assertIn("docker logs --tail=200 frontend", source)
 
     def test_load_wrapper_runs_one_uvicorn_process_and_only_adds_test_metrics(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
