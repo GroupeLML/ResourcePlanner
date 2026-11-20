@@ -12,7 +12,15 @@ from app.domain.emergency_broadcast import (
     CreateEmergencyBroadcastCommand,
     EndEmergencyBroadcastCommand,
 )
-from app.infrastructure.sql import Base, AppUser, create_session_factory, create_sql_engine
+from app.infrastructure.sql import (
+    Base,
+    AppUser,
+    Project,
+    Shift,
+    WorkforceRequest,
+    create_session_factory,
+    create_sql_engine,
+)
 from app.infrastructure.sql.emergency_broadcast_models import (
     EmergencyBroadcast,
     EmergencyBroadcastAcknowledgment,
@@ -186,6 +194,49 @@ class EmergencyBroadcastPersistenceTests(unittest.TestCase):
         self.assertEqual(deleted, 1)
         self.assertIsNotNone(self.service.get(active.id))
         self.assertEqual(self.service.get(active.id).state, "ACTIVE")
+
+        self.service.acknowledge(
+            broadcast_id=active.id,
+            authenticated_user_id=self.mary.id,
+        )
+        deleted_receipts = self.repository.delete_acknowledgments_for_expired(
+            ended_before=cutoff,
+        )
+        self.assertEqual(deleted_receipts, 0)
+        self.assertIsNotNone(
+            self.service.acknowledgment(
+                broadcast_id=active.id,
+                authenticated_user_id=self.mary.id,
+            )
+        )
+
+    def test_feature_operations_do_not_mutate_planning_business_tables(self) -> None:
+        with self.factory() as session:
+            before = (
+                session.scalar(select(func.count()).select_from(Project)),
+                session.scalar(select(func.count()).select_from(Shift)),
+                session.scalar(select(func.count()).select_from(WorkforceRequest)),
+            )
+
+        created = self._create()
+        self.service.acknowledge(
+            broadcast_id=created.id,
+            authenticated_user_id=self.mary.id,
+        )
+        self.service.end(
+            EndEmergencyBroadcastCommand(
+                actor_user_id=self.admin.id,
+                broadcast_id=created.id,
+            )
+        )
+
+        with self.factory() as session:
+            after = (
+                session.scalar(select(func.count()).select_from(Project)),
+                session.scalar(select(func.count()).select_from(Shift)),
+                session.scalar(select(func.count()).select_from(WorkforceRequest)),
+            )
+        self.assertEqual(after, before)
 
     def test_text_validation_uses_utf16_units_and_rejects_blank_content(self) -> None:
         with self.assertRaises(ApplicationValidationError):
