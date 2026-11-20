@@ -37,7 +37,11 @@ class ProjectReviewHtmlPreviewBody(BaseModel):
 
 class PrepareProjectBatchBody(BaseModel):
     week_start: date
+    mode: str = "project_confirmation"
     expected_fingerprint: str = Field(min_length=64, max_length=64)
+    expected_baseline_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64
+    )
     reviews: list[ProjectReviewBody] = Field(default_factory=list)
     add_generator_cc: bool = False
     expected_generator_identity_fingerprint: str | None = Field(
@@ -66,11 +70,13 @@ def build_project_communication_router(
     def project_preview(
         week_start: date,
         request: Request,
+        mode: str = "project_confirmation",
         add_generator_cc: bool = False,
         service: ProjectCommunicationService = Depends(dependency),
     ) -> ProjectCommunicationWorkflowPreview:
         return service.project_preview(
             week_start=week_start,
+            mode=mode,
             add_generator_cc=add_generator_cc,
             generator_principal=getattr(request.state, "auth_principal", None),
         )
@@ -101,6 +107,8 @@ def build_project_communication_router(
                 for row in body.reviews
             ),
             actor_name=_actor(request),
+            mode=body.mode,
+            expected_baseline_fingerprint=body.expected_baseline_fingerprint,
             add_generator_cc=body.add_generator_cc,
             expected_generator_identity_fingerprint=(
                 body.expected_generator_identity_fingerprint
