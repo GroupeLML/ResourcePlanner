@@ -387,12 +387,15 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
         self,
         *,
         limit: int = 25,
+        offset: int = 0,
     ) -> tuple[EmergencyBroadcastRecord, ...]:
-        bounded = max(1, min(int(limit), 100))
+        bounded = max(1, min(int(limit), 101))
+        bounded_offset = max(0, int(offset))
         with self._factory() as session:
             rows = session.scalars(
                 select(EmergencyBroadcast)
                 .order_by(EmergencyBroadcast.activated_at.desc(), EmergencyBroadcast.id.desc())
+                .offset(bounded_offset)
                 .limit(bounded)
             )
             return tuple(_broadcast_record(row) for row in rows)
@@ -402,8 +405,10 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
         *,
         broadcast_id: str,
         limit: int = 100,
+        offset: int = 0,
     ) -> tuple[EmergencyBroadcastAcknowledgmentRecord, ...]:
-        bounded = max(1, min(int(limit), 250))
+        bounded = max(1, min(int(limit), 251))
+        bounded_offset = max(0, int(offset))
         with self._factory() as session:
             rows = session.scalars(
                 select(EmergencyBroadcastAcknowledgment)
@@ -412,6 +417,7 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
                     EmergencyBroadcastAcknowledgment.acknowledged_at,
                     EmergencyBroadcastAcknowledgment.user_id,
                 )
+                .offset(bounded_offset)
                 .limit(bounded)
             )
             return tuple(_ack_record(row) for row in rows)
