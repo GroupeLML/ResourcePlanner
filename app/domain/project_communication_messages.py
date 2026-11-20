@@ -1380,6 +1380,18 @@ def _day_schedule_lines(
 def _project_context_payload(
     project: ProjectCommunicationProject,
 ) -> tuple[object, ...]:
+    resources: dict[str, tuple[object, ...]] = {}
+    for day in project.days:
+        for task in day.tasks:
+            for resource in task.resources:
+                resources.setdefault(
+                    resource.resource_id,
+                    (
+                        resource.resource_id,
+                        _participant_payload(resource.contact),
+                        tuple(resource.diagnostics),
+                    ),
+                )
     return (
         project.project_id,
         project.project_number,
@@ -1388,6 +1400,7 @@ def _project_context_payload(
         project.project_manager_erp_phone,
         tuple(_participant_payload(value) for value in project.project_co_managers),
         tuple(_participant_payload(value) for value in project.requesters),
+        tuple(resources[key] for key in sorted(resources)),
         tuple(project.diagnostics),
     )
 
