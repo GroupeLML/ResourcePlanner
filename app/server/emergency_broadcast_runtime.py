@@ -58,6 +58,8 @@ class EmergencyRuntimeDiagnostics:
     cleanup_receipts_deleted: int
     cleanup_broadcasts_deleted: int
     cleanup_errors: int
+    cleanup_backlog_broadcasts: int
+    cleanup_oldest_eligible_at: datetime | None
 
 
 class PresenceRegistry:
@@ -376,11 +378,17 @@ class EmergencyBroadcastRuntime:
             "cleanup_receipts_deleted": 0,
             "cleanup_broadcasts_deleted": 0,
             "cleanup_errors": 0,
+            "cleanup_backlog_broadcasts": 0,
+            "cleanup_oldest_eligible_at": None,
         }
 
     def _increment(self, key: str, amount: int = 1) -> None:
         with self._metrics_lock:
-            self._metrics[key] += amount
+            self._metrics[key] = int(self._metrics[key] or 0) + amount
+
+    def _set_metric(self, key: str, value: object) -> None:
+        with self._metrics_lock:
+            self._metrics[key] = value
 
     def diagnostics(self) -> EmergencyRuntimeDiagnostics:
         with self._metrics_lock:
@@ -500,4 +508,9 @@ class EmergencyBroadcastRuntime:
             raise
         self._increment("cleanup_receipts_deleted", receipt_count)
         self._increment("cleanup_broadcasts_deleted", broadcast_count)
+        backlog_count, oldest = self.repository.retention_backlog(
+            ended_before=cutoff,
+        )
+        self._set_metric("cleanup_backlog_broadcasts", backlog_count)
+        self._set_metric("cleanup_oldest_eligible_at", oldest)
         return receipt_count, broadcast_count
