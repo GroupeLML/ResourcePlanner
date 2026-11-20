@@ -1685,6 +1685,24 @@ def _shift_delta_line(delta: ProjectCommunicationShiftDelta) -> str:
     return text
 
 
+def _whole_project_historical_refresh_semantic_message(
+    project: ProjectCommunicationProject,
+    *,
+    change_kind: str,
+) -> ProjectMessageSemantic:
+    base = _project_semantic_message(project, change_kind=change_kind)
+    lines = list(base.lines)
+    insert_at = 1 if lines else 0
+    lines[insert_at:insert_at] = [
+        _line("blank"),
+        _line(
+            "text",
+            "Référence historique incomplète — actualisation du projet complet.",
+        ),
+    ]
+    return ProjectMessageSemantic(lines=tuple(lines))
+
+
 def _project_delta_semantic_message(
     project: ProjectCommunicationProject,
     *,
@@ -2163,12 +2181,18 @@ def build_project_delta_batch(
                 and _project_context_payload(change.before)
                 != _project_context_payload(change.after)
             )
-            semantic = _project_delta_semantic_message(
-                project,
-                deltas=deltas,
-                project_context_changed=project_context_changed,
-                change_kind=change.kind,
-            )
+            if previous_version is None and change.after is None:
+                semantic = _whole_project_historical_refresh_semantic_message(
+                    project,
+                    change_kind=change.kind,
+                )
+            else:
+                semantic = _project_delta_semantic_message(
+                    project,
+                    deltas=deltas,
+                    project_context_changed=project_context_changed,
+                    change_kind=change.kind,
+                )
             drafts.append(
                 _build_draft(
                     project=project,
