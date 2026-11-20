@@ -2668,6 +2668,53 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertIn("confirmation Confirmée → Tentative", body)
         self.assertIn("confirmation Tentative → Confirmée", body)
 
+    def test_889_resource_communication_fact_change_is_shift_modified(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            )
+        )
+        project_row = before.projects[0]
+        day = project_row.days[0]
+        task = day.tasks[0]
+        changed_resource = replace(
+            task.resources[0],
+            contact=replace(
+                task.resources[0].contact,
+                email=email("mary-new"),
+            ),
+        )
+        after = replace(
+            before,
+            projects=(
+                replace(
+                    project_row,
+                    days=(
+                        replace(
+                            day,
+                            tasks=(
+                                replace(task, resources=(changed_resource,)),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        self.assertNotEqual(
+            project_projection_fingerprint(before),
+            project_projection_fingerprint(after),
+        )
+        body = build_project_delta_batch(before, after).drafts[0].body
+        self.assertIn("Modifié — Mary", body)
+        self.assertIn(
+            f"coordonnées ressource {email('r-mary')} → {email('mary-new')}",
+            body,
+        )
+
     def test_889_historical_refresh_is_explicit_until_v4_baseline(self) -> None:
         current = v4_shift_projection(
             (
