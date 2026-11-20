@@ -2714,6 +2714,158 @@ class ProjectCommunicationMessageTests(unittest.TestCase):
         self.assertIn("heures 8 h → 4 h", simultaneous_body)
         self.assertIn("confirmation Confirmée → Tentative", simultaneous_body)
 
+    def test_889_removing_group_representative_does_not_modify_unchanged_shift(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-JOHN-CABLE",
+                    "resource_id": "R-JOHN",
+                    "resource_name": "John",
+                    "task_id": "TASK-CABLE",
+                    "task_code": "210",
+                    "task_description": "Cable work",
+                },
+                {
+                    "shift_id": "S-MARY-CABLE",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-CABLE",
+                    "task_code": "210",
+                    "task_description": "CABLE WORK",
+                },
+            )
+        )
+        after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY-CABLE",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                    "task_id": "TASK-CABLE",
+                    "task_code": "210",
+                    "task_description": "CABLE WORK",
+                },
+            )
+        )
+
+        draft = build_project_delta_batch(before, after).drafts[0]
+        self.assertIn("Retiré — John", draft.body)
+        self.assertIn("travaux Cable work", draft.body)
+        self.assertNotIn("Modifié — Mary", draft.body)
+        self.assertNotIn("travaux Cable work → CABLE WORK", draft.body)
+
+    def test_889_same_resource_id_name_correction_is_modified_not_replaced(self) -> None:
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY-NAME",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary",
+                },
+            )
+        )
+        after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-MARY-NAME",
+                    "resource_id": "R-MARY",
+                    "resource_name": "Mary Updated",
+                },
+            )
+        )
+
+        draft = build_project_delta_batch(before, after).drafts[0]
+        self.assertIn("Modifié — Mary Updated", draft.body)
+        self.assertIn("nom Mary → Mary Updated", draft.body)
+        self.assertNotIn("Remplacé", draft.body)
+        same_email = email("r-mary")
+        self.assertNotIn(f"courriel {same_email} → {same_email}", draft.body)
+        self.assertNotIn("coordonnées ressource", draft.body)
+
+    def test_889_added_shift_renders_current_work_and_exceptional_state_in_text_and_html(self) -> None:
+        mat157 = ProjectCommunicationAsset(
+            allocation_id="ALLOC-MAT157",
+            asset_id="ASSET-MAT157",
+            asset_code="MAT157",
+            asset_label="Unité MAT157",
+            asset_type_label="Unité",
+            asset_category="Équipement",
+            association_kind="OWNED_SHIFT",
+        )
+        before = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-JOHN",
+                    "resource_id": "R-JOHN",
+                    "resource_name": "John",
+                },
+            )
+        )
+        after = v4_shift_projection(
+            (
+                {
+                    "shift_id": "S-JOHN",
+                    "resource_id": "R-JOHN",
+                    "resource_name": "John",
+                },
+                {
+                    "shift_id": "S-JERRY",
+                    "resource_id": "R-JERRY",
+                    "resource_name": "Jerry",
+                    "task_id": "TASK-CABLE",
+                    "task_code": "220",
+                    "task_description": "CABLE WORK",
+                    "confirmation": "Tentative",
+                    "outside_schedule": True,
+                    "assets": (mat157,),
+                },
+            )
+        )
+
+        draft = build_project_delta_batch(before, after).drafts[0]
+        added_line = next(
+            line for line in draft.body.splitlines() if "Ajouté — Jerry" in line
+        )
+        for expected in (
+            "travaux CABLE WORK",
+            "MAT157",
+            "confirmation Tentative",
+            "hors horaire oui",
+        ):
+            self.assertIn(expected, added_line)
+            self.assertIn(expected, draft.body_html or "")
+
+    def test_889_removed_shift_uses_its_own_historical_work_context(self) -> None:
+        pole = {
+            "shift_id": "S-MARY-POLE",
+            "resource_id": "R-MARY",
+            "resource_name": "Mary",
+            "task_id": "TASK-POLE",
+            "task_code": "210",
+            "task_description": "POLE WORK",
+            "hours": 8.0,
+        }
+        cable = {
+            "shift_id": "S-MARY-CABLE",
+            "resource_id": "R-MARY",
+            "resource_name": "Mary",
+            "task_id": "TASK-CABLE",
+            "task_code": "220",
+            "task_description": "CABLE WORK",
+            "hours": 8.0,
+        }
+        before = v4_shift_projection((pole, cable))
+        after = v4_shift_projection((cable,))
+
+        draft = build_project_delta_batch(before, after).drafts[0]
+        removed_line = next(
+            line for line in draft.body.splitlines() if "Retiré — Mary" in line
+        )
+        self.assertIn("travaux POLE WORK", removed_line)
+        self.assertNotIn("CABLE WORK", removed_line)
+        self.assertNotIn("Modifié — Mary", draft.body)
+        self.assertIn("travaux POLE WORK", draft.body_html or "")
+
     def test_889_p4_detects_aggregate_preserving_shift_reassociation(self) -> None:
         before = v4_shift_projection(
             (
