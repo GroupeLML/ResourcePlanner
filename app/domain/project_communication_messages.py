@@ -1445,6 +1445,21 @@ def _asset_semantics(
     )
 
 
+def _resource_contact_semantics(
+    value: ProjectCommunicationParticipant | None,
+) -> tuple[object, ...] | None:
+    if value is None:
+        return None
+    return (
+        value.contact_id,
+        value.user_id,
+        (value.email or "").strip().casefold(),
+        value.phone,
+        bool(value.active),
+        tuple(value.diagnostics),
+    )
+
+
 def _historical_shift_changes(
     before: ProjectCommunicationShiftFact,
     after: ProjectCommunicationShiftFact,
@@ -1454,25 +1469,23 @@ def _historical_shift_changes(
     old = before.assignment
     new = after.assignment
     changed: list[str] = []
-    if old.resource_id != new.resource_id or old.resource_name != new.resource_name:
+    if old.resource_id != new.resource_id:
         changed.append("resource")
-    old_resource_contact = (
-        _participant_payload(before.resource_contact)
-        if before.resource_contact is not None
-        else None
-    )
-    new_resource_contact = (
-        _participant_payload(after.resource_contact)
-        if after.resource_contact is not None
-        else None
-    )
-    if old_resource_contact != new_resource_contact:
+    if old.resource_name != new.resource_name:
+        changed.append("resource_name")
+    if (
+        _resource_contact_semantics(before.resource_contact)
+        != _resource_contact_semantics(after.resource_contact)
+    ):
         changed.append("resource_contact")
     if before.day != after.day:
         changed.append("day")
     if round(float(old.hours), 2) != round(float(new.hours), 2):
         changed.append("hours")
-    if before.task_description != (new.task_description or after.task_description):
+    if previous_version >= 4:
+        if old.task_description != new.task_description:
+            changed.append("task_description")
+    elif before.task_description != (new.task_description or after.task_description):
         changed.append("task_description")
     if (
         old.workforce_request_id,
