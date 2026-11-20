@@ -249,9 +249,13 @@ def build_project_communication_projection(
                 raise ValueError("Type d'allocation Shift v4 manquant ou invalide")
             if type(row.outside_schedule) is not bool:
                 raise ValueError("Hors horaire Shift v4 doit être booléen")
-            if row.task_id is not None and not isinstance(row.task_id, str):
+            if row.task_id is not None and (
+                not isinstance(row.task_id, str) or not row.task_id.strip()
+            ):
                 raise ValueError("Identité tâche Shift v4 invalide")
-            if row.task_code is not None and not isinstance(row.task_code, str):
+            if row.task_code is not None and (
+                not isinstance(row.task_code, str) or not row.task_code.strip()
+            ):
                 raise ValueError("Code tâche Shift v4 invalide")
             if not isinstance(row.task_description, str) or not row.task_description.strip():
                 raise ValueError("Description tâche Shift v4 manquante ou invalide")
@@ -361,10 +365,14 @@ def build_project_communication_projection(
                     row.outside_schedule if request_provenance_version == 4 else None
                 ),
                 task_id=(
-                    row.task_id if request_provenance_version == 4 else None
+                    (row.task_id.strip() or None)
+                    if request_provenance_version == 4 and row.task_id is not None
+                    else None
                 ),
                 task_code=(
-                    row.task_code if request_provenance_version == 4 else None
+                    (row.task_code.strip() or None)
+                    if request_provenance_version == 4 and row.task_code is not None
+                    else None
                 ),
                 task_description=(
                     row.task_description if request_provenance_version == 4 else None
