@@ -176,7 +176,15 @@ def _seed_sessions(database_url: str, output: Path, count: int) -> None:
                     "csrf": admin_csrf,
                     "admin": True,
                 },
-                "users": [item.__dict__ for item in credentials],
+                "users": [
+                    {
+                        "user_id": item.user_id,
+                        "session": item.session,
+                        "csrf": item.csrf,
+                        "admin": item.admin,
+                    }
+                    for item in credentials
+                ],
             },
             indent=2,
             sort_keys=True,
@@ -612,15 +620,16 @@ async def _raw_lost_response(
     parsed = httpx.URL(base_url)
     host = parsed.host
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    authority = f"{parsed.host}:{port}"
     request = (
         f"POST /api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment HTTP/1.1\r\n"
-        f"Host: {parsed.netloc.decode()}\r\n"
+        f"Host: {authority}\r\n"
         "Content-Type: application/json\r\n"
         "Content-Length: 2\r\n"
         f"Cookie: resourceplanner_session={credential.session}; "
         f"resourceplanner_csrf={credential.csrf}\r\n"
         f"X-CSRF-Token: {credential.csrf}\r\n"
-        f"Origin: {parsed.scheme.decode()}://{parsed.netloc.decode()}\r\n"
+        f"Origin: {parsed.scheme}://{authority}\r\n"
         "Connection: close\r\n\r\n{}"
     ).encode("ascii")
     reader, writer = await asyncio.open_connection(host, port)
