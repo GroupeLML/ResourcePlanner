@@ -767,6 +767,32 @@ def create_api_app(
             response.headers["Vary"] = "Cookie"
         return response
 
+    @app.middleware("http")
+    async def emergency_runtime_admission(request: Request, call_next):
+        path = request.url.path
+        is_feature_path = (
+            path == "/api/v1/runtime/status"
+            or path.startswith("/api/v1/runtime/broadcasts/")
+            or path.startswith("/api/v1/admin/runtime")
+        )
+        if not is_feature_path:
+            return await call_next(request)
+
+        async def invoke():
+            return await call_next(request)
+
+        try:
+            return await emergency_runtime.feature_admission.run(invoke)
+        except ApplicationUnavailableError as exc:
+            if exc.code != "emergency_runtime_overloaded":
+                raise
+            emergency_runtime._increment("status_overloads")
+            response = application_error_response(exc)
+            response.headers["Retry-After"] = str(random.randint(1, 3))
+            response.headers["Cache-Control"] = "no-store, private"
+            response.headers["Vary"] = "Cookie"
+            return response
+
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(
         _request: Request,
