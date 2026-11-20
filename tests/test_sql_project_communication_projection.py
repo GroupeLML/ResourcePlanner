@@ -1919,10 +1919,11 @@ class SqlProjectCommunicationProjectionTests(unittest.TestCase):
 
                 preview_response = origin.get(
                     "/api/v1/communications/project-preview"
-                    "?week_start=2026-09-23&mode=project_planning_change&add_generator_cc=true"
+                    "?week_start=2026-09-23&mode=project_confirmation&add_generator_cc=true"
                 )
                 self.assertEqual(preview_response.status_code, 200, preview_response.text)
                 preview = preview_response.json()
+                self.assertEqual(preview["mode"], "project_confirmation")
                 self.assertTrue(preview["add_generator_cc"])
                 self.assertEqual(len(preview["drafts"]), 2)
                 self.assertEqual(
