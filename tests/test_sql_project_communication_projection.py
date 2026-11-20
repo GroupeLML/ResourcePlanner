@@ -25,6 +25,7 @@ from app.server.security import static_auth_resolver
 from app.domain.planning_engine import MISSING_ALLOCATION_TYPE
 from app.domain.project_communication import employee_assigned_assets
 from app.domain.project_communication_messages import (
+    PROJECT_RESPONSIBILITY_FOOTER,
     deserialize_project_projection,
     project_projection_fingerprint,
 )
