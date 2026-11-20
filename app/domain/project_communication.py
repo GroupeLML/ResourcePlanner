@@ -328,9 +328,17 @@ def build_project_communication_projection(
             },
         )
         if row.task_id:
-            task["task_ids"].add(row.task_id)
+            task["task_ids"].add(
+                row.task_id.strip()
+                if request_provenance_version == 4
+                else row.task_id
+            )
         if row.task_code:
-            task["task_codes"].add(row.task_code)
+            task["task_codes"].add(
+                row.task_code.strip()
+                if request_provenance_version == 4
+                else row.task_code
+            )
         task["responsibles"][_resolution_key(row.operational_responsible)] = row.operational_responsible
         task["request_assignments"].append(
             ProjectCommunicationRequestAssignment(
