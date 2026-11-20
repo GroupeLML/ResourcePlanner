@@ -2212,7 +2212,7 @@ def build_project_delta_batch(
                 and _project_context_payload(change.before)
                 != _project_context_payload(change.after)
             )
-            if previous_version is None and change.after is None:
+            if previous_version is None and change.before is not None:
                 semantic = _whole_project_historical_refresh_semantic_message(
                     project,
                     change_kind=change.kind,
