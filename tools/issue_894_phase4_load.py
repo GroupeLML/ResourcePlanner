@@ -415,6 +415,7 @@ async def _ordinary_driver(
     stop_at: float,
     latencies: list[float],
     statuses: dict[str, int],
+    stop_event: asyncio.Event | None = None,
 ) -> dict[str, object]:
     interval = 1.0 / ORDINARY_RPS
     started = time.perf_counter()
@@ -476,8 +477,12 @@ async def _ordinary_driver(
             operation_counts[operation] += 1
             completed += 1
 
-    while next_release < stop_at:
+    while next_release < stop_at and not (
+        stop_event is not None and stop_event.is_set()
+    ):
         await asyncio.sleep(max(0.0, next_release - time.perf_counter()))
+        if stop_event is not None and stop_event.is_set():
+            break
         issued += 1
         task = asyncio.create_task(one(issued, next_release))
         tasks.add(task)
@@ -488,14 +493,21 @@ async def _ordinary_driver(
     if pending:
         await asyncio.gather(*pending)
 
+    issuance_finished = time.perf_counter()
     configured_window = max(0.001, stop_at - started)
+    issuance_window = max(
+        0.001,
+        min(stop_at, issuance_finished) - started,
+    )
     completed_at = time.perf_counter()
-    completion_window = max(configured_window, completed_at - started)
+    completion_window = max(issuance_window, completed_at - started)
     return {
         "configured_target_rps": ORDINARY_RPS,
         "issued": issued,
         "completed": completed,
-        "achieved_issue_rps": issued / configured_window,
+        "configured_window_seconds": configured_window,
+        "actual_issuance_window_seconds": issuance_window,
+        "achieved_issue_rps": issued / issuance_window,
         "achieved_completion_rps": completed / completion_window,
         "operation_counts": operation_counts,
         "scheduling_lag_ms": _latencies(scheduling_lag_ms),
