@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import os
 import unittest
 from uuid import uuid4
@@ -11,7 +12,10 @@ from sqlalchemy import delete, func, select, text
 from app.application.emergency_broadcasts import EmergencyBroadcastService
 from app.application.errors import ApplicationConflictError
 from app.application.security import AuthPrincipal, ROLE_TECHNICIAN
-from app.domain.emergency_broadcast import CreateEmergencyBroadcastCommand
+from app.domain.emergency_broadcast import (
+    CreateEmergencyBroadcastCommand,
+    EndEmergencyBroadcastCommand,
+)
 from app.infrastructure.sql import AppUser, create_session_factory, create_sql_engine
 from app.infrastructure.sql.emergency_broadcast_models import (
     EmergencyBroadcast,
@@ -195,6 +199,113 @@ class EmergencyBroadcastSqlServerConcurrencyTests(unittest.TestCase):
                 .where(EmergencyBroadcastAcknowledgment.broadcast_id == broadcast.id)
             )
         self.assertEqual(count, len(users))
+
+    def test_retention_ack_delete_is_bounded_and_sqlserver_compatible(self) -> None:
+        expired = self._create(self.user_ids[0], "retention-expired")
+        self.service.acknowledge(
+            broadcast_id=expired.id,
+            authenticated_user_id=self.user_ids[2],
+        )
+        self.service.acknowledge(
+            broadcast_id=expired.id,
+            authenticated_user_id=self.user_ids[3],
+        )
+        self.service.end(
+            EndEmergencyBroadcastCommand(
+                actor_user_id=self.user_ids[0],
+                broadcast_id=expired.id,
+            )
+        )
+        historical_activated_at = datetime.now(timezone.utc) - timedelta(days=92)
+        historical_ended_at = datetime.now(timezone.utc) - timedelta(days=91)
+        with self.factory.begin() as session:
+            row = session.get(EmergencyBroadcast, expired.id)
+            row.created_at = historical_activated_at
+            row.activated_at = historical_activated_at
+            row.ended_at = historical_ended_at
+
+        recent = self._create(self.user_ids[0], "retention-recent")
+        self.service.acknowledge(
+            broadcast_id=recent.id,
+            authenticated_user_id=self.user_ids[4],
+        )
+        self.service.end(
+            EndEmergencyBroadcastCommand(
+                actor_user_id=self.user_ids[0],
+                broadcast_id=recent.id,
+            )
+        )
+
+        active = self._create(self.user_ids[0], "retention-active")
+        self.service.acknowledge(
+            broadcast_id=active.id,
+            authenticated_user_id=self.user_ids[5],
+        )
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+        first_deleted = self.repository.delete_acknowledgments_for_expired(
+            ended_before=cutoff,
+            limit=1,
+        )
+        self.assertEqual(first_deleted, 1)
+
+        with self.factory() as session:
+            expired_remaining = session.scalar(
+                select(func.count())
+                .select_from(EmergencyBroadcastAcknowledgment)
+                .where(
+                    EmergencyBroadcastAcknowledgment.broadcast_id == expired.id
+                )
+            )
+            recent_remaining = session.scalar(
+                select(func.count())
+                .select_from(EmergencyBroadcastAcknowledgment)
+                .where(
+                    EmergencyBroadcastAcknowledgment.broadcast_id == recent.id
+                )
+            )
+            active_remaining = session.scalar(
+                select(func.count())
+                .select_from(EmergencyBroadcastAcknowledgment)
+                .where(
+                    EmergencyBroadcastAcknowledgment.broadcast_id == active.id
+                )
+            )
+        self.assertEqual(expired_remaining, 1)
+        self.assertEqual(recent_remaining, 1)
+        self.assertEqual(active_remaining, 1)
+
+        second_deleted = self.repository.delete_acknowledgments_for_expired(
+            ended_before=cutoff,
+            limit=1000,
+        )
+        self.assertEqual(second_deleted, 1)
+
+        with self.factory() as session:
+            expired_remaining = session.scalar(
+                select(func.count())
+                .select_from(EmergencyBroadcastAcknowledgment)
+                .where(
+                    EmergencyBroadcastAcknowledgment.broadcast_id == expired.id
+                )
+            )
+            recent_remaining = session.scalar(
+                select(func.count())
+                .select_from(EmergencyBroadcastAcknowledgment)
+                .where(
+                    EmergencyBroadcastAcknowledgment.broadcast_id == recent.id
+                )
+            )
+            active_remaining = session.scalar(
+                select(func.count())
+                .select_from(EmergencyBroadcastAcknowledgment)
+                .where(
+                    EmergencyBroadcastAcknowledgment.broadcast_id == active.id
+                )
+            )
+        self.assertEqual(expired_remaining, 0)
+        self.assertEqual(recent_remaining, 1)
+        self.assertEqual(active_remaining, 1)
 
     def test_concurrent_active_creation_has_one_winner_and_one_conflict(self) -> None:
         def create(index: int) -> str:
