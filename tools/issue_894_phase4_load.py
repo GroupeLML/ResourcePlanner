@@ -415,39 +415,91 @@ async def _ordinary_driver(
     stop_at: float,
     latencies: list[float],
     statuses: dict[str, int],
-) -> None:
-    counter = 0
+) -> dict[str, object]:
     interval = 1.0 / ORDINARY_RPS
-    target = time.perf_counter()
-    while time.perf_counter() < stop_at:
-        counter += 1
-        if counter % 10 == 0:
-            method = "PATCH"
-            path = f"/api/v1/resources/{resource_id}"
-            headers = _headers(admin, csrf=True)
-            body = {"name": f"Ressource synthetique Phase 4 #894 {counter % 1000:03d}"}
-        elif counter % 2 == 0:
-            method = "GET"
-            path = "/api/v1/planning/snapshot?start=2026-01-05&end=2026-01-09"
-            headers = _headers(admin)
-            body = None
-        else:
-            method = "GET"
-            path = "/api/v1/projects?active_only=true"
-            headers = _headers(admin)
-            body = None
-        response, elapsed = await _request_timed(
-            client,
-            method,
-            path,
-            headers=headers,
-            json_body=body,
-        )
-        latencies.append(elapsed)
-        key = str(response.status_code)
-        statuses[key] = statuses.get(key, 0) + 1
-        target += interval
-        await asyncio.sleep(max(0.0, target - time.perf_counter()))
+    started = time.perf_counter()
+    next_release = started
+    issued = 0
+    completed = 0
+    scheduling_lag_ms: list[float] = []
+    operation_counts = {
+        "planning_reads": 0,
+        "project_reads": 0,
+        "save_mutations": 0,
+    }
+    semaphore = asyncio.Semaphore(32)
+    tasks: set[asyncio.Task[None]] = set()
+
+    async def one(counter: int, scheduled_at: float) -> None:
+        nonlocal completed
+        async with semaphore:
+            actual_start = time.perf_counter()
+            scheduling_lag_ms.append(
+                max(0.0, (actual_start - scheduled_at) * 1000.0)
+            )
+            if counter % 10 == 0:
+                operation = "save_mutations"
+                method = "PATCH"
+                path = f"/api/v1/resources/{resource_id}"
+                headers = _headers(admin, csrf=True)
+                body = {
+                    "name": (
+                        "Ressource synthetique Phase 4 #894 "
+                        f"{counter % 1000:03d}"
+                    )
+                }
+            elif counter % 2 == 0:
+                operation = "planning_reads"
+                method = "GET"
+                path = (
+                    "/api/v1/planning/snapshot"
+                    "?start=2026-01-05&end=2026-01-09"
+                )
+                headers = _headers(admin)
+                body = None
+            else:
+                operation = "project_reads"
+                method = "GET"
+                path = "/api/v1/projects?active_only=true"
+                headers = _headers(admin)
+                body = None
+            response, elapsed = await _request_timed(
+                client,
+                method,
+                path,
+                headers=headers,
+                json_body=body,
+            )
+            latencies.append(elapsed)
+            key = str(response.status_code)
+            statuses[key] = statuses.get(key, 0) + 1
+            operation_counts[operation] += 1
+            completed += 1
+
+    while next_release < stop_at:
+        await asyncio.sleep(max(0.0, next_release - time.perf_counter()))
+        issued += 1
+        task = asyncio.create_task(one(issued, next_release))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        next_release += interval
+
+    pending = tuple(tasks)
+    if pending:
+        await asyncio.gather(*pending)
+
+    configured_window = max(0.001, stop_at - started)
+    completed_at = time.perf_counter()
+    completion_window = max(configured_window, completed_at - started)
+    return {
+        "configured_target_rps": ORDINARY_RPS,
+        "issued": issued,
+        "completed": completed,
+        "achieved_issue_rps": issued / configured_window,
+        "achieved_completion_rps": completed / completion_window,
+        "operation_counts": operation_counts,
+        "scheduling_lag_ms": _latencies(scheduling_lag_ms),
+    }
 
 
 async def _poller(
@@ -515,6 +567,39 @@ async def _loop_metrics(backend_url: str, *, reset: bool) -> dict[str, object]:
         )
         response.raise_for_status()
         return response.json()
+
+
+def _require_phase4_telemetry(
+    metrics: dict[str, object],
+    *,
+    minimum_coverage_seconds: float = 0.0,
+) -> None:
+    monitor = metrics.get("monitor")
+    event_loop = metrics.get("event_loop_lag_ms")
+    pool = metrics.get("pool")
+    if not isinstance(monitor, dict) or not bool(monitor.get("active")):
+        raise RuntimeError("Phase 4 monitor is not active.")
+    samples = int(metrics.get("samples") or 0)
+    coverage = float(monitor.get("coverage_seconds") or 0.0)
+    ratio = float(monitor.get("coverage_ratio") or 0.0)
+    if samples <= 0:
+        raise RuntimeError("Phase 4 event-loop telemetry has no samples.")
+    if coverage < max(0.0, minimum_coverage_seconds * 0.95):
+        raise RuntimeError(
+            "Phase 4 monitor did not cover the required measurement window: "
+            f"{coverage:.3f}s < {minimum_coverage_seconds:.3f}s."
+        )
+    if ratio < 0.50:
+        raise RuntimeError(
+            f"Phase 4 event-loop telemetry coverage ratio is only {ratio:.3f}."
+        )
+    if not isinstance(event_loop, dict):
+        raise RuntimeError("Phase 4 event-loop distribution is missing.")
+    if not isinstance(pool, dict):
+        raise RuntimeError("Phase 4 SQL pool telemetry is missing.")
+    checkout = pool.get("checkout_wait_ms")
+    if not isinstance(checkout, dict) or int(checkout.get("samples") or 0) <= 0:
+        raise RuntimeError("Phase 4 SQL pool checkout telemetry has no samples.")
 
 
 async def _run_baseline(
