@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import time
 import unittest
+from unittest.mock import patch
+
+import httpx
+
+from tools import issue_894_phase4_load as phase4_load
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,6 +16,63 @@ LOAD = ROOT / "tools" / "issue_894_phase4_load.py"
 ROLLBACK = ROOT / "tools" / "build_issue_894_rollback_bundle.sh"
 SERVER = ROOT / "tools" / "issue_894_phase4_server.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "syntax-check.yml"
+
+
+class _OrdinaryTimeoutClient:
+    def __init__(self) -> None:
+        self.timed_out = False
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers=None,
+        json=None,
+    ) -> httpx.Response:
+        request = httpx.Request(method, f"http://phase4.test{path}")
+        if "planning/snapshot" in path and not self.timed_out:
+            self.timed_out = True
+            raise httpx.ReadTimeout("synthetic ordinary timeout", request=request)
+        return httpx.Response(200, request=request)
+
+
+class Issue894Phase4OrdinaryDriverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_is_recorded_and_remaining_requests_complete(self) -> None:
+        client = _OrdinaryTimeoutClient()
+        latencies: list[float] = []
+        statuses: dict[str, int] = {}
+        credential = phase4_load.Credential(
+            user_id="U",
+            session="S",
+            csrf="C",
+            admin=True,
+        )
+
+        with patch.object(phase4_load, "ORDINARY_RPS", 100.0):
+            result = await phase4_load._ordinary_driver(
+                client,
+                credential,
+                "RESOURCE",
+                time.perf_counter() + 0.055,
+                latencies,
+                statuses,
+            )
+
+        self.assertGreaterEqual(int(result["issued"]), 4)
+        self.assertEqual(result["completed"], result["issued"])
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["succeeded"], int(result["issued"]) - 1)
+        self.assertEqual(result["error_counts"], {"read_timeout": 1})
+        self.assertEqual(result["operation_errors"]["planning_reads"], 1)
+        self.assertEqual(len(result["errors"]), 1)
+        error = result["errors"][0]
+        self.assertEqual(error["operation"], "planning_reads")
+        self.assertEqual(error["category"], "read_timeout")
+        self.assertEqual(error["exception"], "ReadTimeout")
+        self.assertGreaterEqual(float(error["elapsed_ms"]), 0.0)
+        self.assertEqual(sum(statuses.values()), result["succeeded"])
+        self.assertEqual(len(latencies), result["completed"])
 
 
 class Issue894Phase4ToolingTests(unittest.TestCase):
@@ -78,6 +141,9 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn('"planning_reads"', function_source)
         self.assertIn('"project_reads"', function_source)
         self.assertIn('"save_mutations"', function_source)
+        self.assertIn("except httpx.TimeoutException as exc", function_source)
+        self.assertIn('"read_timeout"', function_source)
+        self.assertIn('"max_in_flight"', function_source)
         self.assertIn("ORDINARY_RPS * 0.95", source)
 
     def test_missing_phase4_monitor_or_pool_telemetry_fails_closed(self) -> None:
