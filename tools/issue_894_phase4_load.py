@@ -857,6 +857,29 @@ def _wait_for_receipt(
         engine.dispose()
 
 
+def _response_metric_ms(response: httpx.Response, header: str) -> float | None:
+    raw = str(response.headers.get(header) or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return None
+
+
+async def _prewarm_ack_clients(
+    clients: list[httpx.AsyncClient],
+) -> None:
+    semaphore = asyncio.Semaphore(64)
+
+    async def one(client: httpx.AsyncClient) -> None:
+        async with semaphore:
+            response = await client.get("/health")
+            response.raise_for_status()
+
+    await asyncio.gather(*(one(client) for client in clients))
+
+
 async def _admin_runtime_diagnostics(
     client: httpx.AsyncClient,
     admin: Credential,
@@ -892,6 +915,7 @@ def _record_http_failure(
 
 async def _ack_wave(
     base_url: str,
+    backend_url: str,
     admin: Credential,
     users: list[Credential],
     *,
@@ -934,42 +958,96 @@ async def _ack_wave(
     duplicate_users = [selected[index % distinct] for index in range(duplicates)]
     targets = selected + duplicate_users
     random.Random(894).shuffle(targets)
-    barrier = asyncio.Event()
+    release = asyncio.Event()
+    ready: asyncio.Queue[None] = asyncio.Queue()
     latencies: list[float] = []
     statuses: list[int] = []
     error_codes: dict[str, int] = {}
     retry_after: dict[str, int] = {}
     timestamps: dict[str, set[str]] = {}
-
-    async def one(credential: Credential) -> None:
-        async with httpx.AsyncClient(
+    request_start_lag_ms: list[float] = []
+    server_ingress_ms: list[float] = []
+    admission_wait_ms: list[float] = []
+    permit_service_ms: list[float] = []
+    auth_ms: list[float] = []
+    csrf_ms: list[float] = []
+    repository_ms: list[float] = []
+    client_overhead_ms: list[float] = []
+    clients = [
+        httpx.AsyncClient(
             base_url=base_url,
             cookies=_cookies(credential),
             timeout=10.0,
-        ) as client:
-            await barrier.wait()
-            response, elapsed = await _ack(client, credential, broadcast_id)
-            latencies.append(elapsed)
-            statuses.append(response.status_code)
-            if response.status_code == 200:
-                payload = response.json()["acknowledgment"]
-                timestamps.setdefault(credential.user_id, set()).add(
-                    str(payload["acknowledged_at"])
-                )
-            else:
-                _record_http_failure(
-                    response,
-                    error_codes,
-                    retry_after,
-                )
+        )
+        for credential in targets
+    ]
+    await _prewarm_ack_clients(clients)
+    release_monotonic = 0.0
 
-    tasks = [asyncio.create_task(one(item)) for item in targets]
-    barrier.set()
+    async def one(
+        credential: Credential,
+        client: httpx.AsyncClient,
+    ) -> None:
+        ready.put_nowait(None)
+        await release.wait()
+        actual_start = time.perf_counter()
+        request_start_lag_ms.append(
+            max(0.0, (actual_start - release_monotonic) * 1000.0)
+        )
+        response, elapsed = await _ack(client, credential, broadcast_id)
+        latencies.append(elapsed)
+        statuses.append(response.status_code)
+        ingress = _response_metric_ms(response, "X-RP894-Ingress-Ms")
+        wait = _response_metric_ms(response, "X-RP894-Admission-Wait-Ms")
+        service = _response_metric_ms(response, "X-RP894-Permit-Service-Ms")
+        auth = _response_metric_ms(response, "X-RP894-Auth-Resolver-Ms")
+        csrf = _response_metric_ms(response, "X-RP894-Csrf-Ms")
+        repository = _response_metric_ms(response, "X-RP894-Ack-Repository-Ms")
+        if ingress is not None:
+            server_ingress_ms.append(ingress)
+            client_overhead_ms.append(max(0.0, elapsed - ingress))
+        if wait is not None:
+            admission_wait_ms.append(wait)
+        if service is not None:
+            permit_service_ms.append(service)
+        if auth is not None:
+            auth_ms.append(auth)
+        if csrf is not None:
+            csrf_ms.append(csrf)
+        if repository is not None:
+            repository_ms.append(repository)
+        if response.status_code == 200:
+            payload = response.json()["acknowledgment"]
+            timestamps.setdefault(credential.user_id, set()).add(
+                str(payload["acknowledged_at"])
+            )
+        else:
+            _record_http_failure(
+                response,
+                error_codes,
+                retry_after,
+            )
+
+    tasks = [
+        asyncio.create_task(one(credential, client))
+        for credential, client in zip(targets, clients, strict=True)
+    ]
+    for _ in tasks:
+        await ready.get()
+    await _loop_metrics(backend_url, reset=True)
+    release_monotonic = time.perf_counter()
+    release.set()
     cleanup_task = asyncio.create_task(
         asyncio.to_thread(_run_retention_cleanup, database_url)
     )
-    await asyncio.gather(*tasks)
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        await asyncio.gather(*(client.aclose() for client in clients))
     cleanup_deleted_receipts, cleanup_deleted_parents = await cleanup_task
+    await asyncio.sleep(0.10)
+    wave_telemetry = await _loop_metrics(backend_url, reset=False)
+    _require_phase4_telemetry(wave_telemetry)
 
     lost_user = users[distinct]
     await _raw_lost_response(base_url, lost_user, broadcast_id)
@@ -1033,6 +1111,25 @@ async def _ack_wave(
         "lost_response_retry": True,
         "lost_response_committed_before_retry": lost_response_committed,
         "latency": _latencies(latencies),
+        "generator": {
+            "requested_release_monotonic": release_monotonic,
+            "request_start_lag_ms": _latencies(request_start_lag_ms),
+            "request_start_spread_ms": (
+                max(request_start_lag_ms) - min(request_start_lag_ms)
+                if request_start_lag_ms
+                else 0.0
+            ),
+            "client_overhead_ms": _latencies(client_overhead_ms),
+        },
+        "request_cost": {
+            "server_ingress_ms": _latencies(server_ingress_ms),
+            "admission_wait_ms": _latencies(admission_wait_ms),
+            "permit_service_ms": _latencies(permit_service_ms),
+            "auth_resolver_ms": _latencies(auth_ms),
+            "csrf_ms": _latencies(csrf_ms),
+            "ack_repository_ms": _latencies(repository_ms),
+        },
+        "telemetry": wave_telemetry,
         "http_codes": {
             str(code): statuses.count(code)
             for code in sorted(set(statuses))
@@ -1104,6 +1201,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
             waves.append(
                 await _ack_wave(
                     args.base_url,
+                    args.backend_url,
                     admin,
                     users,
                     distinct=distinct,
