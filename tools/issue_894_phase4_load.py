@@ -604,6 +604,7 @@ def _require_phase4_telemetry(
 
 async def _run_baseline(
     base_url: str,
+    backend_url: str,
     admin: Credential,
     *,
     warmup_seconds: int,
@@ -626,8 +627,9 @@ async def _run_baseline(
             await asyncio.sleep(0.1)
         latencies: list[float] = []
         statuses: dict[str, int] = {}
+        await _loop_metrics(backend_url, reset=True)
         stop_at = time.perf_counter() + measure_seconds
-        await _ordinary_driver(
+        ordinary_workload = await _ordinary_driver(
             client,
             admin,
             resource_id,
@@ -635,9 +637,16 @@ async def _run_baseline(
             latencies,
             statuses,
         )
+        telemetry = await _loop_metrics(backend_url, reset=False)
+        _require_phase4_telemetry(
+            telemetry,
+            minimum_coverage_seconds=measure_seconds,
+        )
         return {
             "ordinary_api": _latencies(latencies),
+            "ordinary_workload": ordinary_workload,
             "statuses": statuses,
+            "telemetry": telemetry,
         }
 
 
@@ -721,11 +730,15 @@ async def _run_scenario(
             )
         )
         await asyncio.sleep(measure_seconds)
-        await ordinary
+        ordinary_workload = await ordinary
         for task in pollers:
             task.cancel()
         await asyncio.gather(*pollers, return_exceptions=True)
         loop = await _loop_metrics(backend_url, reset=False)
+        _require_phase4_telemetry(
+            loop,
+            minimum_coverage_seconds=measure_seconds,
+        )
         after_sql = _sql_snapshot(os.environ["RESOURCEPLANNER_DATABASE_URL"])
         await _end_active(admin_client, admin)
 
@@ -737,6 +750,7 @@ async def _run_scenario(
         "status": _latencies(status_latencies),
         "status_codes": status_codes,
         "ordinary_api": _latencies(ordinary_latencies),
+        "ordinary_workload": ordinary_workload,
         "ordinary_statuses": ordinary_statuses,
         "foreground_delivery": _latencies(delivery_latencies),
         "event_loop": loop,
@@ -1059,6 +1073,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
     xact_abort_recovery = _xact_abort_recovery(database_url)
     baseline = await _run_baseline(
         args.base_url,
+        args.backend_url,
         admin,
         warmup_seconds=args.warmup_seconds,
         measure_seconds=args.measure_seconds,
