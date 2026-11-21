@@ -429,7 +429,7 @@ async def _ordinary_driver(
         "save_mutations": 0,
     }
     semaphore = asyncio.Semaphore(32)
-    tasks: set[asyncio.Task[None]] = set()
+    tasks: list[asyncio.Task[None]] = []
 
     async def one(counter: int, scheduled_at: float) -> None:
         nonlocal completed
@@ -484,14 +484,11 @@ async def _ordinary_driver(
         if stop_event is not None and stop_event.is_set():
             break
         issued += 1
-        task = asyncio.create_task(one(issued, next_release))
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
+        tasks.append(asyncio.create_task(one(issued, next_release)))
         next_release += interval
 
-    pending = tuple(tasks)
-    if pending:
-        await asyncio.gather(*pending)
+    if tasks:
+        await asyncio.gather(*tasks)
 
     issuance_finished = time.perf_counter()
     configured_window = max(0.001, stop_at - started)
