@@ -1413,7 +1413,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
                 float(scenario["ordinary_workload"]["achieved_issue_rps"])
                 >= ORDINARY_RPS * 0.95
             ),
-            "ordinary_no_request_errors": (
+            "ordinary_no_request_errors_ok": (
                 int(scenario["ordinary_workload"]["failed"]) == 0
             ),
             "ordinary_all_200": set(scenario["ordinary_statuses"]) <= {"200"}
