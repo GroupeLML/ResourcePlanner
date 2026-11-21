@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import inspect
+from time import perf_counter
 from typing import Any
 
 from fastapi import Request
@@ -295,6 +296,7 @@ def install_authorization_middleware(
 
         emergency_feature = _is_emergency_feature_path(path)
         with performance_phase("auth"):
+            resolver_started = perf_counter()
             try:
                 principal = await resolve_principal(
                     resolver,
@@ -309,6 +311,12 @@ def install_authorization_middleware(
                         "L'authentification du statut d'urgence est temporairement indisponible.",
                     )
                 raise
+            finally:
+                if emergency_feature:
+                    request.state.issue_894_auth_resolver_seconds = max(
+                        0.0,
+                        perf_counter() - resolver_started,
+                    )
             if principal is None:
                 return _error(
                     401,
@@ -337,6 +345,7 @@ def install_authorization_middleware(
                 and principal.auth_mode in {"oidc", "break_glass"}
                 and request.method.upper() in _UNSAFE_METHODS
             ):
+                csrf_started = perf_counter()
                 try:
                     csrf_allowed = await _csrf_allowed(
                         csrf_guard,
@@ -351,6 +360,12 @@ def install_authorization_middleware(
                             "La validation de la session est temporairement indisponible.",
                         )
                     raise
+                finally:
+                    if emergency_feature:
+                        request.state.issue_894_csrf_seconds = max(
+                            0.0,
+                            perf_counter() - csrf_started,
+                        )
                 if not csrf_allowed:
                     return _error(
                         403,
