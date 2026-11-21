@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -220,6 +221,55 @@ class EmergencyAuthOffloadTests(unittest.TestCase):
 
         resolved = asyncio.run(scenario())
         self.assertEqual(resolved, expected)
+
+
+class EmergencyAuthMiddlewareTests(unittest.TestCase):
+    def test_emergency_ack_offloads_sync_auth_and_csrf(self) -> None:
+        app = FastAPI()
+
+        @app.post("/api/v1/runtime/broadcasts/B/acknowledgment")
+        async def command() -> dict[str, bool]:
+            return {"ok": True}
+
+        oidc = AuthPrincipal.from_roles(
+            local_user_id="USER-OFFLOAD-ACK",
+            issuer="urn:test",
+            subject="USER-OFFLOAD-ACK",
+            display_name="User Offload ACK",
+            email=None,
+            roles=(ROLE_TECHNICIAN,),
+            auth_mode="oidc",
+        )
+        calls: list[object] = []
+
+        def resolver(_request):
+            return oidc
+
+        def csrf_guard(_request):
+            return True
+
+        async def fake_run(func, /, *args, **kwargs):
+            calls.append(func)
+            return func(*args, **kwargs)
+
+        install_authorization_middleware(
+            app,
+            resolver,
+            csrf_guard=csrf_guard,
+        )
+        with patch(
+            "app.server.security.run_sync_cancellation_safe",
+            new=fake_run,
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/runtime/broadcasts/B/acknowledgment",
+                    json={},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn(resolver, calls)
+        self.assertIn(csrf_guard, calls)
 
 
 class EmergencyRuntimeHttpTests(unittest.TestCase):
