@@ -16,6 +16,7 @@ _INTERVAL_SECONDS = 0.05
 _LAGS_MS: deque[float] = deque(maxlen=500_000)
 _POOL_CHECKOUT_WAIT_MS: deque[float] = deque(maxlen=500_000)
 _INGRESS_TOTAL_MS: deque[float] = deque(maxlen=500_000)
+_INGRESS_AT_MONOTONIC: deque[float] = deque(maxlen=500_000)
 _ADMISSION_WAIT_MS: deque[float] = deque(maxlen=500_000)
 _PERMIT_SERVICE_MS: deque[float] = deque(maxlen=500_000)
 _POOL_MAX = {"checked_out": 0, "overflow": 0}
@@ -173,6 +174,7 @@ def create_phase4_app():
         )
 
         _INGRESS_TOTAL_MS.append(ingress_ms)
+        _INGRESS_AT_MONOTONIC.append(ingress_started)
         _ADMISSION_WAIT_MS.append(admission_wait_ms)
         if service_ms is not None:
             _PERMIT_SERVICE_MS.append(service_ms)
@@ -243,6 +245,15 @@ def create_phase4_app():
             },
             "admission": {
                 "ingress_total_ms": _distribution(_INGRESS_TOTAL_MS),
+                "arrival": {
+                    "samples": len(_INGRESS_AT_MONOTONIC),
+                    "spread_ms": (
+                        (max(_INGRESS_AT_MONOTONIC) - min(_INGRESS_AT_MONOTONIC))
+                        * 1000.0
+                        if _INGRESS_AT_MONOTONIC
+                        else 0.0
+                    ),
+                },
                 "wait_ms": _distribution(_ADMISSION_WAIT_MS),
                 "permit_service_ms": _distribution(_PERMIT_SERVICE_MS),
             },
@@ -251,6 +262,7 @@ def create_phase4_app():
             _LAGS_MS.clear()
             _POOL_CHECKOUT_WAIT_MS.clear()
             _INGRESS_TOTAL_MS.clear()
+            _INGRESS_AT_MONOTONIC.clear()
             _ADMISSION_WAIT_MS.clear()
             _PERMIT_SERVICE_MS.clear()
             _POOL_MAX["checked_out"] = 0
