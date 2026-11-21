@@ -638,6 +638,52 @@ async def _loop_metrics(backend_url: str, *, reset: bool) -> dict[str, object]:
         return response.json()
 
 
+def _telemetry_error_category(exc: BaseException) -> str:
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(exc, httpx.ReadTimeout):
+        return "read_timeout"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return "http_status_error"
+    if isinstance(exc, httpx.RequestError):
+        return "request_error"
+    return "unexpected_error"
+
+
+async def _capture_loop_metrics(
+    backend_url: str,
+    *,
+    reset: bool,
+) -> dict[str, object]:
+    endpoint = f"{backend_url.rstrip('/')}/__phase4__/metrics"
+    started = time.perf_counter()
+    try:
+        metrics = await _loop_metrics(backend_url, reset=reset)
+    except (httpx.HTTPError, RuntimeError) as exc:
+        return {
+            "available": False,
+            "endpoint": endpoint,
+            "reset": reset,
+            "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+            "error": {
+                "category": _telemetry_error_category(exc),
+                "exception": type(exc).__name__,
+                "message": str(exc)[:500],
+            },
+            "metrics": None,
+        }
+    return {
+        "available": True,
+        "endpoint": endpoint,
+        "reset": reset,
+        "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+        "error": None,
+        "metrics": metrics,
+    }
+
+
 def _require_phase4_telemetry(
     metrics: dict[str, object],
     *,
@@ -671,6 +717,43 @@ def _require_phase4_telemetry(
         raise RuntimeError("Phase 4 SQL pool checkout telemetry has no samples.")
 
 
+def _validate_phase4_telemetry_capture(
+    capture: dict[str, object],
+    *,
+    minimum_coverage_seconds: float = 0.0,
+) -> dict[str, object]:
+    if not bool(capture.get("available")):
+        error = capture.get("error")
+        return {
+            "passed": False,
+            "reason": "required_telemetry_unavailable",
+            "error": error if isinstance(error, dict) else None,
+        }
+    metrics = capture.get("metrics")
+    if not isinstance(metrics, dict):
+        return {
+            "passed": False,
+            "reason": "required_telemetry_missing_payload",
+            "error": None,
+        }
+    try:
+        _require_phase4_telemetry(
+            metrics,
+            minimum_coverage_seconds=minimum_coverage_seconds,
+        )
+    except RuntimeError as exc:
+        return {
+            "passed": False,
+            "reason": str(exc),
+            "error": None,
+        }
+    return {
+        "passed": True,
+        "reason": None,
+        "error": None,
+    }
+
+
 async def _run_baseline(
     base_url: str,
     backend_url: str,
@@ -696,7 +779,10 @@ async def _run_baseline(
             await asyncio.sleep(0.1)
         latencies: list[float] = []
         statuses: dict[str, int] = {}
-        await _loop_metrics(backend_url, reset=True)
+        telemetry_reset = await _capture_loop_metrics(
+            backend_url,
+            reset=True,
+        )
         stop_at = time.perf_counter() + measure_seconds
         ordinary_workload = await _ordinary_driver(
             client,
@@ -706,16 +792,31 @@ async def _run_baseline(
             latencies,
             statuses,
         )
-        telemetry = await _loop_metrics(backend_url, reset=False)
-        _require_phase4_telemetry(
-            telemetry,
+        telemetry_capture = await _capture_loop_metrics(
+            backend_url,
+            reset=False,
+        )
+        telemetry_validation = _validate_phase4_telemetry_capture(
+            telemetry_capture,
             minimum_coverage_seconds=measure_seconds,
+        )
+        telemetry_ok = (
+            bool(telemetry_reset.get("available"))
+            and bool(telemetry_validation["passed"])
         )
         return {
             "ordinary_api": _latencies(latencies),
             "ordinary_workload": ordinary_workload,
             "statuses": statuses,
-            "telemetry": telemetry,
+            "telemetry": (
+                telemetry_capture.get("metrics")
+                if isinstance(telemetry_capture.get("metrics"), dict)
+                else {}
+            ),
+            "telemetry_reset": telemetry_reset,
+            "telemetry_capture": telemetry_capture,
+            "telemetry_validation": telemetry_validation,
+            "telemetry_ok": telemetry_ok,
         }
 
 
@@ -776,7 +877,10 @@ async def _run_scenario(
             for credential in selected
         ]
         await asyncio.sleep(warmup_seconds)
-        await _loop_metrics(backend_url, reset=True)
+        telemetry_reset = await _capture_loop_metrics(
+            backend_url,
+            reset=True,
+        )
         before_sql = _sql_snapshot(os.environ["RESOURCEPLANNER_DATABASE_URL"])
         if state == "pending":
             activation_monotonic.append(time.perf_counter())
@@ -803,10 +907,22 @@ async def _run_scenario(
         for task in pollers:
             task.cancel()
         await asyncio.gather(*pollers, return_exceptions=True)
-        loop = await _loop_metrics(backend_url, reset=False)
-        _require_phase4_telemetry(
-            loop,
+        telemetry_capture = await _capture_loop_metrics(
+            backend_url,
+            reset=False,
+        )
+        telemetry_validation = _validate_phase4_telemetry_capture(
+            telemetry_capture,
             minimum_coverage_seconds=measure_seconds,
+        )
+        telemetry_ok = (
+            bool(telemetry_reset.get("available"))
+            and bool(telemetry_validation["passed"])
+        )
+        loop = (
+            telemetry_capture.get("metrics")
+            if isinstance(telemetry_capture.get("metrics"), dict)
+            else {}
         )
         after_sql = _sql_snapshot(os.environ["RESOURCEPLANNER_DATABASE_URL"])
         await _end_active(admin_client, admin)
@@ -823,6 +939,10 @@ async def _run_scenario(
         "ordinary_statuses": ordinary_statuses,
         "foreground_delivery": _latencies(delivery_latencies),
         "event_loop": loop,
+        "telemetry_reset": telemetry_reset,
+        "telemetry_capture": telemetry_capture,
+        "telemetry_validation": telemetry_validation,
+        "telemetry_ok": telemetry_ok,
         "sql_before": before_sql,
         "sql_after": after_sql,
     }
