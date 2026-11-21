@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import Sequence
 
-from sqlalchemy import delete, func, select, tuple_, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
@@ -330,12 +330,19 @@ class SqlEmergencyBroadcastRepository(EmergencyBroadcastRepositoryPort):
             )
             if not keys:
                 return 0
+            key_predicate = or_(
+                *(
+                    and_(
+                        EmergencyBroadcastAcknowledgment.broadcast_id
+                        == broadcast_id,
+                        EmergencyBroadcastAcknowledgment.user_id == user_id,
+                    )
+                    for broadcast_id, user_id in keys
+                )
+            )
             result = session.execute(
                 delete(EmergencyBroadcastAcknowledgment).where(
-                    tuple_(
-                        EmergencyBroadcastAcknowledgment.broadcast_id,
-                        EmergencyBroadcastAcknowledgment.user_id,
-                    ).in_(keys),
+                    key_predicate,
                     EmergencyBroadcastAcknowledgment.broadcast_id.in_(
                         select(EmergencyBroadcast.id).where(
                             EmergencyBroadcast.state == BROADCAST_ENDED,
