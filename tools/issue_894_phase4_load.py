@@ -1183,6 +1183,8 @@ async def _run_overlap_ack_diagnostic(
     ordinary_statuses: dict[str, int] = {}
     ordinary_stop = asyncio.Event()
     background_stop_at = time.perf_counter() + 600.0
+    database_url = os.environ["RESOURCEPLANNER_DATABASE_URL"]
+    sql_before = _sql_snapshot(database_url)
 
     async with httpx.AsyncClient(
         base_url=base_url,
@@ -1245,6 +1247,7 @@ async def _run_overlap_ack_diagnostic(
             await asyncio.gather(*pollers, return_exceptions=True)
             await _end_active(admin_client, admin)
 
+    sql_after = _sql_snapshot(database_url)
     return {
         "polling_clients": len(selected),
         "ordinary_workload": ordinary_workload,
@@ -1254,6 +1257,11 @@ async def _run_overlap_ack_diagnostic(
         "status_codes": status_codes,
         "waves": waves,
         "duration_seconds": time.perf_counter() - started,
+        "sql_before": sql_before,
+        "sql_after": sql_after,
+        "deadlock_delta": (
+            int(sql_after["deadlocks"]) - int(sql_before["deadlocks"])
+        ),
         "all_waves_functional": all(bool(wave["passed"]) for wave in waves),
     }
 
@@ -1419,6 +1427,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         and bool(wave_check["passed"])
         and overlap_rate_ok
         and bool(overlap["all_waves_functional"])
+        and int(overlap["deadlock_delta"]) == 0
         and business_unchanged
         and all(xact_abort_recovery.values())
     )
