@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 import time
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 import httpx
@@ -35,6 +36,141 @@ class _OrdinaryTimeoutClient:
             self.timed_out = True
             raise httpx.ReadTimeout("synthetic ordinary timeout", request=request)
         return httpx.Response(200, request=request)
+
+
+class Issue894Phase4TelemetryFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connect_timeout_is_explicit_and_fails_closed(self) -> None:
+        request = httpx.Request(
+            "GET",
+            "http://backend:8000/__phase4__/metrics",
+        )
+
+        async def fail_metrics(_backend_url: str, *, reset: bool):
+            del reset
+            raise httpx.ConnectTimeout(
+                "synthetic metrics connect timeout",
+                request=request,
+            )
+
+        with patch.object(phase4_load, "_loop_metrics", new=fail_metrics):
+            capture = await phase4_load._capture_loop_metrics(
+                "http://backend:8000",
+                reset=False,
+            )
+
+        validation = phase4_load._validate_phase4_telemetry_capture(
+            capture,
+            minimum_coverage_seconds=600,
+        )
+        self.assertFalse(capture["available"])
+        self.assertEqual(
+            capture["endpoint"],
+            "http://backend:8000/__phase4__/metrics",
+        )
+        self.assertGreaterEqual(float(capture["elapsed_ms"]), 0.0)
+        self.assertEqual(
+            capture["error"]["category"],
+            "connect_timeout",
+        )
+        self.assertEqual(
+            capture["error"]["exception"],
+            "ConnectTimeout",
+        )
+        self.assertFalse(validation["passed"])
+        self.assertEqual(
+            validation["reason"],
+            "required_telemetry_unavailable",
+        )
+
+    async def test_baseline_preserves_workload_when_final_telemetry_times_out(self) -> None:
+        workload = {
+            "configured_target_rps": 10.0,
+            "issued": 6000,
+            "completed": 6000,
+            "succeeded": 5999,
+            "failed": 1,
+            "achieved_issue_rps": 10.0,
+        }
+        captures = [
+            {
+                "available": True,
+                "endpoint": "http://backend:8000/__phase4__/metrics",
+                "reset": True,
+                "elapsed_ms": 1.0,
+                "error": None,
+                "metrics": {"reset": True},
+            },
+            {
+                "available": False,
+                "endpoint": "http://backend:8000/__phase4__/metrics",
+                "reset": False,
+                "elapsed_ms": 5000.0,
+                "error": {
+                    "category": "connect_timeout",
+                    "exception": "ConnectTimeout",
+                    "message": "synthetic",
+                },
+                "metrics": None,
+            },
+        ]
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        async def fake_driver(
+            _client,
+            _admin,
+            _resource_id,
+            _stop_at,
+            latencies,
+            statuses,
+            stop_event=None,
+        ):
+            del stop_event
+            latencies.extend([50.0, 10000.0])
+            statuses["200"] = 1
+            return workload
+
+        async def fake_capture(_backend_url: str, *, reset: bool):
+            expected = captures.pop(0)
+            self.assertEqual(expected["reset"], reset)
+            return expected
+
+        credential = phase4_load.Credential(
+            user_id="U",
+            session="S",
+            csrf="C",
+            admin=True,
+        )
+        with (
+            patch.object(phase4_load.httpx, "AsyncClient", return_value=FakeClient()),
+            patch.object(phase4_load, "_end_active", new=mock.AsyncMock()),
+            patch.object(
+                phase4_load,
+                "_ensure_synthetic_resource",
+                new=mock.AsyncMock(return_value="RESOURCE"),
+            ),
+            patch.object(phase4_load, "_ordinary_driver", new=fake_driver),
+            patch.object(phase4_load, "_capture_loop_metrics", new=fake_capture),
+        ):
+            baseline = await phase4_load._run_baseline(
+                "http://frontend:8080",
+                "http://backend:8000",
+                credential,
+                warmup_seconds=0,
+                measure_seconds=1,
+            )
+
+        self.assertIs(baseline["ordinary_workload"], workload)
+        self.assertEqual(baseline["ordinary_api"]["count"], 2)
+        self.assertEqual(baseline["statuses"], {"200": 1})
+        self.assertFalse(baseline["telemetry_ok"])
+        self.assertFalse(baseline["telemetry_capture"]["available"])
+        self.assertFalse(baseline["telemetry_validation"]["passed"])
 
 
 class Issue894Phase4OrdinaryDriverTests(unittest.IsolatedAsyncioTestCase):
@@ -153,6 +289,9 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("event-loop telemetry has no samples", source)
         self.assertIn("SQL pool checkout telemetry has no samples", source)
         self.assertIn("minimum_coverage_seconds=measure_seconds", source)
+        self.assertIn('"required_telemetry_unavailable"', source)
+        self.assertIn("baseline_telemetry_ok", source)
+        self.assertIn("and baseline_telemetry_ok", source)
 
     def test_rollback_bundle_preserves_prev_behavior_with_only_0038_lineage_overlay(self) -> None:
         source = ROLLBACK.read_text(encoding="utf-8")
