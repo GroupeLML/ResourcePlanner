@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response, status
@@ -168,11 +169,18 @@ def build_emergency_runtime_router(runtime: EmergencyBroadcastRuntime) -> APIRou
         _private_no_store(response)
         user_id = _principal_user_id(request)
 
-        record, created = await run_sync_cancellation_safe(
-            runtime.acknowledge,
-            broadcast_id=broadcast_id,
-            user_id=user_id,
-        )
+        repository_started = perf_counter()
+        try:
+            record, created = await run_sync_cancellation_safe(
+                runtime.acknowledge,
+                broadcast_id=broadcast_id,
+                user_id=user_id,
+            )
+        finally:
+            request.state.issue_894_ack_repository_seconds = max(
+                0.0,
+                perf_counter() - repository_started,
+            )
         return {
             "status": "acknowledged" if created else "already_acknowledged",
             "acknowledgment": _receipt_payload(record),
