@@ -1167,6 +1167,100 @@ async def _ack_wave(
     }
 
 
+async def _run_overlap_ack_diagnostic(
+    base_url: str,
+    backend_url: str,
+    admin: Credential,
+    users: list[Credential],
+    *,
+    repeats: int = 2,
+) -> dict[str, object]:
+    selected = users[:250]
+    start_measurement = asyncio.Event()
+    start_measurement.set()
+    status_latencies: list[float] = []
+    status_codes: dict[str, int] = {}
+    delivery_latencies: list[float] = []
+    activation_monotonic: list[float] = []
+    ordinary_latencies: list[float] = []
+    ordinary_statuses: dict[str, int] = {}
+    ordinary_stop = asyncio.Event()
+    background_stop_at = time.perf_counter() + 600.0
+
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        cookies=_cookies(admin),
+        timeout=10.0,
+    ) as admin_client:
+        await _end_active(admin_client, admin)
+        resource_id = await _ensure_synthetic_resource(admin_client, admin)
+        pollers = [
+            asyncio.create_task(
+                _poller(
+                    base_url,
+                    credential,
+                    start_measurement=start_measurement,
+                    stop_at=background_stop_at,
+                    status_latencies=status_latencies,
+                    status_codes=status_codes,
+                    delivery_latencies=delivery_latencies,
+                    activation_monotonic=activation_monotonic,
+                )
+            )
+            for credential in selected
+        ]
+        ordinary_task = asyncio.create_task(
+            _ordinary_driver(
+                admin_client,
+                admin,
+                resource_id,
+                background_stop_at,
+                ordinary_latencies,
+                ordinary_statuses,
+                stop_event=ordinary_stop,
+            )
+        )
+        await asyncio.sleep(5.0)
+        waves: list[dict[str, object]] = []
+        started = time.perf_counter()
+        try:
+            for repeat in range(repeats):
+                for distinct, duplicates in ((75, 25), (187, 63), (250, 63)):
+                    waves.append(
+                        await _ack_wave(
+                            base_url,
+                            backend_url,
+                            admin,
+                            users,
+                            distinct=distinct,
+                            duplicates=duplicates,
+                            suffix=(
+                                f"overlap-{repeat:02d}-"
+                                f"{distinct}-{duplicates}"
+                            ),
+                        )
+                    )
+        finally:
+            ordinary_stop.set()
+            ordinary_workload = await ordinary_task
+            for task in pollers:
+                task.cancel()
+            await asyncio.gather(*pollers, return_exceptions=True)
+            await _end_active(admin_client, admin)
+
+    return {
+        "polling_clients": len(selected),
+        "ordinary_workload": ordinary_workload,
+        "ordinary_api": _latencies(ordinary_latencies),
+        "ordinary_statuses": ordinary_statuses,
+        "status": _latencies(status_latencies),
+        "status_codes": status_codes,
+        "waves": waves,
+        "duration_seconds": time.perf_counter() - started,
+        "all_waves_functional": all(bool(wave["passed"]) for wave in waves),
+    }
+
+
 def _degradation_ok(baseline: float, loaded: float) -> bool:
     return loaded - baseline <= max(baseline * 0.10, 50.0)
 
@@ -1222,6 +1316,12 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
                 )
             )
     sql_after_waves = _sql_snapshot(database_url)
+    overlap = await _run_overlap_ack_diagnostic(
+        args.base_url,
+        args.backend_url,
+        admin,
+        users,
+    )
     sql_final = _sql_snapshot(database_url)
 
     baseline_p95 = float(baseline["ordinary_api"]["p95_ms"])
@@ -1243,6 +1343,10 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
             "state": scenario["state"],
             "ordinary_p95_ok": _degradation_ok(
                 baseline_p95, float(ordinary["p95_ms"])
+            ),
+            "ordinary_rate_ok": (
+                float(scenario["ordinary_workload"]["achieved_issue_rps"])
+                >= ORDINARY_RPS * 0.95
             ),
             "ordinary_all_200": set(scenario["ordinary_statuses"]) <= {"200"}
                 and int(ordinary["count"]) > 0,
@@ -1303,10 +1407,21 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         set(baseline["statuses"]) <= {"200"}
         and int(baseline["ordinary_api"]["count"]) > 0
     )
+    baseline_rate_ok = (
+        float(baseline["ordinary_workload"]["achieved_issue_rps"])
+        >= ORDINARY_RPS * 0.95
+    )
+    overlap_rate_ok = (
+        float(overlap["ordinary_workload"]["achieved_issue_rps"])
+        >= ORDINARY_RPS * 0.95
+    )
     passed = (
         baseline_all_200
+        and baseline_rate_ok
         and all(bool(item["passed"]) for item in scenario_checks)
         and bool(wave_check["passed"])
+        and overlap_rate_ok
+        and bool(overlap["all_waves_functional"])
         and business_unchanged
         and all(xact_abort_recovery.values())
     )
@@ -1327,10 +1442,13 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         "xact_abort_recovery": xact_abort_recovery,
         "baseline": baseline,
         "baseline_all_200": baseline_all_200,
+        "baseline_rate_ok": baseline_rate_ok,
         "scenarios": scenarios,
         "scenario_acceptance": scenario_checks,
         "ack_waves": waves,
         "ack_acceptance": wave_check,
+        "overlap_diagnostic": overlap,
+        "overlap_rate_ok": overlap_rate_ok,
         "business_rows_unchanged": business_unchanged,
         "sql_final": sql_final,
         "passed": passed,
