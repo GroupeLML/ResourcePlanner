@@ -1223,7 +1223,10 @@ async def _ack_wave(
     ]
     for _ in tasks:
         await ready.get()
-    await _loop_metrics(backend_url, reset=True)
+    telemetry_reset = await _capture_loop_metrics(
+        backend_url,
+        reset=True,
+    )
     release_monotonic = time.perf_counter()
     release.set()
     cleanup_task = asyncio.create_task(
@@ -1235,8 +1238,22 @@ async def _ack_wave(
         await asyncio.gather(*(client.aclose() for client in clients))
     cleanup_deleted_receipts, cleanup_deleted_parents = await cleanup_task
     await asyncio.sleep(0.10)
-    wave_telemetry = await _loop_metrics(backend_url, reset=False)
-    _require_phase4_telemetry(wave_telemetry)
+    telemetry_capture = await _capture_loop_metrics(
+        backend_url,
+        reset=False,
+    )
+    telemetry_validation = _validate_phase4_telemetry_capture(
+        telemetry_capture,
+    )
+    telemetry_ok = (
+        bool(telemetry_reset.get("available"))
+        and bool(telemetry_validation["passed"])
+    )
+    wave_telemetry = (
+        telemetry_capture.get("metrics")
+        if isinstance(telemetry_capture.get("metrics"), dict)
+        else {}
+    )
 
     lost_user = users[distinct]
     await _raw_lost_response(base_url, lost_user, broadcast_id)
@@ -1319,6 +1336,10 @@ async def _ack_wave(
             "ack_repository_ms": _latencies(repository_ms),
         },
         "telemetry": wave_telemetry,
+        "telemetry_reset": telemetry_reset,
+        "telemetry_capture": telemetry_capture,
+        "telemetry_validation": telemetry_validation,
+        "telemetry_ok": telemetry_ok,
         "http_codes": {
             str(code): statuses.count(code)
             for code in sorted(set(statuses))
@@ -1334,7 +1355,8 @@ async def _ack_wave(
             "deleted_parents": cleanup_deleted_parents,
         },
         "passed": (
-            all(code == 200 for code in statuses)
+            telemetry_ok
+            and all(code == 200 for code in statuses)
             and int(receipt_count or 0) == expected_receipts
             and stable
             and lost_response_committed
