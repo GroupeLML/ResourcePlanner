@@ -758,6 +758,39 @@ def _wait_for_receipt(
         engine.dispose()
 
 
+async def _admin_runtime_diagnostics(
+    client: httpx.AsyncClient,
+    admin: Credential,
+) -> dict[str, object]:
+    response = await client.get(
+        "/api/v1/admin/runtime/status",
+        headers=_headers(admin),
+    )
+    response.raise_for_status()
+    diagnostics = response.json().get("diagnostics")
+    return diagnostics if isinstance(diagnostics, dict) else {}
+
+
+def _record_http_failure(
+    response: httpx.Response,
+    error_codes: dict[str, int],
+    retry_after: dict[str, int],
+) -> None:
+    code = f"http_{response.status_code}"
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("code"):
+            code = str(error["code"])
+    error_codes[code] = error_codes.get(code, 0) + 1
+    retry_value = str(response.headers.get("Retry-After") or "").strip()
+    if retry_value:
+        retry_after[retry_value] = retry_after.get(retry_value, 0) + 1
+
+
 async def _ack_wave(
     base_url: str,
     admin: Credential,
@@ -793,6 +826,10 @@ async def _ack_wave(
 
         broadcast = await _create_broadcast(admin_client, admin, suffix)
         broadcast_id = str(broadcast["id"])
+        diagnostics_before = await _admin_runtime_diagnostics(
+            admin_client,
+            admin,
+        )
 
     selected = users[:distinct]
     duplicate_users = [selected[index % distinct] for index in range(duplicates)]
@@ -801,6 +838,8 @@ async def _ack_wave(
     barrier = asyncio.Event()
     latencies: list[float] = []
     statuses: list[int] = []
+    error_codes: dict[str, int] = {}
+    retry_after: dict[str, int] = {}
     timestamps: dict[str, set[str]] = {}
 
     async def one(credential: Credential) -> None:
@@ -817,6 +856,12 @@ async def _ack_wave(
                 payload = response.json()["acknowledgment"]
                 timestamps.setdefault(credential.user_id, set()).add(
                     str(payload["acknowledged_at"])
+                )
+            else:
+                _record_http_failure(
+                    response,
+                    error_codes,
+                    retry_after,
                 )
 
     tasks = [asyncio.create_task(one(item)) for item in targets]
@@ -847,6 +892,12 @@ async def _ack_wave(
             timestamps.setdefault(lost_user.user_id, set()).add(
                 str(retry.json()["acknowledgment"]["acknowledged_at"])
             )
+        else:
+            _record_http_failure(
+                retry,
+                error_codes,
+                retry_after,
+            )
 
     engine = create_sql_engine(database_url)
     try:
@@ -864,8 +915,16 @@ async def _ack_wave(
         cookies=_cookies(admin),
         timeout=10.0,
     ) as admin_client:
+        diagnostics_after = await _admin_runtime_diagnostics(
+            admin_client,
+            admin,
+        )
         await _end_active(admin_client, admin)
 
+    admission_overload_delta = (
+        int(diagnostics_after.get("status_overloads") or 0)
+        - int(diagnostics_before.get("status_overloads") or 0)
+    )
     expected_receipts = distinct + 1
     stable = all(len(values) == 1 for values in timestamps.values())
     return {
@@ -879,6 +938,9 @@ async def _ack_wave(
             str(code): statuses.count(code)
             for code in sorted(set(statuses))
         },
+        "http_error_codes": dict(sorted(error_codes.items())),
+        "retry_after": dict(sorted(retry_after.items())),
+        "admission_overload_delta": admission_overload_delta,
         "receipt_count": int(receipt_count or 0),
         "expected_receipt_count": expected_receipts,
         "canonical_timestamps_stable": stable,
