@@ -422,8 +422,18 @@ async def _ordinary_driver(
     next_release = started
     issued = 0
     completed = 0
+    succeeded = 0
+    in_flight = 0
+    max_in_flight = 0
     scheduling_lag_ms: list[float] = []
+    errors: list[dict[str, object]] = []
+    error_counts: dict[str, int] = {}
     operation_counts = {
+        "planning_reads": 0,
+        "project_reads": 0,
+        "save_mutations": 0,
+    }
+    operation_errors = {
         "planning_reads": 0,
         "project_reads": 0,
         "save_mutations": 0,
@@ -432,8 +442,10 @@ async def _ordinary_driver(
     tasks: list[asyncio.Task[None]] = []
 
     async def one(counter: int, scheduled_at: float) -> None:
-        nonlocal completed
+        nonlocal completed, succeeded, in_flight, max_in_flight
         async with semaphore:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
             actual_start = time.perf_counter()
             scheduling_lag_ms.append(
                 max(0.0, (actual_start - scheduled_at) * 1000.0)
@@ -464,18 +476,59 @@ async def _ordinary_driver(
                 path = "/api/v1/projects?active_only=true"
                 headers = _headers(admin)
                 body = None
-            response, elapsed = await _request_timed(
-                client,
-                method,
-                path,
-                headers=headers,
-                json_body=body,
-            )
-            latencies.append(elapsed)
-            key = str(response.status_code)
-            statuses[key] = statuses.get(key, 0) + 1
             operation_counts[operation] += 1
-            completed += 1
+            request_started = time.perf_counter()
+            try:
+                response, elapsed = await _request_timed(
+                    client,
+                    method,
+                    path,
+                    headers=headers,
+                    json_body=body,
+                )
+                latencies.append(elapsed)
+                key = str(response.status_code)
+                statuses[key] = statuses.get(key, 0) + 1
+                succeeded += 1
+            except httpx.TimeoutException as exc:
+                elapsed = (time.perf_counter() - request_started) * 1000.0
+                latencies.append(elapsed)
+                category = (
+                    "read_timeout"
+                    if isinstance(exc, httpx.ReadTimeout)
+                    else "timeout"
+                )
+                error_counts[category] = error_counts.get(category, 0) + 1
+                operation_errors[operation] += 1
+                errors.append(
+                    {
+                        "counter": counter,
+                        "operation": operation,
+                        "method": method,
+                        "elapsed_ms": elapsed,
+                        "category": category,
+                        "exception": type(exc).__name__,
+                    }
+                )
+            except httpx.RequestError as exc:
+                elapsed = (time.perf_counter() - request_started) * 1000.0
+                latencies.append(elapsed)
+                category = "request_error"
+                error_counts[category] = error_counts.get(category, 0) + 1
+                operation_errors[operation] += 1
+                errors.append(
+                    {
+                        "counter": counter,
+                        "operation": operation,
+                        "method": method,
+                        "elapsed_ms": elapsed,
+                        "category": category,
+                        "exception": type(exc).__name__,
+                    }
+                )
+            finally:
+                completed += 1
+                in_flight -= 1
 
     while next_release < stop_at and not (
         stop_event is not None and stop_event.is_set()
@@ -502,11 +555,18 @@ async def _ordinary_driver(
         "configured_target_rps": ORDINARY_RPS,
         "issued": issued,
         "completed": completed,
+        "succeeded": succeeded,
+        "failed": len(errors),
+        "configured_concurrency_limit": 32,
+        "max_in_flight": max_in_flight,
         "configured_window_seconds": configured_window,
         "actual_issuance_window_seconds": issuance_window,
         "achieved_issue_rps": issued / issuance_window,
         "achieved_completion_rps": completed / completion_window,
         "operation_counts": operation_counts,
+        "operation_errors": operation_errors,
+        "error_counts": dict(sorted(error_counts.items())),
+        "errors": errors,
         "scheduling_lag_ms": _latencies(scheduling_lag_ms),
     }
 
@@ -1353,6 +1413,9 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
                 float(scenario["ordinary_workload"]["achieved_issue_rps"])
                 >= ORDINARY_RPS * 0.95
             ),
+            "ordinary_no_request_errors": (
+                int(scenario["ordinary_workload"]["failed"]) == 0
+            ),
             "ordinary_all_200": set(scenario["ordinary_statuses"]) <= {"200"}
                 and int(ordinary["count"]) > 0,
             "ordinary_p99_ok": _degradation_ok(
@@ -1411,6 +1474,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
     baseline_all_200 = (
         set(baseline["statuses"]) <= {"200"}
         and int(baseline["ordinary_api"]["count"]) > 0
+        and int(baseline["ordinary_workload"]["failed"]) == 0
     )
     baseline_rate_ok = (
         float(baseline["ordinary_workload"]["achieved_issue_rps"])
@@ -1420,12 +1484,17 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         float(overlap["ordinary_workload"]["achieved_issue_rps"])
         >= ORDINARY_RPS * 0.95
     )
+    overlap_ordinary_ok = (
+        int(overlap["ordinary_workload"]["failed"]) == 0
+        and set(overlap["ordinary_statuses"]) <= {"200"}
+    )
     passed = (
         baseline_all_200
         and baseline_rate_ok
         and all(bool(item["passed"]) for item in scenario_checks)
         and bool(wave_check["passed"])
         and overlap_rate_ok
+        and overlap_ordinary_ok
         and bool(overlap["all_waves_functional"])
         and int(overlap["deadlock_delta"]) == 0
         and business_unchanged
@@ -1455,6 +1524,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         "ack_acceptance": wave_check,
         "overlap_diagnostic": overlap,
         "overlap_rate_ok": overlap_rate_ok,
+        "overlap_ordinary_ok": overlap_ordinary_ok,
         "business_rows_unchanged": business_unchanged,
         "sql_final": sql_final,
         "passed": passed,
