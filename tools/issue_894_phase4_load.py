@@ -1537,8 +1537,17 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
     for scenario in scenarios:
         ordinary = scenario["ordinary_api"]
         status = scenario["status"]
-        loop = scenario["event_loop"]["event_loop_lag_ms"]
-        pool = scenario["event_loop"]["pool"]
+        event_loop = scenario.get("event_loop")
+        loop = (
+            event_loop.get("event_loop_lag_ms")
+            if isinstance(event_loop, dict)
+            else None
+        )
+        pool = (
+            event_loop.get("pool")
+            if isinstance(event_loop, dict)
+            else None
+        )
         delivery = scenario["foreground_delivery"]
         deadlock_delta = (
             int(scenario["sql_after"]["deadlocks"])
@@ -1567,11 +1576,17 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
             "status_p99_ok": float(status["p99_ms"]) <= 750.0,
             "status_all_200": set(status_codes) <= {"200"}
                 and int(status["count"]) > 0,
-            "event_loop_p99_ok": float(loop["p99"]) <= 100.0,
+            "telemetry_ok": bool(scenario.get("telemetry_ok")),
+            "event_loop_p99_ok": (
+                isinstance(loop, dict)
+                and float(loop.get("p99") or 0.0) <= 100.0
+            ),
             "pool_ceiling_ok": (
-                int(pool["max_checked_out"]) <= int(pool["size"]) + 10
-                and int(pool["max_overflow"]) <= 10
-                and int(pool["checked_out"]) == 0
+                isinstance(pool, dict)
+                and int(pool.get("max_checked_out") or 0)
+                    <= int(pool.get("size") or 0) + 10
+                and int(pool.get("max_overflow") or 0) <= 10
+                and int(pool.get("checked_out") or 0) == 0
             ),
             "deadlocks_zero": deadlock_delta == 0,
             "delivery_p95_ok": (
@@ -1622,6 +1637,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         float(baseline["ordinary_workload"]["achieved_issue_rps"])
         >= ORDINARY_RPS * 0.95
     )
+    baseline_telemetry_ok = bool(baseline.get("telemetry_ok"))
     overlap_rate_ok = (
         float(overlap["ordinary_workload"]["achieved_issue_rps"])
         >= ORDINARY_RPS * 0.95
@@ -1633,6 +1649,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
     passed = (
         baseline_all_200
         and baseline_rate_ok
+        and baseline_telemetry_ok
         and all(bool(item["passed"]) for item in scenario_checks)
         and bool(wave_check["passed"])
         and overlap_rate_ok
@@ -1660,6 +1677,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         "baseline": baseline,
         "baseline_all_200": baseline_all_200,
         "baseline_rate_ok": baseline_rate_ok,
+        "baseline_telemetry_ok": baseline_telemetry_ok,
         "scenarios": scenarios,
         "scenario_acceptance": scenario_checks,
         "ack_waves": waves,
