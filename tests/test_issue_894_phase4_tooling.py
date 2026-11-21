@@ -59,6 +59,34 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("_raw_lost_response", source)
         self.assertIn("canonical_timestamps_stable", source)
         self.assertIn("deadlock_delta", source)
+        self.assertIn("_prewarm_ack_clients", source)
+        self.assertIn("ready: asyncio.Queue[None]", source)
+        self.assertIn("release_monotonic", source)
+        self.assertIn("request_start_spread_ms", source)
+        self.assertIn("X-RP894-Admission-Wait-Ms", source)
+        self.assertIn("X-RP894-Ack-Repository-Ms", source)
+        self.assertIn("_run_overlap_ack_diagnostic", source)
+
+    def test_ordinary_driver_is_paced_concurrently_and_reports_achieved_rate(self) -> None:
+        source = LOAD.read_text(encoding="utf-8")
+        start = source.index("async def _ordinary_driver")
+        end = source.index("\n\nasync def _poller", start)
+        function_source = source[start:end]
+        self.assertIn("asyncio.create_task", function_source)
+        self.assertIn("asyncio.Semaphore(32)", function_source)
+        self.assertIn('"achieved_issue_rps"', function_source)
+        self.assertIn('"planning_reads"', function_source)
+        self.assertIn('"project_reads"', function_source)
+        self.assertIn('"save_mutations"', function_source)
+        self.assertIn("ORDINARY_RPS * 0.95", source)
+
+    def test_missing_phase4_monitor_or_pool_telemetry_fails_closed(self) -> None:
+        source = LOAD.read_text(encoding="utf-8")
+        self.assertIn("def _require_phase4_telemetry", source)
+        self.assertIn("Phase 4 monitor is not active.", source)
+        self.assertIn("event-loop telemetry has no samples", source)
+        self.assertIn("SQL pool checkout telemetry has no samples", source)
+        self.assertIn("minimum_coverage_seconds=measure_seconds", source)
 
     def test_rollback_bundle_preserves_prev_behavior_with_only_0038_lineage_overlay(self) -> None:
         source = ROLLBACK.read_text(encoding="utf-8")
@@ -97,9 +125,20 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("docker logs --tail=200 backend", source)
         self.assertIn("docker logs --tail=200 frontend", source)
 
-    def test_load_wrapper_runs_one_uvicorn_process_and_only_adds_test_metrics(self) -> None:
+    def test_load_wrapper_runs_monitor_inside_real_lifespan_and_records_pool_waits(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
         self.assertIn("create_configured_app", source)
+        self.assertIn("original_lifespan = app.router.lifespan_context", source)
+        self.assertIn("@asynccontextmanager", source)
+        self.assertIn("app.router.lifespan_context = phase4_lifespan", source)
+        self.assertNotIn('@app.on_event("startup")', source)
+        self.assertNotIn('@app.on_event("shutdown")', source)
+        self.assertIn('pool._do_get = measured_do_get', source)
+        self.assertIn('"checkout_wait_ms"', source)
+        self.assertIn('"coverage_ratio"', source)
+        self.assertIn('"arrival"', source)
+        self.assertIn('"wait_ms"', source)
+        self.assertIn('"permit_service_ms"', source)
         self.assertIn('"/__phase4__/metrics"', source)
         self.assertIn("uvicorn.run(", source)
         self.assertNotIn("workers=", source)
