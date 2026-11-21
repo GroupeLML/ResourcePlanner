@@ -294,13 +294,12 @@ def install_authorization_middleware(
             return await call_next(request)
 
         emergency_feature = _is_emergency_feature_path(path)
-        high_frequency_runtime = path == "/api/v1/runtime/status"
         with performance_phase("auth"):
             try:
                 principal = await resolve_principal(
                     resolver,
                     request,
-                    offload_sync=high_frequency_runtime,
+                    offload_sync=emergency_feature,
                 )
             except Exception:
                 if emergency_feature:
