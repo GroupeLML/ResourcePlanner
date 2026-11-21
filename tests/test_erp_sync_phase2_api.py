@@ -8,6 +8,7 @@ import unittest
 
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.application import (
     ExternalProjectRecord,
@@ -17,7 +18,12 @@ from app.application import (
 )
 from app.application.security import AuthPrincipal, PERMISSION_SYNC_PROJECTS
 from app.infrastructure.smtp import FernetSecretCipher
-from app.infrastructure.sql import Base, create_session_factory, create_sql_engine
+from app.infrastructure.sql import (
+    Base,
+    ErpSyncRecoveryState,
+    create_session_factory,
+    create_sql_engine,
+)
 from app.server import create_api_app
 from app.server.erp_sync_evidence import ErpSyncEvidenceSettings
 from app.server.security import static_auth_resolver
@@ -125,6 +131,24 @@ class ErpSyncPhase2ApiTests(unittest.TestCase):
             sleep(0.02)
         raise AssertionError(f"ERP run {run_id} did not reach a terminal state")
 
+    @staticmethod
+    def _wait_recovery_finalized(app, attempt_id: str) -> ErpSyncRecoveryState:
+        factory = app.state.session_factory
+        for _ in range(100):
+            with factory() as session:
+                row = session.scalar(
+                    select(ErpSyncRecoveryState).where(
+                        ErpSyncRecoveryState.attempt_id == attempt_id
+                    )
+                )
+                if row is not None:
+                    session.expunge(row)
+                    return row
+            sleep(0.02)
+        raise AssertionError(
+            f"ERP evidence finalization did not initialize recovery state for {attempt_id}"
+        )
+
     def test_run_now_rejects_client_supplied_system_actor(self) -> None:
         with TestClient(self.app) as client:
             response = client.post(
@@ -217,6 +241,11 @@ class ErpSyncPhase2ApiTests(unittest.TestCase):
                 failed_launch.json()["run_id"],
             )
             self.assertEqual(failed["status"], "FAILED")
+            finalized_recovery = self._wait_recovery_finalized(
+                recovery_app,
+                failed_launch.json()["run_id"],
+            )
+            self.assertEqual(finalized_recovery.state, "NONE")
             recovery_app.state.erp_sync_evidence_service.mark_recovery_required(
                 attempt_id=failed_launch.json()["run_id"],
                 reason_code="phase2_recovery_required",

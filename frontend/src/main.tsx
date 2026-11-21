@@ -5,6 +5,7 @@ import ReactDOM from "react-dom/client";
 
 import App from "./App";
 import { AuthProvider, useAuth } from "./AuthContext";
+import EmergencyBroadcastProvider from "./EmergencyBroadcastProvider";
 import { ViewScopeProvider } from "./ViewScopeContext";
 import "./styles.css";
 import "./shift-editor.css";
@@ -26,6 +27,7 @@ import "./technician-schedule.css";
 import "./communications.css";
 import "./coordinator-dashboard.css";
 import "./configuration.css";
+import "./emergency-broadcast.css";
 import "./planning-history.css";
 import "./overallocation.css";
 
@@ -42,9 +44,11 @@ function SessionScopedApp() {
     principal.permissions,
   ]);
   return (
-    <ViewScopeProvider key={identityKey}>
-      <App />
-    </ViewScopeProvider>
+    <EmergencyBroadcastProvider key={identityKey}>
+      <ViewScopeProvider>
+        <App />
+      </ViewScopeProvider>
+    </EmergencyBroadcastProvider>
   );
 }
 

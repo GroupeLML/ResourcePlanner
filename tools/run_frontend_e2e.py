@@ -34,6 +34,7 @@ from app.application.communications import (
     CommunicationTransportMessage,
     CommunicationTransportResult,
 )
+from app.application.errors import ApplicationUnavailableError
 from app.application.resource_classes import ResourceClassConfigurationService
 from app.application.security import (
     AuthPrincipal,
@@ -73,6 +74,7 @@ from app.infrastructure.sql import (
     create_sql_engine,
 )
 from app.server import create_api_app
+from app.server.emergency_broadcast_runtime import PresenceRegistry
 from app.server.erp_sync_evidence import ErpSyncEvidenceSettings
 from app.server.dev_user_switcher import (
     DevUserSwitcherRuntime,
@@ -827,6 +829,86 @@ def build_app(database_path: Path, frontend_dist: Path):
             reason_code="e2e_controlled_recovery_required",
         )
         return {"attempt_id": attempt_id, "state": "REQUIRED"}
+
+    emergency_failure_mode = {
+        "status": False,
+        "acknowledgment": False,
+    }
+    emergency_runtime = app.state.emergency_broadcast_runtime
+    original_active_broadcast = emergency_runtime.active_broadcast
+    original_acknowledge = emergency_runtime.acknowledge
+
+    def e2e_active_broadcast():
+        if emergency_failure_mode["status"]:
+            raise ApplicationUnavailableError(
+                "controlled E2E emergency status failure",
+                code="e2e_emergency_status_unavailable",
+            )
+        return original_active_broadcast()
+
+    def e2e_acknowledge(*, broadcast_id: str, user_id: str):
+        if emergency_failure_mode["acknowledgment"]:
+            raise ApplicationUnavailableError(
+                "controlled E2E emergency acknowledgment failure",
+                code="e2e_emergency_ack_unavailable",
+            )
+        return original_acknowledge(
+            broadcast_id=broadcast_id,
+            user_id=user_id,
+        )
+
+    emergency_runtime.active_broadcast = e2e_active_broadcast
+    emergency_runtime.acknowledge = e2e_acknowledge
+
+    @app.post("/__e2e__/emergency/failure-mode", include_in_schema=False)
+    def emergency_e2e_failure_mode(
+        status_failure: bool = False,
+        acknowledgment_failure: bool = False,
+    ):
+        emergency_failure_mode["status"] = bool(status_failure)
+        emergency_failure_mode["acknowledgment"] = bool(acknowledgment_failure)
+        return dict(emergency_failure_mode)
+
+    @app.post("/__e2e__/emergency/restart-ephemeral", include_in_schema=False)
+    def emergency_e2e_restart_ephemeral():
+        emergency_runtime.presence = PresenceRegistry()
+        emergency_runtime._active_cache.invalidate()
+        emergency_runtime._receipt_cache.prune()
+        return {
+            "observation_epoch": emergency_runtime.presence.observation_epoch,
+            "presence_warming": emergency_runtime.presence.snapshot().warming,
+        }
+
+    @app.post("/__e2e__/emergency/reset", include_in_schema=False)
+    def emergency_e2e_reset():
+        emergency_failure_mode["status"] = False
+        emergency_failure_mode["acknowledgment"] = False
+
+        active = emergency_runtime.service.active()
+        ended_broadcast_id = None
+        if active is not None:
+            with app.state.session_factory() as session:
+                admin = SqlUserIdentityRepository(session).get_by_external_identity(
+                    "urn:resourceplanner:e2e-dev",
+                    "admin",
+                )
+            assert admin is not None
+            emergency_runtime.repository.end(
+                broadcast_id=active.id,
+                actor_user_id=admin.user_id,
+            )
+            ended_broadcast_id = active.id
+
+        emergency_runtime.presence = PresenceRegistry()
+        emergency_runtime._active_cache.invalidate()
+        emergency_runtime._receipt_cache.prune()
+        return {
+            "ended_broadcast_id": ended_broadcast_id,
+            "status_failure": emergency_failure_mode["status"],
+            "acknowledgment_failure": emergency_failure_mode["acknowledgment"],
+            "observation_epoch": emergency_runtime.presence.observation_epoch,
+            "presence_warming": emergency_runtime.presence.snapshot().warming,
+        }
 
     @app.get("/__e2e__/identity/link-pending", include_in_schema=False)
     def link_pending_oidc_identity():

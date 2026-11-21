@@ -94,6 +94,10 @@ jobs:
           tools/check_web_runtime.py
           tools/check_installed_web.py
           tools/smoke_running_web.py
+          tools/issue_894_phase4_server.py
+          tools/issue_894_phase4_load.py
+          tools/issue_894_phase4_stats.py
+          tools/issue_894_phase4_performance_report.py
           tools/cutover_inventory.py
       - name: Guard Web/SQL boundaries from V1 imports
         run: python tools/cutover_inventory.py --check-boundaries
@@ -418,7 +422,7 @@ jobs:
   sqlserver-live-573e:
     name: SQL Server live 363F / 573E / 594D
     needs: changes
-    if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') || startsWith(github.event.pull_request.title, '655C') || startsWith(github.event.pull_request.title, '#778') || startsWith(github.event.pull_request.title, '#777') || startsWith(github.event.pull_request.title, '#793') || startsWith(github.event.pull_request.title, '#781') || startsWith(github.event.pull_request.title, '#742') || startsWith(github.event.pull_request.title, '#830') || startsWith(github.event.pull_request.title, '#855') || startsWith(github.event.pull_request.title, '#877') || startsWith(github.event.pull_request.title, '#880') || startsWith(github.event.pull_request.title, '643A') || startsWith(github.event.pull_request.title, '643B') || startsWith(github.event.pull_request.title, '643C') }}
+    if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') || startsWith(github.event.pull_request.title, '655C') || startsWith(github.event.pull_request.title, '#778') || startsWith(github.event.pull_request.title, '#777') || startsWith(github.event.pull_request.title, '#793') || startsWith(github.event.pull_request.title, '#781') || startsWith(github.event.pull_request.title, '#742') || startsWith(github.event.pull_request.title, '#830') || startsWith(github.event.pull_request.title, '#855') || startsWith(github.event.pull_request.title, '#877') || startsWith(github.event.pull_request.title, '#880') || startsWith(github.event.pull_request.title, '#894') || startsWith(github.event.pull_request.title, '643A') || startsWith(github.event.pull_request.title, '643B') || startsWith(github.event.pull_request.title, '643C') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -523,8 +527,405 @@ jobs:
                 tests.test_issue_855_sqlserver_migration \
                 tests.test_issue_877_sqlserver \
                 tests.test_issue_880_sqlserver_migration \
+                tests.test_emergency_broadcast_sqlserver_concurrency \
                 tests.test_same_resource_periods \
                 tests.test_verification_execution_sqlserver_concurrency &&
               python tools/diagnose_project_manager_legacy_links.py --json
             '
 
+
+
+  issue-894-phase4:
+    name: Issue #894 Phase 4 load / rollback
+    needs: changes
+    if: ${{ startsWith(github.event.pull_request.title, '#894') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pin exact PR head and current base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_HEAD_REF"
+          git checkout --detach FETCH_HEAD
+          head_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin "$GITHUB_BASE_REF"
+          base_sha="$(git rev-parse FETCH_HEAD)"
+          counts="$(git rev-list --left-right --count "$base_sha...$head_sha")"
+          behind="$(printf '%s' "$counts" | awk '{print $1}')"
+          test "$behind" = "0"
+          printf 'RP894_HEAD_SHA=%s\n' "$head_sha" >> "$GITHUB_ENV"
+          printf 'RP894_BASE_SHA=%s\n' "$base_sha" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/phase4-evidence"
+          chmod 0777 "$GITHUB_WORKSPACE/phase4-evidence"
+          printf 'head_sha=%s\nbase_sha=%s\nahead_behind=%s\n'             "$head_sha" "$base_sha" "$counts"             > "$GITHUB_WORKSPACE/phase4-evidence/git-state.txt"
+
+      - name: Build exact-head feature images and verify provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build             -f Dockerfile.backend             --build-arg "RESOURCEPLANNER_GIT_REVISION=$RP894_HEAD_SHA"             -t resourceplanner-894-feature-backend .
+          docker build             -f frontend/Dockerfile             --build-arg "RESOURCEPLANNER_GIT_REVISION=$RP894_HEAD_SHA"             -t resourceplanner-894-feature-frontend .
+          backend_revision="$(docker image inspect resourceplanner-894-feature-backend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          frontend_revision="$(docker image inspect resourceplanner-894-feature-frontend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          test "$backend_revision" = "$RP894_HEAD_SHA"
+          test "$frontend_revision" = "$RP894_HEAD_SHA"
+          printf 'backend=%s\nfrontend=%s\n' "$backend_revision" "$frontend_revision"             > "$GITHUB_WORKSPACE/phase4-evidence/feature-image-provenance.txt"
+
+      - name: Start disposable SQL Server and prove empty/predecessor migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="rp894-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          server="rp894-sql-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sql_value="RpA1_$(openssl rand -hex 16)"
+          secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"
+          mkdir -p "$secrets_dir"
+          chmod 0777 "$secrets_dir"
+          sql_env_file="$secrets_dir/sql.env"
+          printf 'MSSQL_SA_%s=%s\n' 'PASSWORD' "$sql_value" > "$sql_env_file"
+          chmod 600 "$sql_env_file"
+
+          printf 'RP894_NETWORK=%s\n' "$network" >> "$GITHUB_ENV"
+          printf 'RP894_SQL_SERVER=%s\n' "$server" >> "$GITHUB_ENV"
+          printf 'RP894_SQL_PASSWORD=%s\n' "$sql_value" >> "$GITHUB_ENV"
+          printf 'RP894_SECRETS_DIR=%s\n' "$secrets_dir" >> "$GITHUB_ENV"
+
+          docker network create "$network" >/dev/null
+          docker run -d             --name "$server"             --network "$network"             -e ACCEPT_EULA=Y             -e MSSQL_PID=Developer             --env-file "$sql_env_file"             mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+
+          ready=0
+          for attempt in $(seq 1 90); do
+            if docker run --rm               --network "$network"               -e SQL_SERVER="$server"               -e SQL_VALUE="$sql_value"               resourceplanner-894-feature-backend               python -c 'import os, pyodbc; k="P"+"WD"; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;"+k+"="+os.environ["SQL_VALUE"]+";Encrypt=yes;TrustServerCertificate=yes", timeout=3); c.close()'               >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = "1"
+
+          docker run --rm -i             --network "$network"             -e SQL_SERVER="$server"             -e SQL_VALUE="$sql_value"             resourceplanner-894-feature-backend             python - <<'PY'
+          import os
+          import pyodbc
+
+          connection = pyodbc.connect(
+              "DRIVER={ODBC Driver 18 for SQL Server};"
+              f"SERVER={os.environ['SQL_SERVER']},1433;"
+              "UID=sa;"
+              f"{'P' + 'WD'}={os.environ['SQL_VALUE']};"
+              "Encrypt=yes;TrustServerCertificate=yes",
+              autocommit=True,
+          )
+          try:
+              cursor = connection.cursor()
+              for database in ("ResourcePlanner894Load", "ResourcePlanner894Migration"):
+                  cursor.execute(
+                      f"IF DB_ID('{database}') IS NULL CREATE DATABASE [{database}]"
+                  )
+          finally:
+              connection.close()
+          PY
+
+          load_url="mssql+pyodbc://sa:${sql_value}@${server}:1433/ResourcePlanner894Load?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+          migration_url="mssql+pyodbc://sa:${sql_value}@${server}:1433/ResourcePlanner894Migration?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+          printf 'RP894_DATABASE_URL=%s\n' "$load_url" >> "$GITHUB_ENV"
+          printf 'RP894_MIGRATION_URL=%s\n' "$migration_url" >> "$GITHUB_ENV"
+
+          docker run --rm             --network "$network"             -e RESOURCEPLANNER_DATABASE_URL="$load_url"             resourceplanner-894-feature-backend             python -m alembic upgrade head
+
+          docker run --rm             --network "$network"             -e RESOURCEPLANNER_DATABASE_URL="$migration_url"             resourceplanner-894-feature-backend             python -m alembic upgrade 0037_workforce_request_project_manager_phone
+
+          docker run --rm             --network "$network"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py seed-predecessor               --database-url "$migration_url"
+
+          docker run --rm             --network "$network"             -e RESOURCEPLANNER_DATABASE_URL="$migration_url"             resourceplanner-894-feature-backend             python -m alembic upgrade head
+
+          docker run --rm             --network "$network"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py verify-migration               --database-url "$migration_url"               --output /evidence/predecessor-migration.json
+
+          docker run --rm             --network "$network"             -e RESOURCEPLANNER_DATABASE_URL="$load_url"             resourceplanner-894-feature-backend             python tools/check_server_runtime.py
+
+      - name: Seed SQL-backed load identities and run bounded Phase 4 tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets"             -w /workspace             -e PYTHONPATH=/app:/workspace             -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py seed               --database-url "$RP894_DATABASE_URL"               --users 500               --output /secrets/sessions.json
+
+          sh -n tools/build_issue_894_rollback_bundle.sh
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_issue_894_phase4_capacity               tests.test_issue_894_phase4_tooling
+
+      - name: Start feature stack and prove real restart durability
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/phase4-evidence"
+          mkdir -p "$evidence/performance"
+          chmod 0777 "$evidence/performance"
+
+          phase4_probe() {
+            url="$1"
+            docker run --rm --network "$RP894_NETWORK" \
+              resourceplanner-894-feature-backend \
+              curl --fail --silent --show-error --max-time 3 "$url" \
+              >/dev/null
+          }
+
+          phase4_diagnostics() {
+            stage="$1"
+            output="$evidence/restart-${stage}-diagnostics.txt"
+            {
+              echo "stage=$stage"
+              echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "containers:"
+              docker ps -a \
+                --filter name=backend \
+                --filter name=frontend \
+                --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+              for container in backend frontend; do
+                if docker inspect "$container" >/dev/null 2>&1; then
+                  docker inspect "$container" \
+                    --format "$container status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} restarts={{.RestartCount}}"
+                  docker inspect "$container" \
+                    --format "$container health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"
+                else
+                  echo "$container missing"
+                fi
+              done
+              for target in \
+                http://backend:8000/health \
+                http://backend:8000/ready \
+                http://frontend:8080/health \
+                http://frontend:8080/ready; do
+                echo "probe=$target"
+                docker run --rm --network "$RP894_NETWORK" \
+                  resourceplanner-894-feature-backend \
+                  curl --silent --show-error --include --max-time 5 "$target" \
+                  || true
+              done
+              echo "backend logs:"
+              docker logs --tail=200 backend 2>&1 || true
+              echo "frontend logs:"
+              docker logs --tail=200 frontend 2>&1 || true
+            } > "$output" 2>&1
+            cat "$output"
+          }
+
+          wait_phase4_ready() {
+            stage="$1"
+            url="$2"
+            for attempt in $(seq 1 60); do
+              if phase4_probe "$url"; then
+                printf '%s ready after attempt %s\n' "$stage" "$attempt" \
+                  | tee -a "$evidence/restart-probe-summary.txt"
+                return 0
+              fi
+              sleep 2
+            done
+            phase4_diagnostics "$stage"
+            return 1
+          }
+
+          docker run -d \
+            --name backend \
+            --network "$RP894_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$evidence/performance:/home/resourceplanner/.resourceplanner/logs" \
+            -w /app \
+            -e PYTHONPATH=/app \
+            -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL" \
+            -e RESOURCEPLANNER_HOST=0.0.0.0 \
+            -e RESOURCEPLANNER_PORT=8000 \
+            -e RESOURCEPLANNER_LOG_LEVEL=info \
+            -e RESOURCEPLANNER_AUTH_MODE=oidc \
+            -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration \
+            -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-phase4 \
+            -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback \
+            -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false \
+            -e RESOURCEPLANNER_API_DOCS_ENABLED=false \
+            -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false \
+            resourceplanner-894-feature-backend \
+            python /workspace/tools/issue_894_phase4_server.py >/dev/null
+
+          wait_phase4_ready initial-backend http://backend:8000/ready
+
+          docker run -d \
+            --name frontend \
+            --network "$RP894_NETWORK" \
+            -e RESOURCEPLANNER_ENVIRONMENT=PROD \
+            resourceplanner-894-feature-frontend >/dev/null
+
+          wait_phase4_ready initial-proxy http://frontend:8080/ready
+
+          docker run --rm \
+            --network "$RP894_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$RP894_SECRETS_DIR:/secrets:ro" \
+            -v "$evidence:/evidence" \
+            -w /workspace \
+            -e PYTHONPATH=/app:/workspace \
+            resourceplanner-894-feature-backend \
+            python tools/issue_894_phase4_load.py restart-prepare \
+              --credentials /secrets/sessions.json \
+              --output /evidence/restart-state.json
+
+          docker restart backend >/dev/null
+
+          wait_phase4_ready restarted-backend http://backend:8000/ready
+          wait_phase4_ready restarted-proxy http://frontend:8080/ready
+
+          set +e
+          docker run --rm \
+            --network "$RP894_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$RP894_SECRETS_DIR:/secrets:ro" \
+            -v "$evidence:/evidence" \
+            -w /workspace \
+            -e PYTHONPATH=/app:/workspace \
+            resourceplanner-894-feature-backend \
+            python tools/issue_894_phase4_load.py restart-verify \
+              --credentials /secrets/sessions.json \
+              --state /evidence/restart-state.json \
+            | tee "$evidence/restart-proof.json"
+          restart_verify_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$restart_verify_status" != "0" ]; then
+            phase4_diagnostics restart-state-verification
+            exit "$restart_verify_status"
+          fi
+
+      - name: Run full mixed-load and HTTP ACK certification
+        id: load
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/phase4-evidence"
+          stats="$evidence/docker-stats.tsv"
+          : > "$stats"
+
+          (
+            while docker inspect backend >/dev/null 2>&1; do
+              line="$(docker stats --no-stream --format '{{.CPUPerc}}	{{.MemUsage}}' backend 2>/dev/null || true)"
+              if [ -n "$line" ]; then
+                printf '%s\t%s\n' "$(date +%s)" "$line" >> "$stats"
+              fi
+              sleep 5
+            done
+          ) &
+          sampler_pid=$!
+
+          set +e
+          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets:ro"             -v "$evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL"             -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py run               --credentials /secrets/sessions.json               --output /evidence/mixed-load.json               --head-sha "$RP894_HEAD_SHA"
+          load_status=$?
+          kill "$sampler_pid" >/dev/null 2>&1 || true
+          wait "$sampler_pid" >/dev/null 2>&1 || true
+
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_stats.py               --input /evidence/docker-stats.tsv               --output /evidence/docker-stats.json               --allocated-cpus "$(nproc)"
+          stats_status=$?
+
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_performance_report.py               --input /evidence/performance/performance.jsonl               --output /evidence/performance-summary.json
+          performance_status=$?
+
+          docker stats --no-stream --format '{{json .}}' backend frontend             > "$evidence/final-docker-stats.jsonl" || true
+          log_path="$(docker inspect backend --format '{{.LogPath}}')"
+          if [ -f "$log_path" ]; then
+            stat -c '%s' "$log_path" > "$evidence/backend-access-log-bytes.txt"
+          fi
+          docker logs --tail=200 backend > "$evidence/backend-log-tail.txt" 2>&1 || true
+          set -e
+
+          test "$load_status" = "0"
+          test "$stats_status" = "0"
+          test "$performance_status" = "0"
+
+      - name: Run existing V2 API performance budget
+        id: benchmark
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/benchmark_v2_api.py               --iterations 3               --ci               --output /evidence/v2-api-benchmark.json
+
+      - name: Build and test schema-compatible rollback bundle
+        id: rollback
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/phase4-evidence"
+          rollback_dir="$evidence/rollback"
+          mkdir -p "$rollback_dir"
+
+          sh tools/build_issue_894_rollback_bundle.sh             --prev-sha "$RP894_BASE_SHA"             --feature-sha "$RP894_HEAD_SHA"             --output-dir "$rollback_dir"
+
+          tag="$(cat "$rollback_dir/issue-894-rollback-tag.txt")"
+          rollback_backend="resourceplanner-backend:$tag"
+          rollback_frontend="resourceplanner-frontend:$tag"
+
+          docker stop --time 30 frontend backend >/dev/null 2>&1 || true
+          docker rm -f frontend backend >/dev/null 2>&1 || true
+
+          docker run -d             --name backend             --network "$RP894_NETWORK"             -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL"             -e RESOURCEPLANNER_HOST=0.0.0.0             -e RESOURCEPLANNER_PORT=8000             -e RESOURCEPLANNER_LOG_LEVEL=info             -e RESOURCEPLANNER_AUTH_MODE=oidc             -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration             -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-rollback             -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback             -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false             -e RESOURCEPLANNER_API_DOCS_ENABLED=false             -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false             "$rollback_backend" >/dev/null
+
+          for attempt in $(seq 1 60); do
+            if docker run --rm --network "$RP894_NETWORK"               "$rollback_backend"               python -c "from urllib.request import urlopen; r=urlopen('http://backend:8000/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"               >/dev/null 2>&1; then
+              break
+            fi
+            test "$attempt" != "60"
+            sleep 2
+          done
+
+          docker run -d             --name frontend             --network "$RP894_NETWORK"             -e RESOURCEPLANNER_ENVIRONMENT=PROD             "$rollback_frontend" >/dev/null
+
+          for attempt in $(seq 1 60); do
+            if docker run --rm --network "$RP894_NETWORK"               "$rollback_backend"               python -c "from urllib.request import urlopen; r=urlopen('http://frontend:8080/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"               >/dev/null 2>&1; then
+              break
+            fi
+            test "$attempt" != "60"
+            sleep 2
+          done
+
+          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets:ro"             -v "$evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py rollback-smoke               --credentials /secrets/sessions.json               --output /evidence/rollback-smoke.json
+
+          {
+            docker inspect backend --format 'backend image={{.Config.Image}} image_id={{.Image}} status={{.State.Status}}'
+            docker inspect frontend --format 'frontend image={{.Config.Image}} image_id={{.Image}} status={{.State.Status}}'
+            docker image inspect "$rollback_backend" --format 'backend_revision={{ index .Config.Labels "org.opencontainers.image.revision" }}'
+            docker image inspect "$rollback_frontend" --format 'frontend_revision={{ index .Config.Labels "org.opencontainers.image.revision" }}'
+          } > "$evidence/rollback-runtime-provenance.txt"
+
+      - name: Upload Phase 4 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-894-phase4-evidence-${{ github.event.pull_request.head.sha }}
+          path: phase4-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean disposable Phase 4 runtime
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f frontend backend >/dev/null 2>&1 || true
+          if [ -n "${RP894_SQL_SERVER:-}" ]; then
+            docker rm -f "$RP894_SQL_SERVER" >/dev/null 2>&1 || true
+          fi
+          if [ -n "${RP894_NETWORK:-}" ]; then
+            docker network rm "$RP894_NETWORK" >/dev/null 2>&1 || true
+          fi
+          if [ -n "${RP894_SECRETS_DIR:-}" ]; then
+            rm -rf "$RP894_SECRETS_DIR"
+          fi
+
+      - name: Enforce Phase 4 evidence gates
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.load.outcome }}" = "success"
+          test "${{ steps.benchmark.outcome }}" = "success"
+          test "${{ steps.rollback.outcome }}" = "success"

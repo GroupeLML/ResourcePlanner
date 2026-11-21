@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager, suppress
 from collections.abc import Iterator
 import asyncio
+import random
 from pathlib import Path
 from typing import Any, Callable
 
@@ -60,6 +61,8 @@ from ..infrastructure.sql import (
     transactional_session,
 )
 from .erp_sync_orchestration import ErpSyncOrchestrator
+from .concurrency import run_sync_cancellation_safe
+from .emergency_broadcast_runtime import EmergencyBroadcastRuntime
 from .composition import (
     build_approval_progress_service,
     build_approval_scope_service,
@@ -99,6 +102,7 @@ from .routes_project_communications import build_project_communication_router
 from .routes_project_managers import build_project_manager_admin_router
 from .routes_dev_user_switcher import build_dev_user_switcher_router
 from .routes_delivery import build_delivery_router
+from .routes_emergency_runtime import build_emergency_runtime_router
 from .routes_verification import build_verification_router
 from .routes_erp_users import build_erp_user_admin_router
 from .routes_integrations import build_integration_router
@@ -529,6 +533,7 @@ def create_api_app(
     engine = create_sql_engine(database_url)
     install_sql_performance_instrumentation(engine)
     factory = create_session_factory(engine)
+    emergency_runtime = EmergencyBroadcastRuntime(factory)
     resolved_erp_sync_settings = erp_sync_settings or ErpSyncSchedulerSettings()
     erp_sync_evidence_service = (
         ErpSyncEvidenceService(
@@ -644,6 +649,7 @@ def create_api_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         scheduler_task: asyncio.Task[None] | None = None
+        emergency_maintenance_task: asyncio.Task[None] | None = None
 
         async def scheduler_loop() -> None:
             assert erp_sync_orchestrator is not None
@@ -655,6 +661,28 @@ def create_api_app(
                     # reason to take the Web process down.
                     pass
                 await asyncio.sleep(resolved_erp_sync_settings.poll_seconds)
+
+        async def emergency_maintenance_loop() -> None:
+            started = asyncio.get_running_loop().time()
+            next_sql_cleanup = started + 3600.0 + random.uniform(0.0, 300.0)
+            while True:
+                await asyncio.sleep(30.0)
+                emergency_runtime.prune_memory()
+                now = asyncio.get_running_loop().time()
+                if now < next_sql_cleanup:
+                    continue
+                try:
+                    await run_sync_cancellation_safe(emergency_runtime.cleanup_retention)
+                except Exception:
+                    # Feature retention failure is observable through bounded
+                    # diagnostics and must never take down normal startup/runtime.
+                    pass
+                next_sql_cleanup = now + 3600.0 + random.uniform(0.0, 300.0)
+
+        emergency_maintenance_task = asyncio.create_task(
+            emergency_maintenance_loop(),
+            name="emergency-broadcast-maintenance",
+        )
 
         if erp_sync_orchestrator is not None:
             erp_sync_orchestrator.reconcile_startup()
@@ -668,6 +696,10 @@ def create_api_app(
         try:
             yield
         finally:
+            if emergency_maintenance_task is not None:
+                emergency_maintenance_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await emergency_maintenance_task
             if scheduler_task is not None:
                 scheduler_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -686,6 +718,7 @@ def create_api_app(
         default_response_class=InstrumentedJSONResponse,
     )
     app.state.database_dialect = engine.dialect.name
+    app.state.emergency_broadcast_runtime = emergency_runtime
     app.state.session_factory = factory
     app.state.facade_dependency = facade_dependency
     app.state.idempotency_dependency = idempotency_dependency
@@ -725,6 +758,41 @@ def create_api_app(
     # Registered after authorization so Starlette wraps it outside auth and the
     # request performance context is already active while credentials are resolved.
     install_performance_middleware(app, log_path=performance_log_path)
+
+    @app.middleware("http")
+    async def emergency_runtime_no_store(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/api/v1/runtime/") or path.startswith("/api/v1/admin/runtime"):
+            response.headers["Cache-Control"] = "no-store, private"
+            response.headers["Vary"] = "Cookie"
+        return response
+
+    @app.middleware("http")
+    async def emergency_runtime_admission(request: Request, call_next):
+        path = request.url.path
+        is_feature_path = (
+            path == "/api/v1/runtime/status"
+            or path.startswith("/api/v1/runtime/broadcasts/")
+            or path.startswith("/api/v1/admin/runtime")
+        )
+        if not is_feature_path:
+            return await call_next(request)
+
+        async def invoke():
+            return await call_next(request)
+
+        try:
+            return await emergency_runtime.feature_admission.run(invoke)
+        except ApplicationUnavailableError as exc:
+            if exc.code != "emergency_runtime_overloaded":
+                raise
+            emergency_runtime._increment("status_overloads")
+            response = application_error_response(exc)
+            response.headers["Retry-After"] = str(random.randint(1, 3))
+            response.headers["Cache-Control"] = "no-store, private"
+            response.headers["Vary"] = "Cookie"
+            return response
 
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(
@@ -837,6 +905,7 @@ def create_api_app(
     app.include_router(build_task_catalog_router(session_dependency))
     app.include_router(build_asset_router(session_dependency))
     app.include_router(build_delivery_router(session_dependency))
+    app.include_router(build_emergency_runtime_router(emergency_runtime))
     app.include_router(build_verification_router(session_dependency))
     app.include_router(
         build_me_router(

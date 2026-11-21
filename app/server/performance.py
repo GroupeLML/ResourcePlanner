@@ -305,8 +305,11 @@ def _server_timing(sample: ServerPerformanceSample) -> str:
 
 
 def install_performance_middleware(app: Any, *, log_path: Path | None = None) -> None:
+    successful_status_polls = 0
+
     @app.middleware("http")
     async def collect_performance(request: Request, call_next):
+        nonlocal successful_status_polls
         raw_path = request.url.path
         if raw_path not in {"/health", "/ready"} and not raw_path.startswith("/api/v1/"):
             return await call_next(request)
@@ -334,7 +337,16 @@ def install_performance_middleware(app: Any, *, log_path: Path | None = None) ->
             ).normalized()
             if response is not None:
                 response.headers["Server-Timing"] = _server_timing(sample)
-            _append_performance_sample(sample, path=log_path)
+            should_log = True
+            if (
+                raw_path == "/api/v1/runtime/status"
+                and response is not None
+                and 200 <= response.status_code < 300
+            ):
+                successful_status_polls += 1
+                should_log = successful_status_polls % 20 == 1
+            if should_log:
+                _append_performance_sample(sample, path=log_path)
             _CURRENT_REQUEST.reset(token)
 
 

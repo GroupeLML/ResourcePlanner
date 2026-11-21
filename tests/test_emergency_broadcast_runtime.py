@@ -1,0 +1,622 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
+from uuid import uuid4
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from app.application.security import AuthPrincipal, ROLE_ADMIN, ROLE_TECHNICIAN
+from app.infrastructure.sql import AppUser, Base, create_sql_engine
+from app.domain.emergency_broadcast import EmergencyBroadcastAcknowledgmentRecord
+from app.server.emergency_broadcast_runtime import (
+    AsyncAdmission,
+    PresenceRegistry,
+    _ActiveBroadcastCache,
+    _PositiveReceiptCache,
+)
+from app.server.http import create_api_app
+from app.server.security import (
+    install_authorization_middleware,
+    resolve_principal,
+    static_auth_resolver,
+)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.mono = 100.0
+        self.now = datetime(2026, 11, 20, 16, 0, tzinfo=timezone.utc)
+
+    def monotonic(self) -> float:
+        return self.mono
+
+    def utc_now(self) -> datetime:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.mono += seconds
+        self.now += timedelta(seconds=seconds)
+
+
+def principal(user_id: str, role: str) -> AuthPrincipal:
+    return AuthPrincipal.from_roles(
+        local_user_id=user_id,
+        issuer="urn:test",
+        subject=user_id,
+        display_name=user_id,
+        email=None,
+        roles=(role,),
+        auth_mode="local",
+    )
+
+
+class EmergencyPresenceTests(unittest.TestCase):
+    def test_multi_tab_observation_aggregates_by_user_and_uses_60_second_activity(self) -> None:
+        clock = FakeClock()
+        presence = PresenceRegistry(monotonic=clock.monotonic, utc_now=clock.utc_now)
+
+        self.assertTrue(presence.observe("MARY"))
+        clock.advance(40)
+        self.assertTrue(presence.observe("MARY"))
+        self.assertEqual(presence.snapshot().tracked_count, 1)
+
+        clock.advance(59)
+        snapshot = presence.snapshot()
+        self.assertEqual(snapshot.active_count, 1)
+        self.assertTrue(snapshot.observations[0].active)
+
+        clock.advance(2)
+        snapshot = presence.snapshot()
+        self.assertEqual(snapshot.active_count, 0)
+        self.assertFalse(snapshot.observations[0].active)
+
+    def test_presence_expires_after_fifteen_minutes_and_warmup_is_explicit(self) -> None:
+        clock = FakeClock()
+        presence = PresenceRegistry(monotonic=clock.monotonic, utc_now=clock.utc_now)
+        presence.observe("MARY")
+
+        self.assertTrue(presence.snapshot().warming)
+        self.assertFalse(presence.snapshot().complete)
+
+        clock.advance(61)
+        self.assertFalse(presence.snapshot().warming)
+        self.assertTrue(presence.snapshot().complete)
+
+        clock.advance(15 * 60)
+        snapshot = presence.snapshot()
+        self.assertEqual(snapshot.tracked_count, 0)
+
+    def test_capacity_overflow_never_evicts_an_active_user_as_complete(self) -> None:
+        clock = FakeClock()
+        presence = PresenceRegistry(monotonic=clock.monotonic, utc_now=clock.utc_now)
+        presence.CAPACITY = 2
+        clock.advance(61)
+
+        self.assertTrue(presence.observe("A"))
+        self.assertTrue(presence.observe("B"))
+        self.assertFalse(presence.observe("C"))
+
+        snapshot = presence.snapshot()
+        self.assertEqual(snapshot.tracked_count, 2)
+        self.assertFalse(snapshot.complete)
+
+
+class EmergencyRuntimeCacheTests(unittest.TestCase):
+    def test_active_cache_hits_within_one_second_and_refreshes_after_ttl(self) -> None:
+        clock = FakeClock()
+        cache = _ActiveBroadcastCache(monotonic=clock.monotonic)
+        calls = 0
+
+        def load():
+            nonlocal calls
+            calls += 1
+            return None
+
+        self.assertEqual(cache.get(load), (None, False))
+        self.assertEqual(cache.get(load), (None, True))
+        self.assertEqual(calls, 1)
+
+        clock.advance(1.01)
+        self.assertEqual(cache.get(load), (None, False))
+        self.assertEqual(calls, 2)
+
+    def test_positive_receipt_cache_is_broadcast_scoped_and_bounded(self) -> None:
+        clock = FakeClock()
+        cache = _PositiveReceiptCache(monotonic=clock.monotonic)
+        cache.CAPACITY = 2
+        receipt_a = EmergencyBroadcastAcknowledgmentRecord(
+            broadcast_id="A",
+            user_id="MARY",
+            acknowledged_at=clock.utc_now(),
+        )
+        receipt_b = EmergencyBroadcastAcknowledgmentRecord(
+            broadcast_id="B",
+            user_id="MARY",
+            acknowledged_at=clock.utc_now(),
+        )
+        cache.put(receipt_a)
+        self.assertIs(cache.get("A", "MARY"), receipt_a)
+        self.assertIsNone(cache.get("B", "MARY"))
+        cache.put(receipt_b)
+        cache.put(
+            EmergencyBroadcastAcknowledgmentRecord(
+                broadcast_id="C",
+                user_id="JOHN",
+                acknowledged_at=clock.utc_now(),
+            )
+        )
+        self.assertIsNone(cache.get("A", "MARY"))
+        self.assertIs(cache.get("B", "MARY"), receipt_b)
+
+
+class EmergencyAdmissionTests(unittest.TestCase):
+    def test_admission_bounds_in_flight_and_queue_without_blocking_event_loop(self) -> None:
+        admission = AsyncAdmission(
+            max_in_flight=1,
+            max_waiting=1,
+            acquire_timeout_seconds=0.05,
+        )
+
+        async def scenario() -> None:
+            release = asyncio.Event()
+
+            async def held() -> str:
+                await release.wait()
+                return "held"
+
+            first = asyncio.create_task(admission.run(held))
+            while (await admission.counts())[1] != 1:
+                await asyncio.sleep(0)
+
+            second = asyncio.create_task(admission.run(held))
+            while (await admission.counts())[0] != 1:
+                await asyncio.sleep(0)
+
+            with self.assertRaisesRegex(Exception, "saturated"):
+                await admission.run(held)
+
+            waiting, in_flight = await admission.counts()
+            self.assertEqual((waiting, in_flight), (1, 1))
+            release.set()
+            self.assertEqual(await first, "held")
+            self.assertEqual(await second, "held")
+
+        asyncio.run(scenario())
+
+
+class EmergencyAuthOffloadTests(unittest.TestCase):
+    def test_high_frequency_sync_auth_can_run_off_event_loop(self) -> None:
+        request = type("RequestStub", (), {})()
+        expected = principal("USER-OFFLOAD", ROLE_TECHNICIAN)
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def slow_resolver(_request):
+            worker_started.set()
+            worker_release.wait(timeout=1.0)
+            return expected
+
+        async def scenario() -> AuthPrincipal | None:
+            task = asyncio.create_task(
+                resolve_principal(
+                    slow_resolver,
+                    request,
+                    offload_sync=True,
+                )
+            )
+            while not worker_started.is_set():
+                await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            worker_release.set()
+            return await task
+
+        resolved = asyncio.run(scenario())
+        self.assertEqual(resolved, expected)
+
+
+class EmergencyAuthMiddlewareTests(unittest.TestCase):
+    def test_emergency_ack_offloads_sync_auth_and_csrf(self) -> None:
+        app = FastAPI()
+
+        @app.post("/api/v1/runtime/broadcasts/B/acknowledgment")
+        async def command() -> dict[str, bool]:
+            return {"ok": True}
+
+        oidc = AuthPrincipal.from_roles(
+            local_user_id="USER-OFFLOAD-ACK",
+            issuer="urn:test",
+            subject="USER-OFFLOAD-ACK",
+            display_name="User Offload ACK",
+            email=None,
+            roles=(ROLE_TECHNICIAN,),
+            auth_mode="oidc",
+        )
+        calls: list[object] = []
+
+        def resolver(_request):
+            return oidc
+
+        def csrf_guard(_request):
+            return True
+
+        async def fake_run(func, /, *args, **kwargs):
+            calls.append(func)
+            return func(*args, **kwargs)
+
+        install_authorization_middleware(
+            app,
+            resolver,
+            csrf_guard=csrf_guard,
+        )
+        with patch(
+            "app.server.security.run_sync_cancellation_safe",
+            new=fake_run,
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/v1/runtime/broadcasts/B/acknowledgment",
+                    json={},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn(resolver, calls)
+        self.assertIn(csrf_guard, calls)
+
+
+class EmergencyRuntimeHttpTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = TemporaryDirectory()
+        self.database_path = Path(self.temp.name) / "runtime.db"
+        self.database_url = f"sqlite+pysqlite:///{self.database_path.as_posix()}"
+        engine = create_sql_engine(self.database_url)
+        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                AppUser.__table__.insert(),
+                [
+                    {
+                        "id": "ADMIN-894",
+                        "display_name": "Admin 894",
+                        "roles_json": '["ADMIN"]',
+                        "active": True,
+                    },
+                    {
+                        "id": "USER-894",
+                        "display_name": "User 894",
+                        "roles_json": '["TECHNICIAN"]',
+                        "active": True,
+                    },
+                ],
+            )
+        engine.dispose()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _app(self, who: AuthPrincipal | None):
+        return create_api_app(
+            self.database_url,
+            auth_resolver=static_auth_resolver(who),
+            api_docs_enabled=False,
+        )
+
+    def test_unauthenticated_status_is_401(self) -> None:
+        app = self._app(None)
+        with TestClient(app) as client:
+            response = client.get("/api/v1/runtime/status")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "authentication_required",
+        )
+
+    def test_status_requires_identity_but_not_a_business_permission(self) -> None:
+        no_role_principal = AuthPrincipal.from_roles(
+            local_user_id="USER-894",
+            issuer="urn:test",
+            subject="USER-894",
+            display_name="User 894",
+            email=None,
+            roles=(),
+            auth_mode="local",
+        )
+        app = self._app(no_role_principal)
+        with TestClient(app) as client:
+            response = client.get("/api/v1/runtime/status")
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_authenticated_status_records_presence_and_returns_active_broadcast(self) -> None:
+        admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
+        with TestClient(admin_app) as admin:
+            created = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "AVIS IMPORTANT",
+                    "message": "Sauvegardez votre travail.",
+                    "confirmed": True,
+                },
+            )
+            self.assertEqual(created.status_code, 201, created.text)
+            broadcast_id = created.json()["broadcast"]["id"]
+
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        with TestClient(user_app) as user:
+            status = user.get("/api/v1/runtime/status")
+            self.assertEqual(status.status_code, 200, status.text)
+            self.assertEqual(status.json()["active_broadcast"]["id"], broadcast_id)
+            self.assertIsNone(status.json()["active_broadcast"]["acknowledged_at"])
+            self.assertEqual(
+                status.json()["active_broadcast"]["content"]["title"],
+                "AVIS IMPORTANT",
+            )
+            self.assertIn("observation_epoch", status.json())
+            self.assertIn("server_time_utc", status.json())
+            self.assertEqual(status.headers["cache-control"], "no-store, private")
+            self.assertEqual(status.headers["vary"], "Cookie")
+
+    def test_admin_second_active_creation_is_deterministic_409(self) -> None:
+        admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
+        with TestClient(admin_app) as admin:
+            first = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "A",
+                    "message": "A",
+                    "confirmed": True,
+                },
+            )
+            second = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "B",
+                    "message": "B",
+                    "confirmed": True,
+                },
+            )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(
+            second.json()["error"]["code"],
+            "emergency_broadcast_already_active",
+        )
+
+    def test_known_broadcast_hint_omits_content_but_keeps_identity_and_receipt_state(self) -> None:
+        admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
+        with TestClient(admin_app) as admin:
+            created = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "AVIS IMPORTANT",
+                    "message": "Sauvegardez votre travail.",
+                    "confirmed": True,
+                },
+            )
+            broadcast = created.json()["broadcast"]
+
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        with TestClient(user_app) as user:
+            status = user.get(
+                "/api/v1/runtime/status",
+                params={
+                    "known_broadcast_id": broadcast["id"],
+                    "known_broadcast_version": broadcast["version"],
+                },
+            )
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["active_broadcast"]["id"], broadcast["id"])
+        self.assertIsNone(status.json()["active_broadcast"]["content"])
+
+    def test_status_observation_writes_no_receipt_or_planning_state(self) -> None:
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        runtime = user_app.state.emergency_broadcast_runtime
+        with runtime.factory() as session:
+            before_receipts = session.execute(
+                text(
+                    "SELECT COUNT(*) FROM emergency_broadcast_acknowledgments"
+                )
+            ).scalar_one()
+            before_planning = session.execute(
+                text(
+                    "SELECT COUNT(*) FROM planning_mutation_state"
+                )
+            ).scalar_one()
+
+        with TestClient(user_app) as user:
+            response = user.get("/api/v1/runtime/status")
+            self.assertEqual(response.status_code, 200)
+
+        engine = create_sql_engine(self.database_url)
+        try:
+            with engine.connect() as connection:
+                after_receipts = connection.execute(
+                    text(
+                        "SELECT COUNT(*) FROM emergency_broadcast_acknowledgments"
+                    )
+                ).scalar_one()
+                after_planning = connection.execute(
+                    text(
+                        "SELECT COUNT(*) FROM planning_mutation_state"
+                    )
+                ).scalar_one()
+        finally:
+            engine.dispose()
+        self.assertEqual(after_receipts, before_receipts)
+        self.assertEqual(after_planning, before_planning)
+
+    def test_status_sql_failure_is_retryable_503_not_authentication_loss(self) -> None:
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        runtime = user_app.state.emergency_broadcast_runtime
+        runtime.service.active = lambda: (_ for _ in ()).throw(RuntimeError("db down"))
+        runtime._active_cache.invalidate()
+
+        with TestClient(user_app) as user:
+            response = user.get("/api/v1/runtime/status")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "emergency_broadcast_status_unavailable",
+        )
+        self.assertNotEqual(
+            response.json()["error"]["code"],
+            "authentication_required",
+        )
+
+    def test_normal_user_cannot_use_admin_operations_but_can_ack_only_self(self) -> None:
+        admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
+        with TestClient(admin_app) as admin:
+            created = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "Avis",
+                    "message": "Message",
+                    "confirmed": True,
+                },
+            )
+            broadcast_id = created.json()["broadcast"]["id"]
+
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        with TestClient(user_app) as user:
+            denied = user.get("/api/v1/admin/runtime/status")
+            self.assertEqual(denied.status_code, 403)
+            create_denied = user.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "Non",
+                    "message": "Non",
+                    "confirmed": True,
+                },
+            )
+            self.assertEqual(create_denied.status_code, 403)
+            end_denied = user.post(
+                f"/api/v1/admin/runtime/broadcasts/{broadcast_id}/end",
+                json={},
+            )
+            self.assertEqual(end_denied.status_code, 403)
+
+            ack = user.post(
+                f"/api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment",
+                json={},
+            )
+            self.assertEqual(ack.status_code, 200, ack.text)
+            self.assertNotIn("user_id", ack.json()["acknowledgment"])
+
+            injected = user.post(
+                f"/api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment",
+                json={"user_id": "ADMIN-894"},
+            )
+            self.assertEqual(injected.status_code, 422)
+            self.assertEqual(
+                injected.json()["error"]["code"],
+                "request_validation_error",
+            )
+
+    def test_new_broadcast_does_not_reuse_old_positive_receipt(self) -> None:
+        admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        with TestClient(admin_app) as admin, TestClient(user_app) as user:
+            first = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "A",
+                    "message": "A",
+                    "confirmed": True,
+                },
+            ).json()["broadcast"]["id"]
+            user.post(f"/api/v1/runtime/broadcasts/{first}/acknowledgment", json={})
+            admin.post(f"/api/v1/admin/runtime/broadcasts/{first}/end", json={})
+            second = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "B",
+                    "message": "B",
+                    "confirmed": True,
+                },
+            ).json()["broadcast"]["id"]
+
+            status = user.get("/api/v1/runtime/status")
+            self.assertEqual(status.json()["active_broadcast"]["id"], second)
+            self.assertIsNone(status.json()["active_broadcast"]["acknowledged_at"])
+
+    def test_ended_broadcast_acknowledgment_is_still_idempotent(self) -> None:
+        admin_app = self._app(principal("ADMIN-894", ROLE_ADMIN))
+        user_app = self._app(principal("USER-894", ROLE_TECHNICIAN))
+        with TestClient(admin_app) as admin, TestClient(user_app) as user:
+            broadcast_id = admin.post(
+                "/api/v1/admin/runtime/broadcasts",
+                json={
+                    "creation_command_id": str(uuid4()),
+                    "title": "A",
+                    "message": "A",
+                    "confirmed": True,
+                },
+            ).json()["broadcast"]["id"]
+            admin.post(f"/api/v1/admin/runtime/broadcasts/{broadcast_id}/end", json={})
+
+            first = user.post(
+                f"/api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment",
+                json={},
+            )
+            second = user.post(
+                f"/api/v1/runtime/broadcasts/{broadcast_id}/acknowledgment",
+                json={},
+            )
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            self.assertEqual(
+                first.json()["acknowledgment"]["acknowledged_at"],
+                second.json()["acknowledgment"]["acknowledged_at"],
+            )
+
+
+class EmergencyCsrfBoundaryTests(unittest.TestCase):
+    def test_runtime_mutation_keeps_csrf_guard_for_session_auth(self) -> None:
+        app = FastAPI()
+
+        @app.post("/api/v1/runtime/broadcasts/B/acknowledgment")
+        def command() -> dict[str, bool]:
+            return {"ok": True}
+
+        oidc = AuthPrincipal.from_roles(
+            local_user_id="U",
+            issuer="issuer",
+            subject="subject",
+            display_name="User",
+            email=None,
+            roles=(ROLE_TECHNICIAN,),
+            auth_mode="oidc",
+        )
+        install_authorization_middleware(
+            app,
+            static_auth_resolver(oidc),
+            csrf_guard=lambda _request: False,
+        )
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/runtime/broadcasts/B/acknowledgment",
+                json={},
+            )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "csrf_validation_failed")
+
+
+if __name__ == "__main__":
+    unittest.main()

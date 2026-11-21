@@ -1,0 +1,261 @@
+.emergency-broadcast-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.emergency-broadcast-dialog {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  display: grid;
+  gap: 1rem;
+  padding: 1.5rem;
+  border: 2px solid #b42318;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.4);
+}
+
+.emergency-broadcast-eyebrow {
+  color: #b42318;
+  font-size: .76rem;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.emergency-broadcast-dialog h2 {
+  margin: 0;
+  font-size: clamp(1.4rem, 4vw, 2rem);
+}
+
+.emergency-broadcast-message {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.emergency-broadcast-time {
+  margin: 0;
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+.emergency-broadcast-retry {
+  padding: .8rem .9rem;
+  border: 1px solid #f0b8b2;
+  border-radius: 10px;
+  background: #fff1f0;
+  color: #912018;
+}
+
+.emergency-broadcast-ack {
+  min-height: 56px;
+  border: 0;
+  border-radius: 12px;
+  background: #b42318;
+  color: white;
+  font-size: 1.05rem;
+  font-weight: 850;
+}
+
+.emergency-broadcast-ack:disabled {
+  opacity: .65;
+  cursor: wait;
+}
+
+.emergency-broadcast-ack:focus-visible {
+  outline: 4px solid #8db4ff;
+  outline-offset: 3px;
+}
+
+.emergency-admin-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.emergency-admin-panel h3,
+.emergency-admin-panel h4,
+.emergency-admin-panel p {
+  margin-top: 0;
+}
+
+.emergency-admin-panel .configuration-section-heading p {
+  max-width: 760px;
+  margin-bottom: 0;
+  color: #667085;
+}
+
+.emergency-admin-stale {
+  padding: .7rem .85rem;
+  border: 1px solid #f4c36a;
+  border-radius: 10px;
+  background: #fffaeb;
+  color: #7a4d00;
+  font-weight: 750;
+}
+
+.emergency-admin-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: .8rem;
+}
+
+.emergency-create-form label {
+  display: grid;
+  gap: .35rem;
+  color: #344054;
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.emergency-create-form input,
+.emergency-create-form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: .6rem .7rem;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+
+.emergency-create-form textarea,
+.emergency-admin-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.emergency-active-card {
+  align-content: start;
+}
+
+.emergency-admin-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .5rem;
+}
+
+.emergency-admin-counts span {
+  display: grid;
+  gap: .15rem;
+  padding: .6rem;
+  border-radius: 9px;
+  background: #f8fafc;
+  color: #667085;
+  font-size: .72rem;
+}
+
+.emergency-admin-counts strong {
+  color: #172033;
+  font-size: 1rem;
+}
+
+.emergency-admin-table-wrap {
+  overflow-x: auto;
+}
+
+.emergency-admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .8rem;
+}
+
+.emergency-admin-table th,
+.emergency-admin-table td {
+  padding: .55rem .6rem;
+  border-bottom: 1px solid #eaecf0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.emergency-admin-table th {
+  color: #667085;
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.emergency-history-list {
+  display: grid;
+  gap: .4rem;
+}
+
+.emergency-history-list > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .8rem;
+  padding: .65rem .75rem;
+  border: 1px solid #e4e7ec;
+  border-radius: 9px;
+  background: #fff;
+  color: inherit;
+  text-align: left;
+}
+
+.emergency-history-list > button.active {
+  border-color: #315ea8;
+  background: #f1f5ff;
+}
+
+.emergency-history-list > button span {
+  color: #667085;
+  font-size: .72rem;
+}
+
+.emergency-receipt-history {
+  display: grid;
+  gap: .5rem;
+  margin-top: .5rem;
+  padding-top: .75rem;
+  border-top: 1px solid #eaecf0;
+}
+
+.emergency-receipt-history ul {
+  list-style: none;
+  display: grid;
+  gap: .35rem;
+  margin: 0;
+  padding: 0;
+}
+
+.emergency-receipt-history li {
+  display: flex;
+  justify-content: space-between;
+  gap: .8rem;
+  padding: .45rem .55rem;
+  border-radius: 8px;
+  background: #f8fafc;
+  font-size: .78rem;
+}
+
+.emergency-admin-operator-note {
+  margin: 0;
+  padding: .7rem .85rem;
+  border-left: 4px solid #667085;
+  background: #f8fafc;
+  color: #475467;
+  font-size: .78rem;
+}
+
+@media (max-width: 800px) {
+  .emergency-admin-grid,
+  .emergency-admin-counts {
+    grid-template-columns: 1fr;
+  }
+
+  .emergency-history-list > button,
+  .emergency-receipt-history li {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
