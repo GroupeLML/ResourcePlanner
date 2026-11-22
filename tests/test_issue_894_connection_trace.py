@@ -14,6 +14,8 @@ from tools.issue_894_connection_trace import (
 )
 from tools.issue_894_connection_trial import (
     DIAGNOSTIC_LABEL,
+    FAILURE_RATE_MATERIAL_DELTA,
+    _compare,
     _correlate_timeouts,
     _summarize_trace,
 )
@@ -25,6 +27,26 @@ def _rows(path: Path) -> list[dict[str, object]]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _comparison(
+    canonical: dict[str, object],
+    instrumented: dict[str, object],
+) -> dict[str, object]:
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        canonical_path = root / "canonical.json"
+        instrumented_path = root / "instrumented.json"
+        output_path = root / "comparison.json"
+        canonical_path.write_text(json.dumps(canonical), encoding="utf-8")
+        instrumented_path.write_text(json.dumps(instrumented), encoding="utf-8")
+        return _compare(
+            SimpleNamespace(
+                canonical=canonical_path,
+                instrumented=instrumented_path,
+                output=output_path,
+            )
+        )
 
 
 class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
@@ -234,6 +256,96 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["connection_holding_ms"]["p95_ms"], 120.0)
         self.assertEqual(summary["orm_materialization_count"]["p95_ms"], 7.0)
         self.assertEqual(DIAGNOSTIC_LABEL, "DIAGNOSTIC — NOT CERTIFICATION")
+
+    def test_comparator_tolerates_small_normalized_failure_variation(self) -> None:
+        report = _comparison(
+            {
+                "achieved_request_start_rps": 3.50,
+                "latency": {"p95_ms": 10007.7},
+                "completed": 105,
+                "failed": 76,
+            },
+            {
+                "achieved_request_start_rps": 3.47,
+                "latency": {"p95_ms": 10008.8},
+                "completed": 104,
+                "failed": 83,
+            },
+        )
+
+        self.assertFalse(report["material_instrumentation_deterioration"])
+        self.assertTrue(report["interpretation_allowed"])
+        self.assertAlmostEqual(
+            report["canonical"]["failure_rate"],
+            76 / 105,
+        )
+        self.assertAlmostEqual(
+            report["instrumented"]["failure_rate"],
+            83 / 104,
+        )
+        self.assertLessEqual(
+            report["delta"]["failure_rate"],
+            FAILURE_RATE_MATERIAL_DELTA,
+        )
+
+    def test_comparator_detects_meaningful_failure_rate_degradation(self) -> None:
+        report = _comparison(
+            {
+                "achieved_request_start_rps": 3.50,
+                "latency": {"p95_ms": 10000.0},
+                "completed": 100,
+                "failed": 60,
+            },
+            {
+                "achieved_request_start_rps": 3.50,
+                "latency": {"p95_ms": 10000.0},
+                "completed": 100,
+                "failed": 75,
+            },
+        )
+
+        self.assertTrue(report["material_instrumentation_deterioration"])
+        self.assertFalse(report["interpretation_allowed"])
+        self.assertGreater(
+            report["delta"]["failure_rate"],
+            FAILURE_RATE_MATERIAL_DELTA,
+        )
+
+    def test_comparator_still_detects_throughput_degradation(self) -> None:
+        report = _comparison(
+            {
+                "achieved_request_start_rps": 10.0,
+                "latency": {"p95_ms": 1000.0},
+                "completed": 100,
+                "failed": 20,
+            },
+            {
+                "achieved_request_start_rps": 8.9,
+                "latency": {"p95_ms": 1000.0},
+                "completed": 100,
+                "failed": 20,
+            },
+        )
+
+        self.assertTrue(report["material_instrumentation_deterioration"])
+
+    def test_comparator_still_detects_latency_degradation(self) -> None:
+        report = _comparison(
+            {
+                "achieved_request_start_rps": 10.0,
+                "latency": {"p95_ms": 1000.0},
+                "completed": 100,
+                "failed": 20,
+            },
+            {
+                "achieved_request_start_rps": 10.0,
+                "latency": {"p95_ms": 1200.0},
+                "completed": 100,
+                "failed": 20,
+            },
+        )
+
+        self.assertTrue(report["material_instrumentation_deterioration"])
 
     async def test_first_stall_snapshot_is_bounded_to_one_capture(self) -> None:
         with TemporaryDirectory() as tmp:
