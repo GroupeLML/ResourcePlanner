@@ -420,14 +420,21 @@ async def _ordinary_driver(
     interval = 1.0 / ORDINARY_RPS
     started = time.perf_counter()
     next_release = started
-    issued = 0
+    scheduled = 0
+    started_requests = 0
+    started_in_window = 0
     completed = 0
+    completed_in_window = 0
     succeeded = 0
     in_flight = 0
+    outstanding = 0
     max_in_flight = 0
+    max_outstanding = 0
     scheduling_lag_ms: list[float] = []
     errors: list[dict[str, object]] = []
     error_counts: dict[str, int] = {}
+    first_stall_diagnostics: dict[str, object] | None = None
+    first_stall_lock = asyncio.Lock()
     operation_counts = {
         "planning_reads": 0,
         "project_reads": 0,
@@ -441,8 +448,53 @@ async def _ordinary_driver(
     semaphore = asyncio.Semaphore(32)
     tasks: list[asyncio.Task[None]] = []
 
+    async def capture_first_stall(
+        *,
+        operation: str,
+        method: str,
+        elapsed_ms: float,
+        category: str,
+        exception: str,
+    ) -> None:
+        nonlocal first_stall_diagnostics
+        if first_stall_diagnostics is not None:
+            return
+        async with first_stall_lock:
+            if first_stall_diagnostics is not None:
+                return
+            sql_diagnostics: dict[str, object]
+            try:
+                sql_diagnostics = await asyncio.to_thread(
+                    _sql_wait_snapshot,
+                    os.environ["RESOURCEPLANNER_DATABASE_URL"],
+                )
+            except Exception as exc:
+                sql_diagnostics = {
+                    "available": False,
+                    "exception": type(exc).__name__,
+                    "message": str(exc)[:500],
+                }
+            first_stall_diagnostics = {
+                "operation": operation,
+                "method": method,
+                "elapsed_ms": elapsed_ms,
+                "category": category,
+                "exception": exception,
+                "captured_at_monotonic": time.perf_counter(),
+                "sql": sql_diagnostics,
+            }
+
     async def one(counter: int, scheduled_at: float) -> None:
-        nonlocal completed, succeeded, in_flight, max_in_flight
+        nonlocal (
+            started_requests,
+            started_in_window,
+            completed,
+            completed_in_window,
+            succeeded,
+            in_flight,
+            outstanding,
+            max_in_flight,
+        )
         async with semaphore:
             in_flight += 1
             max_in_flight = max(max_in_flight, in_flight)
@@ -476,8 +528,12 @@ async def _ordinary_driver(
                 path = "/api/v1/projects?active_only=true"
                 headers = _headers(admin)
                 body = None
+
             operation_counts[operation] += 1
             request_started = time.perf_counter()
+            started_requests += 1
+            if request_started <= stop_at:
+                started_in_window += 1
             try:
                 response, elapsed = await _request_timed(
                     client,
@@ -510,6 +566,13 @@ async def _ordinary_driver(
                         "exception": type(exc).__name__,
                     }
                 )
+                await capture_first_stall(
+                    operation=operation,
+                    method=method,
+                    elapsed_ms=elapsed,
+                    category=category,
+                    exception=type(exc).__name__,
+                )
             except httpx.RequestError as exc:
                 elapsed = (time.perf_counter() - request_started) * 1000.0
                 latencies.append(elapsed)
@@ -526,9 +589,20 @@ async def _ordinary_driver(
                         "exception": type(exc).__name__,
                     }
                 )
+                await capture_first_stall(
+                    operation=operation,
+                    method=method,
+                    elapsed_ms=elapsed,
+                    category=category,
+                    exception=type(exc).__name__,
+                )
             finally:
                 completed += 1
+                completed_at = time.perf_counter()
+                if completed_at <= stop_at:
+                    completed_in_window += 1
                 in_flight -= 1
+                outstanding -= 1
 
     while next_release < stop_at and not (
         stop_event is not None and stop_event.is_set()
@@ -536,37 +610,50 @@ async def _ordinary_driver(
         await asyncio.sleep(max(0.0, next_release - time.perf_counter()))
         if stop_event is not None and stop_event.is_set():
             break
-        issued += 1
-        tasks.append(asyncio.create_task(one(issued, next_release)))
+        scheduled += 1
+        outstanding += 1
+        max_outstanding = max(max_outstanding, outstanding)
+        tasks.append(asyncio.create_task(one(scheduled, next_release)))
         next_release += interval
 
+    scheduling_finished = time.perf_counter()
+    outstanding_at_window_end = outstanding
     if tasks:
         await asyncio.gather(*tasks)
 
-    issuance_finished = time.perf_counter()
-    configured_window = max(0.001, stop_at - started)
-    issuance_window = max(
-        0.001,
-        min(stop_at, issuance_finished) - started,
-    )
     completed_at = time.perf_counter()
-    completion_window = max(issuance_window, completed_at - started)
+    configured_window = max(0.001, stop_at - started)
+    scheduling_window = max(
+        0.001,
+        min(stop_at, scheduling_finished) - started,
+    )
+    drain_seconds = max(0.0, completed_at - stop_at)
+    completion_window = max(configured_window, completed_at - started)
     return {
         "configured_target_rps": ORDINARY_RPS,
-        "issued": issued,
+        "scheduled": scheduled,
+        "started": started_requests,
+        "started_in_measurement_window": started_in_window,
         "completed": completed,
+        "completed_in_measurement_window": completed_in_window,
         "succeeded": succeeded,
         "failed": len(errors),
+        "outstanding_at_window_end": outstanding_at_window_end,
         "configured_concurrency_limit": 32,
         "max_in_flight": max_in_flight,
+        "max_outstanding": max_outstanding,
         "configured_window_seconds": configured_window,
-        "actual_issuance_window_seconds": issuance_window,
-        "achieved_issue_rps": issued / issuance_window,
-        "achieved_completion_rps": completed / completion_window,
+        "actual_scheduling_window_seconds": scheduling_window,
+        "drain_duration_seconds": drain_seconds,
+        "achieved_schedule_rps": scheduled / scheduling_window,
+        "achieved_request_start_rps": started_in_window / configured_window,
+        "achieved_completion_rps": completed_in_window / configured_window,
+        "drained_completion_rps": completed / completion_window,
         "operation_counts": operation_counts,
         "operation_errors": operation_errors,
         "error_counts": dict(sorted(error_counts.items())),
         "errors": errors,
+        "first_stall_diagnostics": first_stall_diagnostics,
         "scheduling_lag_ms": _latencies(scheduling_lag_ms),
     }
 
