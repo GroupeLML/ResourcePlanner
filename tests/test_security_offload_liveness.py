@@ -101,6 +101,45 @@ class OrdinarySecurityOffloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 403, response.text)
         self.assertEqual(response.json()["error"]["code"], "permission_denied")
 
+    async def test_blocked_sync_csrf_guard_does_not_block_event_loop(self) -> None:
+        started = Event()
+        release = Event()
+
+        def resolver(_request):
+            return _principal()
+
+        def csrf_guard(_request):
+            started.set()
+            if not release.wait(timeout=2):
+                raise RuntimeError("CSRF guard was not released")
+            return True
+
+        app = _app(resolver, csrf_guard=csrf_guard)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            protected = asyncio.create_task(client.post("/api/v1/demands"))
+            self.assertTrue(await asyncio.to_thread(started.wait, 1.0))
+            marker = asyncio.Event()
+
+            async def tick() -> None:
+                await asyncio.sleep(0)
+                marker.set()
+
+            tick_task = asyncio.create_task(tick())
+            public = await asyncio.wait_for(client.get("/health"), timeout=0.5)
+            await asyncio.wait_for(marker.wait(), timeout=0.5)
+            self.assertEqual(public.status_code, 200, public.text)
+            self.assertFalse(protected.done())
+
+            release.set()
+            response = await asyncio.wait_for(protected, timeout=1.0)
+            await tick_task
+
+        self.assertEqual(response.status_code, 200, response.text)
+
     async def test_ordinary_sync_csrf_guard_accept_and_reject_semantics_are_unchanged(self) -> None:
         calls: list[bool] = []
 
