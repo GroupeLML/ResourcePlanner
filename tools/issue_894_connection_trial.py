@@ -496,6 +496,17 @@ def _correlate_timeouts(
     return correlations
 
 
+def _count_distribution(values: list[float]) -> dict[str, float | int]:
+    latency_shape = _latencies(values)
+    return {
+        "count": int(latency_shape["count"]),
+        "p50": float(latency_shape["p50_ms"]),
+        "p95": float(latency_shape["p95_ms"]),
+        "max": float(latency_shape["max_ms"]),
+        "mean": float(latency_shape["mean_ms"]),
+    }
+
+
 def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
     by_kind: dict[str, int] = {}
     executor_queue: list[float] = []
@@ -662,6 +673,20 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             and len(detail["worker_cpu_ms"]) == consumer_count
             and len(detail["non_nested_worker_cpu_ms"]) == consumer_count
         )
+        fetch_shape = _latencies(detail["fetch_ms"])
+        non_nested_shape = _latencies(detail["non_nested_ms"])
+        non_nested_cpu_shape = _latencies(detail["non_nested_worker_cpu_ms"])
+        if float(fetch_shape["p50_ms"]) >= float(non_nested_shape["p50_ms"]):
+            dominant_stage = "fetching"
+        elif (
+            float(non_nested_shape["p50_ms"]) > 0.0
+            and float(non_nested_cpu_shape["p50_ms"])
+            >= float(non_nested_shape["p50_ms"]) * 0.5
+        ):
+            dominant_stage = "active_processing"
+        else:
+            dominant_stage = "waiting_elsewhere"
+
         targeted_summary[fingerprint] = {
             "observed_fetches": fetch_count,
             "observed_consumers": consumer_count,
@@ -672,8 +697,8 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             "first_stall_request_connection_matches": len(
                 detail["stall_matches"]
             ),
-            "fetched_row_count": _latencies(detail["fetch_rows"]),
-            "fetch_elapsed_ms": _latencies(detail["fetch_ms"]),
+            "fetched_row_count": _count_distribution(detail["fetch_rows"]),
+            "fetch_elapsed_ms": fetch_shape,
             "fetch_cpu_ms": _latencies(detail["fetch_cpu_ms"]),
             "consumer_elapsed_ms": _latencies(detail["consumer_ms"]),
             "nested_fetch_elapsed_ms": _latencies(detail["nested_fetch_ms"]),
@@ -687,6 +712,7 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             "non_nested_worker_cpu_ms": _latencies(
                 detail["non_nested_worker_cpu_ms"]
             ),
+            "derived_dominant_stage": dominant_stage,
             "evidence_complete": evidence_complete,
         }
 
