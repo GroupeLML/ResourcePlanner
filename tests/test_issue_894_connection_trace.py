@@ -12,6 +12,11 @@ from tools.issue_894_connection_trace import (
     ConnectionTraceRecorder,
     safe_diagnostic_id,
 )
+from tools.issue_894_connection_trial import (
+    DIAGNOSTIC_LABEL,
+    _correlate_timeouts,
+    _summarize_trace,
+)
 
 
 def _rows(path: Path) -> list[dict[str, object]]:
@@ -135,6 +140,100 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             float(events["executor_worker_start"]["queue_wait_ms"]),
             0.0,
         )
+
+    async def test_timeout_can_correlate_with_later_server_end_and_connection_return(self) -> None:
+        diagnostic_id = "00112233445566778899"
+        timeout_at = 10.0
+        errors = [
+            {
+                "diagnostic_id": diagnostic_id,
+                "operation": "planning_reads",
+                "category": "read_timeout",
+            }
+        ]
+        request_records = {
+            diagnostic_id: {
+                "client_timeout_monotonic": timeout_at,
+            }
+        }
+        trace_rows = [
+            {
+                "kind": "connection_return",
+                "request_id": diagnostic_id,
+                "monotonic": 12.0,
+                "holding_ms": 8000.0,
+                "post_statement_connection_residence_ms": 2500.0,
+            },
+            {
+                "kind": "request_end",
+                "request_id": diagnostic_id,
+                "monotonic": 13.0,
+                "server_request_ms": 13000.0,
+                "orm_materialization_count": 4,
+            },
+        ]
+
+        correlated = _correlate_timeouts(
+            errors,
+            request_records,
+            trace_rows,
+        )
+        self.assertEqual(len(correlated), 1)
+        self.assertIsNotNone(correlated[0]["server_request_end"])
+        self.assertEqual(
+            len(correlated[0]["connection_returns_after_client_timeout"]),
+            1,
+        )
+
+    async def test_trace_summary_separates_auth_queue_sql_and_post_statement_residence(self) -> None:
+        rows = [
+            {
+                "kind": "executor_worker_start",
+                "phase": "auth",
+                "queue_wait_ms": 25.0,
+            },
+            {
+                "kind": "executor_worker_complete",
+                "phase": "auth",
+                "worker_ms": 80.0,
+            },
+            {
+                "kind": "pool_checkout_complete",
+                "wait_ms": 40.0,
+            },
+            {
+                "kind": "statement_end",
+                "statement_ms": 5.0,
+            },
+            {
+                "kind": "connection_return",
+                "holding_ms": 120.0,
+                "post_statement_connection_residence_ms": 60.0,
+            },
+            {
+                "kind": "request_end",
+                "orm_materialization_count": 7,
+            },
+        ]
+
+        summary = _summarize_trace(rows)
+        self.assertEqual(
+            summary["executor_by_phase"]["auth"]["queue_ms"]["p95_ms"],
+            25.0,
+        )
+        self.assertEqual(
+            summary["executor_by_phase"]["auth"]["worker_ms"]["p95_ms"],
+            80.0,
+        )
+        self.assertEqual(summary["pool_checkout_wait_ms"]["p95_ms"], 40.0)
+        self.assertEqual(summary["statement_execution_ms"]["p95_ms"], 5.0)
+        self.assertEqual(
+            summary["post_statement_connection_residence_ms"]["p95_ms"],
+            60.0,
+        )
+        self.assertEqual(summary["connection_holding_ms"]["p95_ms"], 120.0)
+        self.assertEqual(summary["orm_materialization_count"]["p95_ms"], 7.0)
+        self.assertEqual(DIAGNOSTIC_LABEL, "DIAGNOSTIC — NOT CERTIFICATION")
 
     async def test_first_stall_snapshot_is_bounded_to_one_capture(self) -> None:
         with TemporaryDirectory() as tmp:
