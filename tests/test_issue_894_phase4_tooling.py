@@ -500,6 +500,18 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("ack_campaign=NOT RUN", workflow)
         self.assertIn("if: $" + "{{ false }}", workflow)
 
+    def test_short_trial_snapshots_measurement_before_drain_and_never_certifies(self) -> None:
+        trial = (ROOT / "tools" / "issue_894_connection_trial.py").read_text(
+            encoding="utf-8"
+        )
+        snapshot = trial.index("measurement_snapshot = {")
+        drain = trial.index("await asyncio.gather(*tasks)", snapshot)
+        self.assertLess(snapshot, drain)
+        self.assertIn('"certification_pass": False', trial)
+        self.assertIn('"outstanding_at_window_end"', trial)
+        self.assertIn('"drain_duration_seconds"', trial)
+        self.assertIn('"server_observation_duration_seconds"', trial)
+
     def test_missing_phase4_monitor_or_pool_telemetry_fails_closed(self) -> None:
         source = LOAD.read_text(encoding="utf-8")
         self.assertIn("def _require_phase4_telemetry", source)
@@ -535,39 +547,23 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn('secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"', source)
         self.assertIn('sql_env_file="$secrets_dir/sql.env"', source)
 
-    def test_isolated_baseline_stats_sampler_keeps_printf_on_one_yaml_line(self) -> None:
+    def test_connection_diagnostic_status_is_explicitly_not_certification(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
-        physical_lines = [line.strip() for line in source.splitlines()]
-        slash = chr(92)
-        tab_escape = slash + "t"
-        newline_escape = slash + "n"
-        stats_line = (
-            "line=\"$(docker stats --no-stream --format "
-            "'{{.CPUPerc}}" + tab_escape + "{{.MemUsage}}' "
-            "backend 2>/dev/null || true)\""
-        )
-        printf_line = (
-            "printf '%s" + tab_escape + "%s" + newline_escape
-            + "' \"$(date +%s)\" \"$line\" >> \"$stats\""
-        )
-        broken_multiline = (
-            "printf '%s" + chr(9) + "%s" + chr(10)
-            + "' \"$(date +%s)\" \"$line\" >> \"$stats\""
-        )
+        self.assertIn("label=DIAGNOSTIC - NOT CERTIFICATION", source)
+        self.assertIn("full_mixed_load=NOT RUN", source)
+        self.assertIn("ack_campaign=NOT RUN", source)
+        self.assertIn("v2_campaign=NOT RUN", source)
+        self.assertIn("rollback_campaign=NOT RUN", source)
 
-        self.assertIn(stats_line, physical_lines)
-        self.assertIn(printf_line, physical_lines)
-        self.assertNotIn(broken_multiline, source)
-
-    def test_ci_pins_immutable_event_source_and_records_baseline_provenance(self) -> None:
+    def test_ci_pins_immutable_event_source_and_records_diagnostic_provenance(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Pin immutable event PR head and base", source)
         self.assertIn(
-            "RP894_EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+            "RP894_EVENT_PR_HEAD_SHA: $" + "{{ github.event.pull_request.head.sha }}",
             source,
         )
         self.assertIn(
-            "RP894_EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}",
+            "RP894_EVENT_BASE_SHA: $" + "{{ github.event.pull_request.base.sha }}",
             source,
         )
         self.assertIn('git checkout --detach "$RP894_EVENT_PR_HEAD_SHA"', source)
@@ -580,8 +576,12 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("event_pr_head_sha=%s", source)
         self.assertIn("checked_out_source_sha=%s", source)
         self.assertIn("event_base_sha=%s", source)
-        self.assertIn("workload_command=baseline", source)
+        self.assertIn("workload_command=connection-diagnostic", source)
         self.assertIn(
+            "python tools/issue_894_connection_trial.py trial",
+            source,
+        )
+        self.assertNotIn(
             "python tools/issue_894_phase4_load.py baseline",
             source,
         )
@@ -590,18 +590,21 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
             source,
         )
 
-    def test_ci_uses_supported_frontend_mode_and_stage_specific_restart_diagnostics(self) -> None:
+    def test_ci_uses_same_frontend_and_one_process_for_both_short_trials(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("RESOURCEPLANNER_ENVIRONMENT=TEST", source)
         self.assertIn("RESOURCEPLANNER_ENVIRONMENT=PROD", source)
-        self.assertIn("wait_phase4_ready initial-backend", source)
-        self.assertIn("wait_phase4_ready initial-proxy", source)
-        self.assertIn("wait_phase4_ready restarted-backend", source)
-        self.assertIn("wait_phase4_ready restarted-proxy", source)
-        self.assertIn("phase4_diagnostics restart-state-verification", source)
-        self.assertIn("restart-${stage}-diagnostics.txt", source)
-        self.assertIn("docker logs --tail=200 backend", source)
-        self.assertIn("docker logs --tail=200 frontend", source)
+        self.assertIn("start_backend canonical", source)
+        self.assertIn("start_backend instrumented", source)
+        self.assertIn("ensure_frontend", source)
+        self.assertIn("python -m app.server", source)
+        self.assertIn(
+            "python /workspace/tools/issue_894_phase4_server.py",
+            source,
+        )
+        self.assertNotIn("workers=", source)
+        self.assertNotIn("restart-prepare", source)
+        self.assertNotIn("restart-verify", source)
 
     def test_load_wrapper_runs_monitor_inside_real_lifespan_and_records_pool_waits(self) -> None:
         source = SERVER.read_text(encoding="utf-8")
