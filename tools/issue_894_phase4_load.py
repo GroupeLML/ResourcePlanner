@@ -2329,6 +2329,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--measure-seconds", type=int, default=DEFAULT_MEASURE_SECONDS)
     run.add_argument("--ack-repeats", type=int, default=DEFAULT_ACK_REPEATS)
 
+    sql_diagnostics = sub.add_parser("sql-diagnostics")
+    sql_diagnostics.add_argument("--database-url", required=True)
+    sql_diagnostics.add_argument("--output", type=Path, required=True)
+
     restart_prepare = sub.add_parser("restart-prepare")
     restart_prepare.add_argument("--base-url", default="http://frontend:8080")
     restart_prepare.add_argument("--credentials", type=Path, required=True)
@@ -2369,6 +2373,14 @@ def main() -> int:
             encoding="utf-8",
         )
         return 0 if report["passed"] else 1
+    if args.command == "sql-diagnostics":
+        report = _sql_wait_snapshot(args.database_url)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return 0 if bool(report.get("available")) else 1
     if args.command == "restart-prepare":
         asyncio.run(_restart_prepare(args))
         return 0
