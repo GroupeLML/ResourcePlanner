@@ -523,6 +523,16 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("baseline_telemetry_ok", source)
         self.assertIn("and baseline_telemetry_ok", source)
 
+    def test_independent_sql_stall_snapshot_uses_safe_statement_fingerprint(self) -> None:
+        source = LOAD.read_text(encoding="utf-8")
+        start = source.index("def _sql_wait_snapshot")
+        end = source.index("\n\ndef _xact_abort_recovery", start)
+        function_source = source[start:end]
+        self.assertIn("HASHBYTES('SHA2_256'", function_source)
+        self.assertIn('"statement_fingerprint"', function_source)
+        self.assertNotIn('"statement_text"', function_source)
+        self.assertNotIn('"parameters"', function_source)
+
     def test_rollback_bundle_preserves_prev_behavior_with_only_0038_lineage_overlay(self) -> None:
         source = ROLLBACK.read_text(encoding="utf-8")
         self.assertIn('git archive "$prev_sha"', source)
@@ -632,6 +642,8 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("RESOURCEPLANNER_PHASE4_CONNECTION_TRACE", source)
         self.assertIn("if trace_enabled", source)
         self.assertIn("install_connection_trace", source)
+        self.assertIn("threading.Timer(", source)
+        self.assertIn("pool_checkout_wait_sustained", source)
 
     def test_connection_trace_remains_tools_only_and_opt_in(self) -> None:
         trace = (ROOT / "tools" / "issue_894_connection_trace.py").read_text(
