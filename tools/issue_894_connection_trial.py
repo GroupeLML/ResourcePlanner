@@ -27,6 +27,11 @@ DIAGNOSTIC_LABEL = "DIAGNOSTIC — NOT CERTIFICATION"
 DEFAULT_DURATION_SECONDS = 30.0
 DEFAULT_CONCURRENCY = 32
 FAILURE_RATE_MATERIAL_DELTA = 0.10
+TARGET_RESULT_FINGERPRINTS = (
+    "6361f6c1e9d43777",
+    "bb0e459d480f9470",
+    "44f262328b901259",
+)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -504,6 +509,40 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
     statement_to_materialization: list[float] = []
     materialization_span: list[float] = []
     post_materialization: list[float] = []
+    targeted: dict[str, dict[str, object]] = {
+        fingerprint: {
+            "fetch_rows": [],
+            "fetch_ms": [],
+            "fetch_cpu_ms": [],
+            "consumer_ms": [],
+            "nested_fetch_ms": [],
+            "non_nested_ms": [],
+            "projection_ms": [],
+            "worker_cpu_ms": [],
+            "non_nested_worker_cpu_ms": [],
+            "call_sites": set(),
+            "request_ids": set(),
+            "connection_ids": set(),
+            "stall_matches": set(),
+        }
+        for fingerprint in TARGET_RESULT_FINGERPRINTS
+    }
+    first_stall = next(
+        (row for row in rows if row.get("kind") == "first_stall_snapshot"),
+        None,
+    )
+    stall_pairs = {
+        (
+            str(holder.get("request_id") or ""),
+            int(holder.get("connection_id") or 0),
+        )
+        for holder in (
+            first_stall.get("holders", [])
+            if isinstance(first_stall, dict)
+            else []
+        )
+        if isinstance(holder, dict)
+    }
 
     for row in rows:
         kind = str(row.get("kind") or "unknown")
@@ -562,6 +601,90 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
                     )
                 )
 
+        fingerprint = str(row.get("statement_fingerprint") or "")
+        detail = targeted.get(fingerprint)
+        if detail is None:
+            continue
+        request_id = str(row.get("request_id") or "")
+        connection_id = int(row.get("connection_id") or 0)
+        if request_id:
+            detail["request_ids"].add(request_id)
+        if connection_id:
+            detail["connection_ids"].add(connection_id)
+        if (request_id, connection_id) in stall_pairs:
+            detail["stall_matches"].add((request_id, connection_id))
+        call_site = str(row.get("call_site") or "")
+        if call_site:
+            detail["call_sites"].add(call_site)
+        if kind == "dbapi_fetch":
+            detail["fetch_rows"].append(float(row.get("fetched_row_count") or 0.0))
+            detail["fetch_ms"].append(float(row.get("fetch_elapsed_ms") or 0.0))
+            detail["fetch_cpu_ms"].append(float(row.get("fetch_cpu_ms") or 0.0))
+        elif kind == "result_consumer":
+            detail["consumer_ms"].append(
+                float(row.get("consumer_elapsed_ms") or 0.0)
+            )
+            detail["nested_fetch_ms"].append(
+                float(row.get("nested_fetch_elapsed_ms") or 0.0)
+            )
+            detail["non_nested_ms"].append(
+                float(row.get("non_nested_consumer_elapsed_ms") or 0.0)
+            )
+            detail["projection_ms"].append(
+                float(row.get("immediate_projection_elapsed_ms") or 0.0)
+            )
+            detail["worker_cpu_ms"].append(
+                float(row.get("worker_cpu_ms") or 0.0)
+            )
+            detail["non_nested_worker_cpu_ms"].append(
+                float(row.get("non_nested_worker_cpu_ms") or 0.0)
+            )
+
+    targeted_summary: dict[str, dict[str, object]] = {}
+    for fingerprint, detail in targeted.items():
+        call_sites = sorted(str(value) for value in detail["call_sites"])
+        fetch_count = len(detail["fetch_ms"])
+        consumer_count = len(detail["consumer_ms"])
+        evidence_complete = bool(
+            fetch_count
+            and consumer_count
+            and call_sites
+            and "unmapped" not in call_sites
+            and len(detail["fetch_rows"]) == fetch_count
+            and len(detail["fetch_cpu_ms"]) == fetch_count
+            and len(detail["nested_fetch_ms"]) == consumer_count
+            and len(detail["non_nested_ms"]) == consumer_count
+            and len(detail["projection_ms"]) == consumer_count
+            and len(detail["worker_cpu_ms"]) == consumer_count
+            and len(detail["non_nested_worker_cpu_ms"]) == consumer_count
+        )
+        targeted_summary[fingerprint] = {
+            "observed_fetches": fetch_count,
+            "observed_consumers": consumer_count,
+            "call_sites": call_sites,
+            "request_count": len(detail["request_ids"]),
+            "connection_count": len(detail["connection_ids"]),
+            "first_stall_request_connection_matches": len(
+                detail["stall_matches"]
+            ),
+            "fetched_row_count": _latencies(detail["fetch_rows"]),
+            "fetch_elapsed_ms": _latencies(detail["fetch_ms"]),
+            "fetch_cpu_ms": _latencies(detail["fetch_cpu_ms"]),
+            "consumer_elapsed_ms": _latencies(detail["consumer_ms"]),
+            "nested_fetch_elapsed_ms": _latencies(detail["nested_fetch_ms"]),
+            "non_nested_consumer_elapsed_ms": _latencies(
+                detail["non_nested_ms"]
+            ),
+            "immediate_projection_elapsed_ms": _latencies(
+                detail["projection_ms"]
+            ),
+            "worker_cpu_ms": _latencies(detail["worker_cpu_ms"]),
+            "non_nested_worker_cpu_ms": _latencies(
+                detail["non_nested_worker_cpu_ms"]
+            ),
+            "evidence_complete": evidence_complete,
+        }
+
     return {
         "event_counts": by_kind,
         "executor_queue_ms": _latencies(executor_queue),
@@ -584,6 +707,11 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
         "materialization_span_ms": _latencies(materialization_span),
         "last_materialization_to_request_end_ms": _latencies(
             post_materialization
+        ),
+        "targeted_result_timing": targeted_summary,
+        "targeted_timing_complete": all(
+            bool(targeted_summary[fingerprint]["evidence_complete"])
+            for fingerprint in TARGET_RESULT_FINGERPRINTS
         ),
     }
 
@@ -625,6 +753,33 @@ def _validated_trial_report(
         raise ValueError(
             f"{expected_mode} trial latency p95 is missing or malformed"
         )
+    trace_summary = report.get("trace_summary")
+    if not isinstance(trace_summary, dict):
+        raise ValueError(f"{expected_mode} trace summary is missing or malformed")
+    targeted = trace_summary.get("targeted_result_timing")
+    if not isinstance(targeted, dict):
+        raise ValueError(
+            f"{expected_mode} targeted result timing is missing or malformed"
+        )
+    if expected_mode == "instrumented":
+        if trace_summary.get("targeted_timing_complete") is not True:
+            raise ValueError("instrumented targeted result timing is incomplete")
+        for fingerprint in TARGET_RESULT_FINGERPRINTS:
+            detail = targeted.get(fingerprint)
+            if not isinstance(detail, dict) or detail.get("evidence_complete") is not True:
+                raise ValueError(
+                    f"instrumented timing evidence incomplete for {fingerprint}"
+                )
+    else:
+        event_counts = trace_summary.get("event_counts")
+        if not isinstance(event_counts, dict):
+            raise ValueError("canonical trace event counts are missing or malformed")
+        if int(event_counts.get("dbapi_fetch") or 0) != 0:
+            raise ValueError("canonical mode unexpectedly contains detailed fetch tracing")
+        if int(event_counts.get("result_consumer") or 0) != 0:
+            raise ValueError(
+                "canonical mode unexpectedly contains detailed consumer tracing"
+            )
     return report
 
 
