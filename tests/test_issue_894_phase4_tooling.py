@@ -87,11 +87,19 @@ class Issue894Phase4TelemetryFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_baseline_preserves_workload_when_final_telemetry_times_out(self) -> None:
         workload = {
             "configured_target_rps": 10.0,
-            "issued": 6000,
+            "scheduled": 6000,
+            "started": 6000,
+            "started_in_measurement_window": 6000,
             "completed": 6000,
+            "completed_in_measurement_window": 5999,
             "succeeded": 5999,
             "failed": 1,
-            "achieved_issue_rps": 10.0,
+            "outstanding_at_window_end": 1,
+            "drain_duration_seconds": 10.0,
+            "achieved_schedule_rps": 10.0,
+            "achieved_request_start_rps": 10.0,
+            "achieved_completion_rps": 9.998,
+            "scheduling_lag_ms": {"count": 6000, "p95": 1.0},
         }
         captures = [
             {
@@ -474,6 +482,37 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn('-e SQL_VALUE="$sql_value"', source)
         self.assertIn('secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"', source)
         self.assertIn('sql_env_file="$secrets_dir/sql.env"', source)
+
+    def test_ci_pins_immutable_event_source_and_records_baseline_provenance(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Pin immutable event PR head and base", source)
+        self.assertIn(
+            "RP894_EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}",
+            source,
+        )
+        self.assertIn(
+            "RP894_EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}",
+            source,
+        )
+        self.assertIn('git checkout --detach "$RP894_EVENT_PR_HEAD_SHA"', source)
+        self.assertNotIn(
+            'git fetch --no-tags origin "$GITHUB_HEAD_REF"',
+            source,
+        )
+        self.assertIn("workflow_event_actions_sha=%s", source)
+        self.assertIn("initial_checkout_sha=%s", source)
+        self.assertIn("event_pr_head_sha=%s", source)
+        self.assertIn("checked_out_source_sha=%s", source)
+        self.assertIn("event_base_sha=%s", source)
+        self.assertIn("workload_command=baseline", source)
+        self.assertIn(
+            "python tools/issue_894_phase4_load.py baseline",
+            source,
+        )
+        self.assertNotIn(
+            "python tools/issue_894_phase4_load.py run               --credentials",
+            source,
+        )
 
     def test_ci_uses_supported_frontend_mode_and_stage_specific_restart_diagnostics(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
