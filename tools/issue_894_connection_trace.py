@@ -450,6 +450,7 @@ class ConnectionTraceRecorder:
             "cpu_started": time.thread_time(),
             "nested_fetch_ms": 0.0,
             "nested_fetch_cpu_ms": 0.0,
+            "all_fetches": [],
             "targeted_fetches": [],
         }
         stack = getattr(self._consumer_local, "stack", None)
@@ -470,15 +471,24 @@ class ConnectionTraceRecorder:
         cpu_ended: float,
         row_count: int,
         call_site: str,
+        error: bool = False,
     ) -> None:
         fetch_ms = max(0.0, (ended - started) * 1000.0)
         fetch_cpu_ms = max(0.0, (cpu_ended - cpu_started) * 1000.0)
         stack = getattr(self._consumer_local, "stack", ())
+        fetch_record = {
+            "fetch_started_monotonic": float(started),
+            "fetch_ended_monotonic": float(ended),
+            "fetch_elapsed_ms": fetch_ms,
+            "fetch_cpu_ms": fetch_cpu_ms,
+            "error": bool(error),
+        }
         for span in stack:
             span["nested_fetch_ms"] = float(span["nested_fetch_ms"]) + fetch_ms
             span["nested_fetch_cpu_ms"] = (
                 float(span["nested_fetch_cpu_ms"]) + fetch_cpu_ms
             )
+            span["all_fetches"].append(fetch_record)
         if fingerprint not in _TARGET_FINGERPRINTS:
             return
         targeted = {
@@ -490,6 +500,7 @@ class ConnectionTraceRecorder:
             "fetch_cpu_ms": fetch_cpu_ms,
             "fetched_row_count": int(row_count),
             "call_site": str(call_site),
+            "error": bool(error),
         }
         for span in stack:
             span["targeted_fetches"].append(targeted)
@@ -506,6 +517,7 @@ class ConnectionTraceRecorder:
             fetch_elapsed_ms=fetch_ms,
             fetch_cpu_ms=fetch_cpu_ms,
             fetched_row_count=int(row_count),
+            fetch_error=bool(error),
             thread_id=threading.get_ident(),
         )
 
@@ -545,6 +557,12 @@ class ConnectionTraceRecorder:
                 float(fetch["fetch_ended_monotonic"])
                 for fetch in fetches
             )
+            later_nested_fetch_ms = sum(
+                float(fetch.get("fetch_elapsed_ms") or 0.0)
+                for fetch in (span.get("all_fetches") or ())
+                if float(fetch.get("fetch_started_monotonic") or 0.0)
+                >= last_fetch_end
+            )
             self.record(
                 "result_consumer",
                 request_id=_DIAGNOSTIC_ID.get(),
@@ -562,7 +580,8 @@ class ConnectionTraceRecorder:
                 non_nested_consumer_elapsed_ms=non_nested_ms,
                 immediate_projection_elapsed_ms=max(
                     0.0,
-                    (ended - last_fetch_end) * 1000.0,
+                    (ended - last_fetch_end) * 1000.0
+                    - later_nested_fetch_ms,
                 ),
                 worker_cpu_ms=total_cpu_ms,
                 nested_fetch_cpu_ms=nested_fetch_cpu_ms,
@@ -730,6 +749,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
                 cpu_ended=cpu_ended,
                 row_count=0,
                 call_site=_repository_call_site(),
+                error=True,
             )
             raise
         ended = time.perf_counter()
@@ -743,6 +763,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             cpu_ended=cpu_ended,
             row_count=len(rows),
             call_site=_repository_call_site(),
+            error=False,
         )
         return rows
 
