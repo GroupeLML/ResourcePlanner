@@ -243,6 +243,61 @@ def _sql_snapshot(database_url: str) -> dict[str, object]:
         engine.dispose()
 
 
+def _sql_wait_snapshot(database_url: str) -> dict[str, object]:
+    engine = create_sql_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            requests = [
+                {
+                    "session_id": int(row.session_id),
+                    "status": str(row.status),
+                    "command": str(row.command),
+                    "wait_type": str(row.wait_type or ""),
+                    "wait_time_ms": int(row.wait_time or 0),
+                    "blocking_session_id": int(row.blocking_session_id or 0),
+                    "host_name": str(row.host_name or ""),
+                    "program_name": str(row.program_name or ""),
+                }
+                for row in connection.execute(
+                    text(
+                        "SELECT TOP (50) r.session_id, r.status, r.command, "
+                        "r.wait_type, r.wait_time, r.blocking_session_id, "
+                        "s.host_name, s.program_name "
+                        "FROM sys.dm_exec_requests AS r "
+                        "JOIN sys.dm_exec_sessions AS s "
+                        "ON s.session_id = r.session_id "
+                        "WHERE s.is_user_process = 1 "
+                        "AND r.session_id <> @@SPID "
+                        "ORDER BY r.wait_time DESC"
+                    )
+                )
+            ]
+            waits = [
+                {
+                    "session_id": int(row.session_id),
+                    "wait_type": str(row.wait_type or ""),
+                    "wait_duration_ms": int(row.wait_duration_ms or 0),
+                    "blocking_session_id": int(row.blocking_session_id or 0),
+                }
+                for row in connection.execute(
+                    text(
+                        "SELECT TOP (50) session_id, wait_type, "
+                        "wait_duration_ms, blocking_session_id "
+                        "FROM sys.dm_os_waiting_tasks "
+                        "WHERE session_id IS NOT NULL "
+                        "ORDER BY wait_duration_ms DESC"
+                    )
+                )
+            ]
+        return {
+            "available": True,
+            "requests": requests,
+            "waiting_tasks": waits,
+        }
+    finally:
+        engine.dispose()
+
+
 def _xact_abort_recovery(database_url: str) -> dict[str, bool]:
     results: dict[str, bool] = {}
     for mode in ("OFF", "ON"):
@@ -485,16 +540,9 @@ async def _ordinary_driver(
             }
 
     async def one(counter: int, scheduled_at: float) -> None:
-        nonlocal (
-            started_requests,
-            started_in_window,
-            completed,
-            completed_in_window,
-            succeeded,
-            in_flight,
-            outstanding,
-            max_in_flight,
-        )
+        nonlocal started_requests, started_in_window
+        nonlocal completed, completed_in_window, succeeded
+        nonlocal in_flight, outstanding, max_in_flight
         async with semaphore:
             in_flight += 1
             max_in_flight = max(max_in_flight, in_flight)
