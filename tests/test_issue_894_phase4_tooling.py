@@ -501,6 +501,47 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("ack_campaign=NOT RUN", workflow)
         self.assertIn("if: $" + "{{ false }}", workflow)
 
+    def test_connection_diagnostic_execution_gate_fails_closed_on_setup_and_tooling(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('canonical_start_status=$?', workflow)
+        self.assertIn('canonical_frontend_status=$?', workflow)
+        self.assertIn('instrumented_start_status=$?', workflow)
+        self.assertIn('instrumented_frontend_status=$?', workflow)
+        self.assertIn(
+            'if [ "$canonical_start_status" = "0" ] && [ "$canonical_frontend_status" = "0" ]; then',
+            workflow,
+        )
+        self.assertIn(
+            'if [ "$instrumented_start_status" = "0" ] && [ "$instrumented_frontend_status" = "0" ]; then',
+            workflow,
+        )
+        self.assertIn('canonical_status=$?', workflow)
+        self.assertIn('instrumented_status=$?', workflow)
+        self.assertIn('comparison_status=$?', workflow)
+        self.assertIn('test "$canonical_status" = "0"', workflow)
+        self.assertIn('test "$instrumented_status" = "0"', workflow)
+        self.assertIn('test "$comparison_status" = "0"', workflow)
+
+    def test_connection_diagnostic_reports_remain_evidence_not_certification(self) -> None:
+        trial = (ROOT / "tools" / "issue_894_connection_trial.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            '_validated_trial_report(args.output, expected_mode=args.mode)',
+            trial,
+        )
+        self.assertIn('"diagnostic_acceptance_behavior_failed"', trial)
+        self.assertIn('"certification_pass": False', trial)
+        self.assertIn('return 0', trial)
+        self.assertIn(
+            'report.get("material_instrumentation_deterioration") is False',
+            trial,
+        )
+        self.assertIn(
+            'report.get("interpretation_allowed") is True',
+            trial,
+        )
+
     def test_short_trial_snapshots_measurement_before_drain_and_never_certifies(self) -> None:
         trial = (ROOT / "tools" / "issue_894_connection_trial.py").read_text(
             encoding="utf-8"
