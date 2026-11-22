@@ -482,8 +482,9 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("--duration-seconds 30", workflow)
         self.assertIn("--offered-rps 10", workflow)
         self.assertIn("--concurrency 32", workflow)
-        self.assertIn("--mode canonical", workflow)
-        self.assertIn("--mode instrumented", workflow)
+        self.assertIn('--mode "$mode"', workflow)
+        self.assertIn("run_trial canonical", workflow)
+        self.assertIn("run_trial instrumented", workflow)
         self.assertIn(
             "RESOURCEPLANNER_PHASE4_CONNECTION_TRACE=true",
             workflow,
