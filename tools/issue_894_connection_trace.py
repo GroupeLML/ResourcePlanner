@@ -80,10 +80,12 @@ class ConnectionTraceRecorder:
         return max(0.0, (time.perf_counter() - self.started) * 1000.0)
 
     def record(self, kind: str, **payload: object) -> None:
+        now = time.perf_counter()
         row = {
             "schema": "issue-894-connection-trace-v1",
             "kind": str(kind),
-            "elapsed_ms": self._elapsed_ms(),
+            "monotonic": now,
+            "elapsed_ms": max(0.0, (now - self.started) * 1000.0),
             "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             **payload,
         }
