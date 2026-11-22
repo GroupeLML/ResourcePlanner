@@ -805,9 +805,9 @@ jobs:
           fi
           if [ "$canonical_start_status" = "0" ] && [ "$canonical_frontend_status" = "0" ]; then
             run_trial canonical /evidence/connection-trial-canonical.json
-            canonical_status=$?
+            canonical_execution_status=$?
           else
-            canonical_status=1
+            canonical_execution_status=1
           fi
           docker logs --tail=500 backend \
             > "$evidence/connection-trial-canonical-backend.txt" 2>&1 || true
@@ -822,9 +822,9 @@ jobs:
           fi
           if [ "$instrumented_start_status" = "0" ] && [ "$instrumented_frontend_status" = "0" ]; then
             run_trial instrumented /evidence/connection-trial-instrumented.json
-            instrumented_status=$?
+            instrumented_execution_status=$?
           else
-            instrumented_status=1
+            instrumented_execution_status=1
           fi
           docker logs --tail=700 backend \
             > "$evidence/connection-trial-instrumented-backend.txt" 2>&1 || true
@@ -841,27 +841,28 @@ jobs:
                 --canonical /evidence/connection-trial-canonical.json \
                 --instrumented /evidence/connection-trial-instrumented.json \
                 --output /evidence/connection-trial-comparison.json
-            comparison_status=$?
+            comparison_execution_status=$?
           else
-            comparison_status=1
+            comparison_execution_status=1
           fi
 
           set -e
 
           {
             printf 'label=DIAGNOSTIC - NOT CERTIFICATION\n'
-            printf 'canonical_status=%s\n' "$canonical_status"
-            printf 'instrumented_status=%s\n' "$instrumented_status"
-            printf 'comparison_status=%s\n' "$comparison_status"
+            printf 'trial_outcome_source=connection-trial-*.json:diagnostic_acceptance_behavior_failed\n'
+            printf 'canonical_execution_status=%s\n' "$canonical_execution_status"
+            printf 'instrumented_execution_status=%s\n' "$instrumented_execution_status"
+            printf 'comparison_execution_status=%s\n' "$comparison_execution_status"
             printf 'full_mixed_load=NOT RUN\n'
             printf 'ack_campaign=NOT RUN\n'
             printf 'v2_campaign=NOT RUN\n'
             printf 'rollback_campaign=NOT RUN\n'
           } > "$evidence/connection-trial-status.txt"
 
-          test "$canonical_status" = "0"
-          test "$instrumented_status" = "0"
-          test "$comparison_status" = "0"
+          test "$canonical_execution_status" = "0"
+          test "$instrumented_execution_status" = "0"
+          test "$comparison_execution_status" = "0"
 
       - name: Run existing V2 API performance budget
         id: benchmark
