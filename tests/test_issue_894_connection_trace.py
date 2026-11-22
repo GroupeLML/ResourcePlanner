@@ -679,15 +679,15 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 1,
             )
             self.assertGreater(
-                detail["consumer_elapsed_ms"]["median_ms"],
-                detail["nested_fetch_elapsed_ms"]["median_ms"],
+                detail["consumer_elapsed_ms"]["p50_ms"],
+                detail["nested_fetch_elapsed_ms"]["p50_ms"],
             )
             self.assertGreaterEqual(
-                detail["non_nested_consumer_elapsed_ms"]["median_ms"],
-                detail["immediate_projection_elapsed_ms"]["median_ms"],
+                detail["non_nested_consumer_elapsed_ms"]["p50_ms"],
+                detail["immediate_projection_elapsed_ms"]["p50_ms"],
             )
             self.assertGreater(
-                detail["worker_cpu_ms"]["median_ms"],
+                detail["worker_cpu_ms"]["p50_ms"],
                 0.0,
             )
 
