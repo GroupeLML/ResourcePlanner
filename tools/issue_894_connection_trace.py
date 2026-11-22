@@ -291,6 +291,8 @@ class ConnectionTraceRecorder:
             "acquired": now,
             "thread_id": threading.get_ident(),
             "last_statement_end": None,
+            "last_statement_fingerprint": "",
+            "current_statement_fingerprint": "",
             "statement_count": 0,
         }
         with self._state_lock:
@@ -307,12 +309,17 @@ class ConnectionTraceRecorder:
     def on_statement_start(self, connection: object, statement: object) -> None:
         request_id = _DIAGNOSTIC_ID.get()
         fingerprint = _statement_fingerprint(statement)
+        connection_id = _connection_record_id(connection)
+        with self._state_lock:
+            holder = self._holders.get(connection_id)
+            if holder is not None:
+                holder["current_statement_fingerprint"] = fingerprint
         self.record(
             "statement_start",
             request_id=request_id,
             route_family=_ROUTE_FAMILY.get(),
             phase=_EXECUTOR_PHASE.get(),
-            connection_id=_connection_record_id(connection),
+            connection_id=connection_id,
             statement_fingerprint=fingerprint,
             thread_id=threading.get_ident(),
         )
@@ -332,6 +339,8 @@ class ConnectionTraceRecorder:
             holder = self._holders.get(connection_id)
             if holder is not None:
                 holder["last_statement_end"] = now
+                holder["last_statement_fingerprint"] = _statement_fingerprint(statement)
+                holder["current_statement_fingerprint"] = ""
                 holder["statement_count"] = int(holder.get("statement_count") or 0) + 1
             aggregate = self._requests.get(request_id)
             if aggregate is not None:
@@ -426,6 +435,12 @@ class ConnectionTraceRecorder:
                         (now - float(holder["acquired"])) * 1000.0,
                     ),
                     "statement_count": int(holder.get("statement_count") or 0),
+                    "current_statement_fingerprint": str(
+                        holder.get("current_statement_fingerprint") or ""
+                    ),
+                    "last_statement_fingerprint": str(
+                        holder.get("last_statement_fingerprint") or ""
+                    ),
                 }
                 for connection_id, holder in self._holders.items()
             ]
@@ -514,11 +529,11 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
     security_module._csrf_allowed = traced_csrf
     security_module.run_sync_cancellation_safe = traced_run_sync
 
-    @event.listens_for(engine, "checkout")
+    @event.listens_for(engine.pool, "checkout")
     def _checkout(_dbapi_connection, connection_record, _connection_proxy) -> None:
         recorder.on_checkout(connection_record)
 
-    @event.listens_for(engine, "checkin")
+    @event.listens_for(engine.pool, "checkin")
     def _checkin(_dbapi_connection, connection_record) -> None:
         recorder.on_checkin(connection_record)
 
@@ -578,8 +593,8 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         security_module.resolve_principal = original_resolve
         security_module._csrf_allowed = original_csrf
         security_module.run_sync_cancellation_safe = original_run_sync
-        event.remove(engine, "checkout", _checkout)
-        event.remove(engine, "checkin", _checkin)
+        event.remove(engine.pool, "checkout", _checkout)
+        event.remove(engine.pool, "checkin", _checkin)
         event.remove(engine, "before_cursor_execute", _before_cursor_execute)
         event.remove(engine, "after_cursor_execute", _after_cursor_execute)
         event.remove(engine, "handle_error", _handle_error)
