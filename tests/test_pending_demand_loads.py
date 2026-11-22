@@ -396,6 +396,75 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
             "R1",
         )
 
+    def test_selected_alternative_snapshot_matches_standalone_projection(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkforceRequest(
+                    id="D10",
+                    legacy_demand_number="DMO-2026-1010",
+                    project_id="P1",
+                    status="Soumise",
+                    confirmation="Tentative",
+                    desired_start=MONDAY,
+                    desired_end=TUESDAY,
+                    resource_count=1,
+                )
+            )
+            session.flush()
+            periods = SqlDemandPeriodRepository(session)
+            periods.replace_for_demand(
+                "DMO-2026-1010",
+                (
+                    DemandPeriodDefinition(
+                        period_id="MON",
+                        start_date=MONDAY,
+                        end_date=MONDAY,
+                        hours=8,
+                        kind=PERIOD_KIND_ALTERNATIVE,
+                        alternative_group="DAY-CHOICE",
+                        proposed_resource="Alice",
+                    ),
+                    DemandPeriodDefinition(
+                        period_id="TUE",
+                        start_date=TUESDAY,
+                        end_date=TUESDAY,
+                        hours=8,
+                        kind=PERIOD_KIND_ALTERNATIVE,
+                        alternative_group="DAY-CHOICE",
+                        proposed_resource="Bob",
+                    ),
+                ),
+            )
+            periods.select_alternative(
+                "DMO-2026-1010",
+                "DAY-CHOICE",
+                "TUE",
+            )
+
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            standalone = queries.list_pending_loads(
+                start=MONDAY,
+                end=FRIDAY,
+                demand_ids=("D10",),
+            )
+            snapshot = queries.planning_snapshot(
+                start=MONDAY,
+                end=FRIDAY,
+                demand_ids=("D10",),
+            )
+
+        self.assertEqual(snapshot.pending_loads, standalone)
+        self.assertEqual(len(snapshot.pending_loads), 1)
+        pending = snapshot.pending_loads[0]
+        self.assertEqual(pending.projected_hours, 8.0)
+        selected = [
+            period.period_id
+            for period in pending.periods
+            if period.selected
+        ]
+        self.assertEqual(selected, ["TUE"])
+
     def test_standalone_pending_load_still_fetches_its_own_projection(self) -> None:
         with transactional_session(self.factory) as session:
             session.add(
