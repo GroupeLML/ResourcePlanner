@@ -955,6 +955,254 @@ async def _run_baseline(
         }
 
 
+def _write_json_checkpoint(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _failure_evidence(
+    *,
+    stage: str,
+    operation: str,
+    started: float,
+    exc: BaseException,
+) -> dict[str, object]:
+    return {
+        "stage": stage,
+        "operation": operation,
+        "elapsed_ms": (time.perf_counter() - started) * 1000.0,
+        "category": (
+            _telemetry_error_category(exc)
+            if isinstance(exc, httpx.HTTPError)
+            else "unexpected_error"
+        ),
+        "exception": type(exc).__name__,
+        "message": str(exc)[:500],
+    }
+
+
+async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
+    report: dict[str, object] = {
+        "schema": "issue-894-phase4-isolated-baseline-v1",
+        "head_sha": args.head_sha,
+        "environment": {
+            "stack": "nginx -> one uvicorn process -> sql server",
+            "warmup_seconds": args.warmup_seconds,
+            "measurement_seconds": args.measure_seconds,
+            "ordinary_requests_per_second": ORDINARY_RPS,
+        },
+        "stages": {
+            "setup": {"status": "RUNNING"},
+            "baseline": {"status": "NOT RUN"},
+            "cleanup": {"status": "NOT RUN"},
+            "mixed_emergency_matrix": {
+                "status": "NOT RUN",
+                "reason": "not authorized in this bounded DEV phase",
+            },
+            "ack_waves": {
+                "status": "NOT RUN",
+                "reason": "not authorized in this bounded DEV phase",
+            },
+        },
+        "broadcast_state": "unknown",
+        "primary_failure": None,
+        "cleanup_failure": None,
+        "baseline": None,
+        "passed": False,
+    }
+    _write_json_checkpoint(args.output, report)
+
+    admin, _users = _load_credentials(args.credentials)
+    setup_started = time.perf_counter()
+    resource_id: str | None = None
+    client = httpx.AsyncClient(
+        base_url=args.base_url,
+        cookies=_cookies(admin),
+        timeout=10.0,
+    )
+    try:
+        try:
+            await _end_active(client, admin)
+            report["broadcast_state"] = "no_active_verified"
+            resource_id = await _ensure_synthetic_resource(client, admin)
+            warmup_until = time.perf_counter() + args.warmup_seconds
+            while time.perf_counter() < warmup_until:
+                response = await client.get(
+                    "/api/v1/planning/snapshot"
+                    "?start=2026-01-05&end=2026-01-09",
+                    headers=_headers(admin),
+                )
+                response.raise_for_status()
+                await asyncio.sleep(0.1)
+            report["stages"]["setup"] = {
+                "status": "PASS",
+                "elapsed_ms": (time.perf_counter() - setup_started) * 1000.0,
+                "resource_id": resource_id,
+                "broadcast_state": report["broadcast_state"],
+            }
+            report["stages"]["baseline"] = {"status": "RUNNING"}
+            _write_json_checkpoint(args.output, report)
+        except Exception as exc:
+            failure = _failure_evidence(
+                stage="setup",
+                operation="prepare_no_active_resource_and_warmup",
+                started=setup_started,
+                exc=exc,
+            )
+            report["primary_failure"] = failure
+            report["stages"]["setup"] = {
+                "status": "FAIL",
+                "failure": failure,
+            }
+            report["stages"]["baseline"] = {
+                "status": "NOT RUN",
+                "reason": "setup failed",
+            }
+            _write_json_checkpoint(args.output, report)
+
+        if report["primary_failure"] is None and resource_id is not None:
+            baseline_started = time.perf_counter()
+            latencies: list[float] = []
+            statuses: dict[str, int] = {}
+            try:
+                telemetry_reset = await _capture_loop_metrics(
+                    args.backend_url,
+                    reset=True,
+                )
+                stop_at = time.perf_counter() + args.measure_seconds
+                ordinary_workload = await _ordinary_driver(
+                    client,
+                    admin,
+                    resource_id,
+                    stop_at,
+                    latencies,
+                    statuses,
+                )
+                telemetry_capture = await _capture_loop_metrics(
+                    args.backend_url,
+                    reset=False,
+                )
+                telemetry_validation = _validate_phase4_telemetry_capture(
+                    telemetry_capture,
+                    minimum_coverage_seconds=args.measure_seconds,
+                )
+                telemetry_ok = (
+                    bool(telemetry_reset.get("available"))
+                    and bool(telemetry_validation["passed"])
+                )
+                baseline = {
+                    "ordinary_api": _latencies(latencies),
+                    "ordinary_workload": ordinary_workload,
+                    "statuses": statuses,
+                    "telemetry": (
+                        telemetry_capture.get("metrics")
+                        if isinstance(telemetry_capture.get("metrics"), dict)
+                        else {}
+                    ),
+                    "telemetry_reset": telemetry_reset,
+                    "telemetry_capture": telemetry_capture,
+                    "telemetry_validation": telemetry_validation,
+                    "telemetry_ok": telemetry_ok,
+                }
+                baseline_all_200 = (
+                    set(statuses) <= {"200"}
+                    and int(baseline["ordinary_api"]["count"]) > 0
+                    and int(ordinary_workload["failed"]) == 0
+                )
+                baseline_rate_ok = (
+                    float(ordinary_workload["achieved_request_start_rps"])
+                    >= ORDINARY_RPS * 0.95
+                )
+                baseline_passed = (
+                    baseline_all_200
+                    and baseline_rate_ok
+                    and telemetry_ok
+                )
+                report["baseline"] = baseline
+                report["stages"]["baseline"] = {
+                    "status": "PASS" if baseline_passed else "FAIL",
+                    "elapsed_ms": (time.perf_counter() - baseline_started) * 1000.0,
+                    "all_200": baseline_all_200,
+                    "request_start_rate_ok": baseline_rate_ok,
+                    "telemetry_ok": telemetry_ok,
+                }
+                if not baseline_passed:
+                    report["primary_failure"] = {
+                        "stage": "baseline",
+                        "operation": "acceptance",
+                        "elapsed_ms": (
+                            time.perf_counter() - baseline_started
+                        ) * 1000.0,
+                        "category": "acceptance_failure",
+                        "exception": None,
+                        "message": (
+                            "isolated baseline did not satisfy required "
+                            "traffic/response/telemetry gates"
+                        ),
+                    }
+                _write_json_checkpoint(args.output, report)
+            except Exception as exc:
+                failure = _failure_evidence(
+                    stage="baseline",
+                    operation="measure_ordinary_workload",
+                    started=baseline_started,
+                    exc=exc,
+                )
+                report["primary_failure"] = failure
+                report["stages"]["baseline"] = {
+                    "status": "FAIL",
+                    "failure": failure,
+                }
+                _write_json_checkpoint(args.output, report)
+
+        cleanup_started = time.perf_counter()
+        report["stages"]["cleanup"] = {"status": "RUNNING"}
+        _write_json_checkpoint(args.output, report)
+        try:
+            if report["broadcast_state"] == "unknown":
+                report["stages"]["cleanup"] = {
+                    "status": "NOT RUN",
+                    "reason": "broadcast state is unknown; no forced cleanup attempted",
+                    "broadcast_state": "unknown",
+                }
+            else:
+                await _end_active(client, admin)
+                report["broadcast_state"] = "no_active_verified"
+                report["stages"]["cleanup"] = {
+                    "status": "PASS",
+                    "elapsed_ms": (time.perf_counter() - cleanup_started) * 1000.0,
+                    "broadcast_state": report["broadcast_state"],
+                }
+        except Exception as exc:
+            cleanup_failure = _failure_evidence(
+                stage="cleanup",
+                operation="end_active_if_known",
+                started=cleanup_started,
+                exc=exc,
+            )
+            report["cleanup_failure"] = cleanup_failure
+            report["stages"]["cleanup"] = {
+                "status": "FAIL",
+                "failure": cleanup_failure,
+            }
+        report["passed"] = (
+            report["primary_failure"] is None
+            and report["cleanup_failure"] is None
+            and report["stages"]["setup"]["status"] == "PASS"
+            and report["stages"]["baseline"]["status"] == "PASS"
+            and report["stages"]["cleanup"]["status"] == "PASS"
+        )
+        _write_json_checkpoint(args.output, report)
+        return report
+    finally:
+        await client.aclose()
+
+
 async def _run_scenario(
     base_url: str,
     backend_url: str,
@@ -1696,7 +1944,7 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
                 baseline_p95, float(ordinary["p95_ms"])
             ),
             "ordinary_rate_ok": (
-                float(scenario["ordinary_workload"]["achieved_issue_rps"])
+                float(scenario["ordinary_workload"]["achieved_request_start_rps"])
                 >= ORDINARY_RPS * 0.95
             ),
             "ordinary_no_request_errors_ok": (
@@ -1769,12 +2017,12 @@ async def _run_certification(args: argparse.Namespace) -> dict[str, object]:
         and int(baseline["ordinary_workload"]["failed"]) == 0
     )
     baseline_rate_ok = (
-        float(baseline["ordinary_workload"]["achieved_issue_rps"])
+        float(baseline["ordinary_workload"]["achieved_request_start_rps"])
         >= ORDINARY_RPS * 0.95
     )
     baseline_telemetry_ok = bool(baseline.get("telemetry_ok"))
     overlap_rate_ok = (
-        float(overlap["ordinary_workload"]["achieved_issue_rps"])
+        float(overlap["ordinary_workload"]["achieved_request_start_rps"])
         >= ORDINARY_RPS * 0.95
     )
     overlap_ordinary_ok = (
@@ -2054,6 +2302,23 @@ def _parser() -> argparse.ArgumentParser:
     seed.add_argument("--output", type=Path, required=True)
     seed.add_argument("--users", type=int, default=500)
 
+    baseline = sub.add_parser("baseline")
+    baseline.add_argument("--base-url", default="http://frontend:8080")
+    baseline.add_argument("--backend-url", default="http://backend:8000")
+    baseline.add_argument("--credentials", type=Path, required=True)
+    baseline.add_argument("--output", type=Path, required=True)
+    baseline.add_argument("--head-sha", required=True)
+    baseline.add_argument(
+        "--warmup-seconds",
+        type=int,
+        default=DEFAULT_WARMUP_SECONDS,
+    )
+    baseline.add_argument(
+        "--measure-seconds",
+        type=int,
+        default=DEFAULT_MEASURE_SECONDS,
+    )
+
     run = sub.add_parser("run")
     run.add_argument("--base-url", default="http://frontend:8080")
     run.add_argument("--backend-url", default="http://backend:8000")
@@ -2093,6 +2358,9 @@ def main() -> int:
     if args.command == "seed":
         _seed_sessions(args.database_url, args.output, args.users)
         return 0
+    if args.command == "baseline":
+        report = asyncio.run(_run_isolated_baseline(args))
+        return 0 if report["passed"] else 1
     if args.command == "run":
         report = asyncio.run(_run_certification(args))
         args.output.parent.mkdir(parents=True, exist_ok=True)
