@@ -737,6 +737,24 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
     ) -> tuple[PendingDemandLoadReadModel, ...]:
         """Project submitted requests and their non-materialized Planning candidates."""
 
+        return self._list_pending_loads(
+            start=start,
+            end=end,
+            project_ids=project_ids,
+            demand_ids=demand_ids,
+        )
+
+    def _list_pending_loads(
+        self,
+        *,
+        start: date,
+        end: date,
+        project_ids: Sequence[str] | None = None,
+        demand_ids: Sequence[str] | None = None,
+        scoped_demands: Sequence[DemandReadModel] | None = None,
+    ) -> tuple[PendingDemandLoadReadModel, ...]:
+        """Build pending loads, optionally reusing one operation-scoped demand projection."""
+
         statement = select(WorkforceRequest).where(WorkforceRequest.status == "Soumise")
         scope_filters = []
         if project_ids is not None:
@@ -759,12 +777,19 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             )
         ).all()
         result: list[PendingDemandLoadReadModel] = []
+        complete_scoped_demands = (
+            tuple(scoped_demands)
+            if scoped_demands is not None
+            else tuple(
+                self._demands.list(
+                    project_ids=project_ids,
+                    demand_ids=demand_ids,
+                )
+            )
+        )
         demands_by_number = {
             demand.number: demand
-            for demand in self._demands.list(
-                project_ids=project_ids,
-                demand_ids=demand_ids,
-            )
+            for demand in complete_scoped_demands
         }
 
         for request in requests:
@@ -2833,12 +2858,13 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
     ) -> PlanningSnapshotReadModel:
         """Read one planning window while keeping capacity semantics separate from scope."""
 
+        complete_scoped_demands = self.list_demands(
+            project_ids=project_ids,
+            demand_ids=demand_ids,
+        )
         demands = tuple(
             row
-            for row in self.list_demands(
-                project_ids=project_ids,
-                demand_ids=demand_ids,
-            )
+            for row in complete_scoped_demands
             if _demand_overlaps(row, start, end)
         )
         shifts = self.list_shifts(
@@ -2851,11 +2877,12 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             can_manage_planning=can_manage_planning,
             include_manager_colors=True,
         )
-        pending_loads = self.list_pending_loads(
+        pending_loads = self._list_pending_loads(
             start=start,
             end=end,
             project_ids=project_ids,
             demand_ids=demand_ids,
+            scoped_demands=complete_scoped_demands,
         )
         segments = self.list_segments(
             start=start,
