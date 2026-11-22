@@ -290,11 +290,33 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
 
     if tasks:
         await asyncio.gather(*tasks)
+    client_drained_at = time.perf_counter()
     watcher.cancel()
     await asyncio.gather(watcher, return_exceptions=True)
     await client.aclose()
 
-    drained_at = time.perf_counter()
+    observation_started = time.perf_counter()
+    if trace_file is not None and errors:
+        timed_out_ids = {
+            str(item["diagnostic_id"])
+            for item in errors
+            if item.get("category") in {"read_timeout", "timeout"}
+        }
+        observation_deadline = (
+            observation_started + args.server_observation_seconds
+        )
+        while timed_out_ids and time.perf_counter() < observation_deadline:
+            rows = _trace_rows(trace_file)
+            ended_ids = {
+                str(row.get("request_id") or "")
+                for row in rows
+                if row.get("kind") == "request_end"
+            }
+            if timed_out_ids <= ended_ids:
+                break
+            await asyncio.sleep(0.10)
+
+    observation_finished = time.perf_counter()
     trace_rows = _trace_rows(trace_file)
     trace_by_request: dict[str, list[dict[str, object]]] = {}
     for row in trace_rows:
@@ -348,7 +370,11 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
 
     configured_window = max(0.001, args.duration_seconds)
     actual_offer_seconds = max(0.001, measurement_end - started)
-    drain_seconds = max(0.0, drained_at - measurement_end)
+    drain_seconds = max(0.0, client_drained_at - measurement_end)
+    server_observation_seconds = max(
+        0.0,
+        observation_finished - observation_started,
+    )
 
     report = {
         "schema": "issue-894-connection-trial-v1",
@@ -368,6 +394,7 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
         "failed": failed,
         "outstanding_at_window_end": measurement_snapshot["outstanding"],
         "drain_duration_seconds": drain_seconds,
+        "server_observation_duration_seconds": server_observation_seconds,
         "achieved_schedule_rps": scheduled / actual_offer_seconds,
         "achieved_request_start_rps": started_in_window / configured_window,
         "achieved_completion_rps": completed_in_window / configured_window,
@@ -510,6 +537,11 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_CONCURRENCY,
     )
     trial.add_argument("--trace-file", type=Path)
+    trial.add_argument(
+        "--server-observation-seconds",
+        type=float,
+        default=35.0,
+    )
 
     compare = sub.add_parser("compare")
     compare.add_argument("--canonical", type=Path, required=True)
