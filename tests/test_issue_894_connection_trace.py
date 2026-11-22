@@ -7,6 +7,9 @@ from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import time
 import unittest
+from unittest import mock
+
+import tools.issue_894_connection_trial as connection_trial
 
 from tools.issue_894_connection_trace import (
     ConnectionTraceRecorder,
@@ -18,6 +21,7 @@ from tools.issue_894_connection_trial import (
     _compare,
     _correlate_timeouts,
     _summarize_trace,
+    _validated_trial_report,
 )
 
 
@@ -29,17 +33,45 @@ def _rows(path: Path) -> list[dict[str, object]]:
     ]
 
 
+def _trial_report(
+    mode: str,
+    **overrides: object,
+) -> dict[str, object]:
+    report: dict[str, object] = {
+        "schema": "issue-894-connection-trial-v1",
+        "label": DIAGNOSTIC_LABEL,
+        "mode": mode,
+        "certification_pass": False,
+        "diagnostic_acceptance_behavior_failed": True,
+        "achieved_request_start_rps": 3.5,
+        "completed": 100,
+        "failed": 50,
+        "drain_duration_seconds": 20.0,
+        "latency": {"p95_ms": 10000.0},
+    }
+    report.update(overrides)
+    return report
+
+
 def _comparison(
     canonical: dict[str, object],
     instrumented: dict[str, object],
 ) -> dict[str, object]:
+    canonical_report = _trial_report("canonical", **canonical)
+    instrumented_report = _trial_report("instrumented", **instrumented)
     with TemporaryDirectory() as tmp:
         root = Path(tmp)
         canonical_path = root / "canonical.json"
         instrumented_path = root / "instrumented.json"
         output_path = root / "comparison.json"
-        canonical_path.write_text(json.dumps(canonical), encoding="utf-8")
-        instrumented_path.write_text(json.dumps(instrumented), encoding="utf-8")
+        canonical_path.write_text(
+            json.dumps(canonical_report),
+            encoding="utf-8",
+        )
+        instrumented_path.write_text(
+            json.dumps(instrumented_report),
+            encoding="utf-8",
+        )
         return _compare(
             SimpleNamespace(
                 canonical=canonical_path,
@@ -346,6 +378,154 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(report["material_instrumentation_deterioration"])
+
+    def test_canonical_reproduced_failure_is_valid_diagnostic_execution(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "canonical.json"
+            report = _trial_report(
+                "canonical",
+                failed=59,
+                diagnostic_acceptance_behavior_failed=True,
+            )
+            output.write_text(json.dumps(report), encoding="utf-8")
+            validated = _validated_trial_report(
+                output,
+                expected_mode="canonical",
+            )
+
+        self.assertTrue(validated["diagnostic_acceptance_behavior_failed"])
+        self.assertFalse(validated["certification_pass"])
+
+    def test_instrumented_reproduced_failure_is_valid_diagnostic_execution(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "instrumented.json"
+            report = _trial_report(
+                "instrumented",
+                failed=64,
+                diagnostic_acceptance_behavior_failed=True,
+            )
+            output.write_text(json.dumps(report), encoding="utf-8")
+            validated = _validated_trial_report(
+                output,
+                expected_mode="instrumented",
+            )
+
+        self.assertTrue(validated["diagnostic_acceptance_behavior_failed"])
+        self.assertFalse(validated["certification_pass"])
+
+    def test_missing_canonical_evidence_fails_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "canonical.json"
+            with self.assertRaises(FileNotFoundError):
+                _validated_trial_report(
+                    missing,
+                    expected_mode="canonical",
+                )
+
+    def test_missing_instrumented_evidence_fails_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "instrumented.json"
+            with self.assertRaises(FileNotFoundError):
+                _validated_trial_report(
+                    missing,
+                    expected_mode="instrumented",
+                )
+
+    def test_malformed_trial_evidence_fails_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "canonical.json"
+            output.write_text(
+                json.dumps({"schema": "wrong"}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                _validated_trial_report(
+                    output,
+                    expected_mode="canonical",
+                )
+
+    def test_trial_main_returns_zero_when_valid_report_reproduces_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "canonical.json"
+            args = SimpleNamespace(
+                command="trial",
+                output=output,
+                mode="canonical",
+            )
+            report = _trial_report(
+                "canonical",
+                diagnostic_acceptance_behavior_failed=True,
+            )
+
+            async def fake_trial(_args):
+                output.write_text(json.dumps(report), encoding="utf-8")
+                return report
+
+            with (
+                mock.patch.object(
+                    connection_trial,
+                    "_parser",
+                    return_value=SimpleNamespace(
+                        parse_args=lambda: args,
+                    ),
+                ),
+                mock.patch.object(
+                    connection_trial,
+                    "_trial",
+                    new=fake_trial,
+                ),
+            ):
+                result = connection_trial.main()
+
+        self.assertEqual(result, 0)
+
+    def test_compare_main_fails_when_interpretation_is_not_allowed(self) -> None:
+        args = SimpleNamespace(command="compare")
+        report = {
+            "material_instrumentation_deterioration": False,
+            "interpretation_allowed": False,
+        }
+        with (
+            mock.patch.object(
+                connection_trial,
+                "_parser",
+                return_value=SimpleNamespace(
+                    parse_args=lambda: args,
+                ),
+            ),
+            mock.patch.object(
+                connection_trial,
+                "_compare",
+                return_value=report,
+            ),
+        ):
+            result = connection_trial.main()
+
+        self.assertEqual(result, 1)
+
+    def test_compare_main_fails_on_material_instrumentation_deterioration(self) -> None:
+        args = SimpleNamespace(command="compare")
+        report = {
+            "material_instrumentation_deterioration": True,
+            "interpretation_allowed": False,
+        }
+        with (
+            mock.patch.object(
+                connection_trial,
+                "_parser",
+                return_value=SimpleNamespace(
+                    parse_args=lambda: args,
+                ),
+            ),
+            mock.patch.object(
+                connection_trial,
+                "_compare",
+                return_value=report,
+            ),
+        ):
+            result = connection_trial.main()
+
+        self.assertEqual(result, 1)
 
     async def test_first_stall_snapshot_is_bounded_to_one_capture(self) -> None:
         with TemporaryDirectory() as tmp:
