@@ -4,7 +4,6 @@ import asyncio
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import inspect
 import json
 from pathlib import Path
 import re
@@ -143,10 +142,32 @@ class ConnectionTraceRecorder:
                     0.0,
                     (aggregate.first_materialization - aggregate.request_started) * 1000.0,
                 )
+                if aggregate.first_statement_end is not None:
+                    payload["statement_end_to_first_materialization_ms"] = max(
+                        0.0,
+                        (
+                            aggregate.first_materialization
+                            - aggregate.first_statement_end
+                        )
+                        * 1000.0,
+                    )
             if aggregate.last_materialization is not None:
                 payload["last_materialization_ms"] = max(
                     0.0,
                     (aggregate.last_materialization - aggregate.request_started) * 1000.0,
+                )
+                if aggregate.first_materialization is not None:
+                    payload["materialization_span_ms"] = max(
+                        0.0,
+                        (
+                            aggregate.last_materialization
+                            - aggregate.first_materialization
+                        )
+                        * 1000.0,
+                    )
+                payload["last_materialization_to_request_end_ms"] = max(
+                    0.0,
+                    (now - aggregate.last_materialization) * 1000.0,
                 )
             if aggregate.last_statement_end is not None:
                 payload["last_statement_end_to_request_end_ms"] = max(
