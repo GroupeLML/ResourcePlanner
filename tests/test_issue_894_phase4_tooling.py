@@ -515,12 +515,16 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
             'if [ "$instrumented_start_status" = "0" ] && [ "$instrumented_frontend_status" = "0" ]; then',
             workflow,
         )
-        self.assertIn('canonical_status=$?', workflow)
-        self.assertIn('instrumented_status=$?', workflow)
-        self.assertIn('comparison_status=$?', workflow)
-        self.assertIn('test "$canonical_status" = "0"', workflow)
-        self.assertIn('test "$instrumented_status" = "0"', workflow)
-        self.assertIn('test "$comparison_status" = "0"', workflow)
+        self.assertIn('canonical_execution_status=$?', workflow)
+        self.assertIn('instrumented_execution_status=$?', workflow)
+        self.assertIn('comparison_execution_status=$?', workflow)
+        self.assertIn('test "$canonical_execution_status" = "0"', workflow)
+        self.assertIn('test "$instrumented_execution_status" = "0"', workflow)
+        self.assertIn('test "$comparison_execution_status" = "0"', workflow)
+        self.assertIn(
+            "trial_outcome_source=connection-trial-*.json:diagnostic_acceptance_behavior_failed",
+            workflow,
+        )
 
     def test_connection_diagnostic_reports_remain_evidence_not_certification(self) -> None:
         trial = (ROOT / "tools" / "issue_894_connection_trial.py").read_text(
