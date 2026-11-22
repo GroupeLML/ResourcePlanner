@@ -301,7 +301,7 @@ def install_authorization_middleware(
                 principal = await resolve_principal(
                     resolver,
                     request,
-                    offload_sync=emergency_feature,
+                    offload_sync=True,
                 )
             except Exception:
                 if emergency_feature:
@@ -350,7 +350,7 @@ def install_authorization_middleware(
                     csrf_allowed = await _csrf_allowed(
                         csrf_guard,
                         request,
-                        offload_sync=emergency_feature,
+                        offload_sync=True,
                     )
                 except Exception:
                     if emergency_feature:
