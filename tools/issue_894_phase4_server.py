@@ -3,11 +3,16 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from contextlib import asynccontextmanager, suppress
+import faulthandler
+import json
+import signal
 import statistics
+import sys
 import threading
 import time
 
 import uvicorn
+from sqlalchemy import event
 
 from app.server.runtime import ServerSettings, create_configured_app
 
@@ -15,6 +20,9 @@ from app.server.runtime import ServerSettings, create_configured_app
 _INTERVAL_SECONDS = 0.05
 _LAGS_MS: deque[float] = deque(maxlen=500_000)
 _POOL_CHECKOUT_WAIT_MS: deque[float] = deque(maxlen=500_000)
+_POOL_HOLD_MS: deque[float] = deque(maxlen=500_000)
+_POOL_HOLDERS: dict[int, tuple[float, int]] = {}
+_POOL_HOLDER_LOCK = threading.Lock()
 _INGRESS_TOTAL_MS: deque[float] = deque(maxlen=500_000)
 _INGRESS_AT_MONOTONIC: deque[float] = deque(maxlen=500_000)
 _ADMISSION_WAIT_MS: deque[float] = deque(maxlen=500_000)
@@ -88,6 +96,67 @@ def create_phase4_app():
     original_lifespan = app.router.lifespan_context
     original_do_get = getattr(pool, "_do_get", None) if pool is not None else None
 
+    def on_checkout(_dbapi_connection, connection_record, _connection_proxy):
+        with _POOL_HOLDER_LOCK:
+            _POOL_HOLDERS[id(connection_record)] = (
+                time.perf_counter(),
+                threading.get_ident(),
+            )
+
+    def on_checkin(_dbapi_connection, connection_record):
+        now = time.perf_counter()
+        with _POOL_HOLDER_LOCK:
+            started = _POOL_HOLDERS.pop(id(connection_record), None)
+        if started is not None:
+            _POOL_HOLD_MS.append(max(0.0, (now - started[0]) * 1000.0))
+
+    def active_pool_holders() -> dict[str, object]:
+        now = time.perf_counter()
+        acquired = _POOL_HOLDER_LOCK.acquire(blocking=False)
+        if not acquired:
+            return {
+                "available": False,
+                "reason": "holder_lock_busy",
+            }
+        try:
+            holders = [
+                {
+                    "connection_record_id": record_id,
+                    "thread_id": thread_id,
+                    "holding_ms": max(0.0, (now - started) * 1000.0),
+                }
+                for record_id, (started, thread_id) in _POOL_HOLDERS.items()
+            ]
+        finally:
+            _POOL_HOLDER_LOCK.release()
+        holders.sort(key=lambda item: float(item["holding_ms"]), reverse=True)
+        return {
+            "available": True,
+            "count": len(holders),
+            "oldest_holding_ms": (
+                float(holders[0]["holding_ms"]) if holders else 0.0
+            ),
+            "holders": holders[:20],
+        }
+
+    def dump_pool_signal(_signum, _frame) -> None:
+        payload = {
+            "kind": "issue_894_phase4_pool_signal",
+            "pool": {
+                "size": int(pool.size()) if pool is not None else 0,
+                "checked_out": int(pool.checkedout()) if pool is not None else 0,
+                "overflow": max(0, int(pool.overflow())) if pool is not None else 0,
+                "active_holders": active_pool_holders(),
+                "checkout_wait_ms": _distribution(_POOL_CHECKOUT_WAIT_MS),
+                "hold_ms": _distribution(_POOL_HOLD_MS),
+            },
+        }
+        print(
+            "RP894_POOL_SIGNAL " + json.dumps(payload, sort_keys=True),
+            file=sys.stderr,
+            flush=True,
+        )
+
     def measured_do_get():
         assert original_do_get is not None
         started = time.perf_counter()
@@ -124,6 +193,16 @@ def create_phase4_app():
         async with original_lifespan(phase4_app):
             if pool is not None and original_do_get is not None:
                 pool._do_get = measured_do_get
+                event.listen(pool, "checkout", on_checkout)
+                event.listen(pool, "checkin", on_checkin)
+            previous_usr2 = signal.getsignal(signal.SIGUSR2)
+            faulthandler.register(
+                signal.SIGUSR1,
+                file=sys.stderr,
+                all_threads=True,
+                chain=False,
+            )
+            signal.signal(signal.SIGUSR2, dump_pool_signal)
             now = time.perf_counter()
             with _STATE_LOCK:
                 _MONITOR["active"] = True
@@ -144,6 +223,11 @@ def create_phase4_app():
                     await monitor_task
                 if pool is not None and original_do_get is not None:
                     pool._do_get = original_do_get
+                    event.remove(pool, "checkout", on_checkout)
+                    event.remove(pool, "checkin", on_checkin)
+                with suppress(Exception):
+                    faulthandler.unregister(signal.SIGUSR1)
+                signal.signal(signal.SIGUSR2, previous_usr2)
                 now = time.perf_counter()
                 with _STATE_LOCK:
                     _MONITOR["active"] = False
@@ -242,6 +326,8 @@ def create_phase4_app():
                 "max_checked_out": _POOL_MAX["checked_out"],
                 "max_overflow": _POOL_MAX["overflow"],
                 "checkout_wait_ms": _distribution(_POOL_CHECKOUT_WAIT_MS),
+                "hold_ms": _distribution(_POOL_HOLD_MS),
+                "active_holders": active_pool_holders(),
             },
             "admission": {
                 "ingress_total_ms": _distribution(_INGRESS_TOTAL_MS),
@@ -261,6 +347,7 @@ def create_phase4_app():
         if reset:
             _LAGS_MS.clear()
             _POOL_CHECKOUT_WAIT_MS.clear()
+            _POOL_HOLD_MS.clear()
             _INGRESS_TOTAL_MS.clear()
             _INGRESS_AT_MONOTONIC.clear()
             _ADMISSION_WAIT_MS.clear()
