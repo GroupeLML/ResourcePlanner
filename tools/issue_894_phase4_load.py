@@ -257,15 +257,21 @@ def _sql_wait_snapshot(database_url: str) -> dict[str, object]:
                     "blocking_session_id": int(row.blocking_session_id or 0),
                     "host_name": str(row.host_name or ""),
                     "program_name": str(row.program_name or ""),
+                    "statement_fingerprint": str(
+                        row.statement_fingerprint or ""
+                    ).casefold(),
                 }
                 for row in connection.execute(
                     text(
                         "SELECT TOP (50) r.session_id, r.status, r.command, "
                         "r.wait_type, r.wait_time, r.blocking_session_id, "
-                        "s.host_name, s.program_name "
+                        "s.host_name, s.program_name, "
+                        "CONVERT(varchar(64), HASHBYTES('SHA2_256', "
+                        "COALESCE(t.text, N'')), 2) AS statement_fingerprint "
                         "FROM sys.dm_exec_requests AS r "
                         "JOIN sys.dm_exec_sessions AS s "
                         "ON s.session_id = r.session_id "
+                        "OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS t "
                         "WHERE s.is_user_process = 1 "
                         "AND r.session_id <> @@SPID "
                         "ORDER BY r.wait_time DESC"
