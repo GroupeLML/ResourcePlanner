@@ -359,6 +359,24 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
         if pre_stall_end is not None
         and float(row["client_start_monotonic"]) < pre_stall_end
     ]
+    pre_stall_completed = [
+        row
+        for row in pre_stall_requests
+        if (
+            row.get("client_complete_monotonic") is not None
+            and float(row["client_complete_monotonic"]) <= float(pre_stall_end)
+        )
+    ]
+    pre_stall_failed = [
+        row
+        for row in pre_stall_requests
+        if row.get("error") is not None
+    ]
+    pre_stall_latencies = [
+        float(row["elapsed_ms"])
+        for row in pre_stall_completed
+        if row.get("elapsed_ms") is not None
+    ]
 
     configured_window = max(0.001, args.duration_seconds)
     actual_offer_seconds = max(0.001, measurement_end - started)
@@ -366,6 +384,13 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
     server_observation_seconds = max(
         0.0,
         observation_finished - observation_started,
+    )
+    achieved_request_start_rps = started_in_window / configured_window
+    request_start_rate_ok = achieved_request_start_rps >= args.offered_rps * 0.95
+    diagnostic_acceptance_behavior_failed = (
+        failed > 0
+        or not request_start_rate_ok
+        or int(measurement_snapshot["outstanding"]) > 0
     )
 
     report = {
@@ -388,7 +413,11 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
         "drain_duration_seconds": drain_seconds,
         "server_observation_duration_seconds": server_observation_seconds,
         "achieved_schedule_rps": scheduled / actual_offer_seconds,
-        "achieved_request_start_rps": started_in_window / configured_window,
+        "achieved_request_start_rps": achieved_request_start_rps,
+        "request_start_rate_ok": request_start_rate_ok,
+        "diagnostic_acceptance_behavior_failed": (
+            diagnostic_acceptance_behavior_failed
+        ),
         "achieved_completion_rps": completed_in_window / configured_window,
         "max_in_flight": max_in_flight,
         "max_outstanding": max_outstanding,
@@ -401,7 +430,13 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
         "first_failure_monotonic": first_failure_monotonic,
         "first_stall": first_stall,
         "first_stall_sql": first_stall_sql,
-        "pre_stall_request_count": len(pre_stall_requests),
+        "pre_stall": {
+            "boundary_monotonic": pre_stall_end,
+            "started": len(pre_stall_requests),
+            "completed": len(pre_stall_completed),
+            "failed": len(pre_stall_failed),
+            "latency": _latencies(pre_stall_latencies),
+        },
         "timeout_correlations": timeout_correlations,
         "trace_summary": _summarize_trace(trace_rows),
     }
@@ -461,6 +496,9 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
     post_statement: list[float] = []
     holding_ms: list[float] = []
     materialization_counts: list[float] = []
+    statement_to_materialization: list[float] = []
+    materialization_span: list[float] = []
+    post_materialization: list[float] = []
 
     for row in rows:
         kind = str(row.get("kind") or "unknown")
@@ -496,6 +534,28 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             materialization_counts.append(
                 float(row.get("orm_materialization_count") or 0.0)
             )
+            if row.get("statement_end_to_first_materialization_ms") is not None:
+                statement_to_materialization.append(
+                    float(
+                        row.get(
+                            "statement_end_to_first_materialization_ms"
+                        )
+                        or 0.0
+                    )
+                )
+            if row.get("materialization_span_ms") is not None:
+                materialization_span.append(
+                    float(row.get("materialization_span_ms") or 0.0)
+                )
+            if row.get("last_materialization_to_request_end_ms") is not None:
+                post_materialization.append(
+                    float(
+                        row.get(
+                            "last_materialization_to_request_end_ms"
+                        )
+                        or 0.0
+                    )
+                )
 
     return {
         "event_counts": by_kind,
@@ -513,6 +573,13 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
         "post_statement_connection_residence_ms": _latencies(post_statement),
         "connection_holding_ms": _latencies(holding_ms),
         "orm_materialization_count": _latencies(materialization_counts),
+        "statement_end_to_first_materialization_ms": _latencies(
+            statement_to_materialization
+        ),
+        "materialization_span_ms": _latencies(materialization_span),
+        "last_materialization_to_request_end_ms": _latencies(
+            post_materialization
+        ),
     }
 
 
@@ -609,7 +676,11 @@ def main() -> int:
     if args.command == "trial":
         report = asyncio.run(_trial(args))
         print(json.dumps(report, sort_keys=True))
-        return 1 if int(report["failed"]) else 0
+        return (
+            1
+            if bool(report["diagnostic_acceptance_behavior_failed"])
+            else 0
+        )
     if args.command == "compare":
         report = _compare(args)
         print(json.dumps(report, sort_keys=True))
