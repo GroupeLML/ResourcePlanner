@@ -514,6 +514,7 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             "fetch_rows": [],
             "fetch_ms": [],
             "fetch_cpu_ms": [],
+            "fetch_errors": 0,
             "consumer_ms": [],
             "nested_fetch_ms": [],
             "non_nested_ms": [],
@@ -620,6 +621,8 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             detail["fetch_rows"].append(float(row.get("fetched_row_count") or 0.0))
             detail["fetch_ms"].append(float(row.get("fetch_elapsed_ms") or 0.0))
             detail["fetch_cpu_ms"].append(float(row.get("fetch_cpu_ms") or 0.0))
+            if bool(row.get("fetch_error")):
+                detail["fetch_errors"] = int(detail["fetch_errors"]) + 1
         elif kind == "result_consumer":
             detail["consumer_ms"].append(
                 float(row.get("consumer_elapsed_ms") or 0.0)
@@ -652,6 +655,7 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             and "unmapped" not in call_sites
             and len(detail["fetch_rows"]) == fetch_count
             and len(detail["fetch_cpu_ms"]) == fetch_count
+            and int(detail["fetch_errors"]) == 0
             and len(detail["nested_fetch_ms"]) == consumer_count
             and len(detail["non_nested_ms"]) == consumer_count
             and len(detail["projection_ms"]) == consumer_count
@@ -661,6 +665,7 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
         targeted_summary[fingerprint] = {
             "observed_fetches": fetch_count,
             "observed_consumers": consumer_count,
+            "fetch_errors": int(detail["fetch_errors"]),
             "call_sites": call_sites,
             "request_count": len(detail["request_ids"]),
             "connection_count": len(detail["connection_ids"]),
