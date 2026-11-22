@@ -55,6 +55,7 @@ def _targeted_result_consumer(
 ) -> bool:
     return (
         target_role == "list_shifts_initial"
+        or fingerprint == _LEGACY_LIST_SHIFTS_FINGERPRINT
         or fingerprint in _UNCHANGED_TARGET_FINGERPRINTS
     )
 
