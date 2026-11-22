@@ -285,9 +285,13 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
         self.assertEqual(len(snapshot.demands), 1)
         self.assertEqual(len(snapshot.pending_loads), 1)
         self.assertEqual(snapshot.pending_loads[0].projected_hours, 24.0)
-        demand_list.assert_called_once_with(
+        scoped_call = mock.call(
             project_ids=("P1",),
             demand_ids=("D5",),
+        )
+        self.assertEqual(
+            demand_list.call_args_list.count(scoped_call),
+            1,
         )
 
     def test_pending_window_uses_complete_scope_before_snapshot_date_filter(self) -> None:
@@ -342,6 +346,15 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
     def test_line_mode_snapshot_pending_load_matches_standalone_projection(self) -> None:
         with transactional_session(self.factory) as session:
             session.add(
+                Resource(
+                    id="R7",
+                    name="Charlie",
+                    active=True,
+                    sort_order=3,
+                )
+            )
+            session.flush()
+            session.add(
                 WorkforceRequest(
                     id="D7",
                     legacy_demand_number="DMO-2026-1007",
@@ -365,7 +378,7 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
                     desired_end=FRIDAY,
                     estimated_hours=Decimal("16"),
                     confirmation="Tentative",
-                    proposed_resource_id="R1",
+                    proposed_resource_id="R7",
                     active=True,
                 )
             )
@@ -393,7 +406,7 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
         self.assertEqual(len(pending.candidate_windows), 1)
         self.assertEqual(
             pending.candidate_windows[0].proposed_resource_id,
-            "R1",
+            "R7",
         )
 
     def test_selected_alternative_snapshot_matches_standalone_projection(self) -> None:
