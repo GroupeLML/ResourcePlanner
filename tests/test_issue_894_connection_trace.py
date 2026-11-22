@@ -571,6 +571,21 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                     "_aggregate_children:479"
                 ),
             )
+            nested_started = time.perf_counter()
+            nested_cpu_started = time.thread_time()
+            await asyncio.sleep(0.002)
+            nested_ended = time.perf_counter()
+            nested_cpu_ended = time.thread_time()
+            recorder.record_dbapi_fetch(
+                fingerprint="not-targeted",
+                connection_id=12345,
+                started=nested_started,
+                ended=nested_ended,
+                cpu_started=nested_cpu_started,
+                cpu_ended=nested_cpu_ended,
+                row_count=7,
+                call_site="unmapped",
+            )
             recorder.end_result_consumer(span)
             recorder.end_request(request_id, status="200")
             recorder.reset_request_context(request_token, family_token)
@@ -601,8 +616,16 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             0.0,
         )
         self.assertGreaterEqual(
+            float(consumer["nested_fetch_elapsed_ms"]),
+            float(fetch["fetch_elapsed_ms"]),
+        )
+        self.assertGreaterEqual(
             float(consumer["immediate_projection_elapsed_ms"]),
             0.0,
+        )
+        self.assertLessEqual(
+            float(consumer["immediate_projection_elapsed_ms"]),
+            float(consumer["non_nested_consumer_elapsed_ms"]) + 0.5,
         )
         self.assertGreaterEqual(float(consumer["worker_cpu_ms"]), 0.0)
         self.assertGreaterEqual(
