@@ -519,6 +519,18 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn('secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"', source)
         self.assertIn('sql_env_file="$secrets_dir/sql.env"', source)
 
+    def test_isolated_baseline_stats_sampler_keeps_printf_on_one_yaml_line(self) -> None:
+        source = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "line=\"$(docker stats --no-stream --format '{{.CPUPerc}}\\\\t{{.MemUsage}}' backend 2>/dev/null || true)\"",
+            source,
+        )
+        self.assertIn(
+            "printf '%s\\\\t%s\\\\n' \"$(date +%s)\" \"$line\" >> \"$stats\"",
+            source,
+        )
+        self.assertNotIn("printf '%s\\t%s\n'", source)
+
     def test_ci_pins_immutable_event_source_and_records_baseline_provenance(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Pin immutable event PR head and base", source)
