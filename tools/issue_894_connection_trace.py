@@ -24,6 +24,11 @@ _ROUTE_FAMILY = ContextVar("rp894_diagnostic_route_family", default="unknown")
 _EXECUTOR_PHASE = ContextVar("rp894_diagnostic_executor_phase", default="other")
 _ID_RE = re.compile(r"^[a-f0-9]{16,32}$")
 _STALL_WAIT_SECONDS = 1.0
+_TARGET_FINGERPRINTS = frozenset({
+    "6361f6c1e9d43777",
+    "bb0e459d480f9470",
+    "44f262328b901259",
+})
 
 
 def safe_diagnostic_id(candidate: object | None = None) -> str:
@@ -74,6 +79,7 @@ class ConnectionTraceRecorder:
     _executor_running: int = 0
     _holders: dict[int, dict[str, object]] = field(default_factory=dict)
     _requests: dict[str, _RequestAggregate] = field(default_factory=dict)
+    _consumer_local: threading.local = field(default_factory=threading.local)
 
     def _elapsed_ms(self) -> float:
         return max(0.0, (time.perf_counter() - self.started) * 1000.0)
@@ -438,6 +444,132 @@ class ConnectionTraceRecorder:
                 aggregate.first_materialization = now
             aggregate.last_materialization = now
 
+    def begin_result_consumer(self) -> dict[str, object]:
+        span: dict[str, object] = {
+            "started": time.perf_counter(),
+            "cpu_started": time.thread_time(),
+            "nested_fetch_ms": 0.0,
+            "nested_fetch_cpu_ms": 0.0,
+            "targeted_fetches": [],
+        }
+        stack = getattr(self._consumer_local, "stack", None)
+        if stack is None:
+            stack = []
+            self._consumer_local.stack = stack
+        stack.append(span)
+        return span
+
+    def record_dbapi_fetch(
+        self,
+        *,
+        fingerprint: str,
+        connection_id: int,
+        started: float,
+        ended: float,
+        cpu_started: float,
+        cpu_ended: float,
+        row_count: int,
+        call_site: str,
+    ) -> None:
+        fetch_ms = max(0.0, (ended - started) * 1000.0)
+        fetch_cpu_ms = max(0.0, (cpu_ended - cpu_started) * 1000.0)
+        stack = getattr(self._consumer_local, "stack", ())
+        for span in stack:
+            span["nested_fetch_ms"] = float(span["nested_fetch_ms"]) + fetch_ms
+            span["nested_fetch_cpu_ms"] = (
+                float(span["nested_fetch_cpu_ms"]) + fetch_cpu_ms
+            )
+        if fingerprint not in _TARGET_FINGERPRINTS:
+            return
+        targeted = {
+            "statement_fingerprint": fingerprint,
+            "connection_id": int(connection_id),
+            "fetch_started_monotonic": float(started),
+            "fetch_ended_monotonic": float(ended),
+            "fetch_elapsed_ms": fetch_ms,
+            "fetch_cpu_ms": fetch_cpu_ms,
+            "fetched_row_count": int(row_count),
+            "call_site": str(call_site),
+        }
+        for span in stack:
+            span["targeted_fetches"].append(targeted)
+        self.record(
+            "dbapi_fetch",
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=int(connection_id),
+            statement_fingerprint=fingerprint,
+            call_site=str(call_site),
+            fetch_started_monotonic=float(started),
+            fetch_ended_monotonic=float(ended),
+            fetch_elapsed_ms=fetch_ms,
+            fetch_cpu_ms=fetch_cpu_ms,
+            fetched_row_count=int(row_count),
+            thread_id=threading.get_ident(),
+        )
+
+    def end_result_consumer(self, span: dict[str, object]) -> None:
+        ended = time.perf_counter()
+        cpu_ended = time.thread_time()
+        stack = getattr(self._consumer_local, "stack", None)
+        if stack:
+            if stack[-1] is span:
+                stack.pop()
+            elif span in stack:
+                stack.remove(span)
+        targeted_fetches = list(span.get("targeted_fetches") or ())
+        if not targeted_fetches:
+            return
+        total_ms = max(0.0, (ended - float(span["started"])) * 1000.0)
+        total_cpu_ms = max(
+            0.0,
+            (cpu_ended - float(span["cpu_started"])) * 1000.0,
+        )
+        nested_fetch_ms = float(span.get("nested_fetch_ms") or 0.0)
+        nested_fetch_cpu_ms = float(span.get("nested_fetch_cpu_ms") or 0.0)
+        non_nested_ms = max(0.0, total_ms - nested_fetch_ms)
+        non_nested_cpu_ms = max(0.0, total_cpu_ms - nested_fetch_cpu_ms)
+
+        grouped: dict[tuple[str, int, str], list[dict[str, object]]] = {}
+        for fetch in targeted_fetches:
+            key = (
+                str(fetch["statement_fingerprint"]),
+                int(fetch["connection_id"]),
+                str(fetch["call_site"]),
+            )
+            grouped.setdefault(key, []).append(fetch)
+
+        for (fingerprint, connection_id, call_site), fetches in grouped.items():
+            last_fetch_end = max(
+                float(fetch["fetch_ended_monotonic"])
+                for fetch in fetches
+            )
+            self.record(
+                "result_consumer",
+                request_id=_DIAGNOSTIC_ID.get(),
+                route_family=_ROUTE_FAMILY.get(),
+                phase=_EXECUTOR_PHASE.get(),
+                connection_id=connection_id,
+                statement_fingerprint=fingerprint,
+                call_site=call_site,
+                fetch_count=len(fetches),
+                fetched_row_count=sum(
+                    int(fetch["fetched_row_count"]) for fetch in fetches
+                ),
+                consumer_elapsed_ms=total_ms,
+                nested_fetch_elapsed_ms=nested_fetch_ms,
+                non_nested_consumer_elapsed_ms=non_nested_ms,
+                immediate_projection_elapsed_ms=max(
+                    0.0,
+                    (ended - last_fetch_end) * 1000.0,
+                ),
+                worker_cpu_ms=total_cpu_ms,
+                nested_fetch_cpu_ms=nested_fetch_cpu_ms,
+                non_nested_worker_cpu_ms=non_nested_cpu_ms,
+                thread_id=threading.get_ident(),
+            )
+
     def capture_first_stall(self, *, trigger: str, trigger_value_ms: float) -> None:
         with self._first_stall_lock:
             if self._first_stall_captured:
@@ -506,6 +638,18 @@ class ConnectionTraceRecorder:
         }
 
 
+def _repository_call_site() -> str:
+    frames = traceback.extract_stack(limit=32)
+    for frame in reversed(frames):
+        filename = str(frame.filename).replace("\\", "/")
+        marker = "/app/infrastructure/sql/"
+        if marker not in filename:
+            continue
+        relative = filename[filename.rfind("/app/") + 1 :]
+        return f"{relative}:{frame.name}:{frame.lineno}"
+    return "unmapped"
+
+
 def _statement_fingerprint(statement: object) -> str:
     import hashlib
 
@@ -523,11 +667,16 @@ def _connection_record_id(connection: object) -> int:
 
 
 def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTraceRecorder) -> Callable[[], None]:
+    from sqlalchemy.engine.cursor import CursorFetchStrategy
+    from sqlalchemy.engine.result import Result
+
     from app.server import security as security_module
 
     original_resolve = security_module.resolve_principal
     original_csrf = security_module._csrf_allowed
     original_run_sync = security_module.run_sync_cancellation_safe
+    original_fetchall = CursorFetchStrategy.fetchall
+    original_allrows = Result._allrows
 
     async def traced_resolve(*args: object, **kwargs: object) -> Any:
         token = recorder.set_executor_phase("auth")
@@ -550,6 +699,56 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
     security_module._csrf_allowed = traced_csrf
     security_module.run_sync_cancellation_safe = traced_run_sync
 
+    def traced_allrows(result):
+        span = recorder.begin_result_consumer()
+        try:
+            return original_allrows(result)
+        finally:
+            recorder.end_result_consumer(span)
+
+    def traced_fetchall(strategy, result, dbapi_cursor):
+        context = getattr(result, "context", None)
+        fingerprint = str(
+            getattr(context, "_rp894_trace_fingerprint", "") or ""
+        )
+        connection_id = int(
+            getattr(context, "_rp894_trace_connection_id", 0) or 0
+        )
+        started = time.perf_counter()
+        cpu_started = time.thread_time()
+        try:
+            rows = original_fetchall(strategy, result, dbapi_cursor)
+        except Exception:
+            ended = time.perf_counter()
+            cpu_ended = time.thread_time()
+            recorder.record_dbapi_fetch(
+                fingerprint=fingerprint,
+                connection_id=connection_id,
+                started=started,
+                ended=ended,
+                cpu_started=cpu_started,
+                cpu_ended=cpu_ended,
+                row_count=0,
+                call_site=_repository_call_site(),
+            )
+            raise
+        ended = time.perf_counter()
+        cpu_ended = time.thread_time()
+        recorder.record_dbapi_fetch(
+            fingerprint=fingerprint,
+            connection_id=connection_id,
+            started=started,
+            ended=ended,
+            cpu_started=cpu_started,
+            cpu_ended=cpu_ended,
+            row_count=len(rows),
+            call_site=_repository_call_site(),
+        )
+        return rows
+
+    Result._allrows = traced_allrows
+    CursorFetchStrategy.fetchall = traced_fetchall
+
     @event.listens_for(engine.pool, "checkout")
     def _checkout(_dbapi_connection, connection_record, _connection_proxy) -> None:
         recorder.on_checkout(connection_record)
@@ -568,7 +767,10 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         _executemany,
     ) -> None:
         started = time.perf_counter()
+        fingerprint = _statement_fingerprint(statement)
         execution_context._rp894_trace_started = started
+        execution_context._rp894_trace_fingerprint = fingerprint
+        execution_context._rp894_trace_connection_id = _connection_record_id(conn)
         recorder.on_statement_start(conn, statement)
 
     @event.listens_for(engine, "after_cursor_execute")
@@ -614,6 +816,8 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         security_module.resolve_principal = original_resolve
         security_module._csrf_allowed = original_csrf
         security_module.run_sync_cancellation_safe = original_run_sync
+        Result._allrows = original_allrows
+        CursorFetchStrategy.fetchall = original_fetchall
         event.remove(engine.pool, "checkout", _checkout)
         event.remove(engine.pool, "checkin", _checkin)
         event.remove(engine, "before_cursor_execute", _before_cursor_execute)
