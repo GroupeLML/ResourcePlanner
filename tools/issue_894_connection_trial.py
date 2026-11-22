@@ -27,11 +27,36 @@ DIAGNOSTIC_LABEL = "DIAGNOSTIC — NOT CERTIFICATION"
 DEFAULT_DURATION_SECONDS = 30.0
 DEFAULT_CONCURRENCY = 32
 FAILURE_RATE_MATERIAL_DELTA = 0.10
-TARGET_RESULT_FINGERPRINTS = (
-    "6361f6c1e9d43777",
+LEGACY_LIST_SHIFTS_FINGERPRINT = "6361f6c1e9d43777"
+UNCHANGED_RESULT_FINGERPRINTS = (
     "bb0e459d480f9470",
     "44f262328b901259",
 )
+TARGET_RESULT_FINGERPRINTS = (
+    LEGACY_LIST_SHIFTS_FINGERPRINT,
+    *UNCHANGED_RESULT_FINGERPRINTS,
+)
+
+
+def _current_result_fingerprints(
+    rows: list[dict[str, object]],
+) -> tuple[str, str, str]:
+    list_shift_fingerprints = sorted(
+        {
+            str(row.get("statement_fingerprint") or "")
+            for row in rows
+            if row.get("kind") == "dbapi_fetch"
+            and "app/infrastructure/sql/query_repository.py:list_shifts:"
+            in str(row.get("call_site") or "")
+            and str(row.get("statement_fingerprint") or "")
+        }
+    )
+    list_shifts = (
+        list_shift_fingerprints[0]
+        if len(list_shift_fingerprints) == 1
+        else LEGACY_LIST_SHIFTS_FINGERPRINT
+    )
+    return (list_shifts, *UNCHANGED_RESULT_FINGERPRINTS)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -520,6 +545,7 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
     statement_to_materialization: list[float] = []
     materialization_span: list[float] = []
     post_materialization: list[float] = []
+    current_fingerprints = _current_result_fingerprints(rows)
     targeted: dict[str, dict[str, object]] = {
         fingerprint: {
             "fetch_rows": [],
@@ -537,7 +563,7 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             "connection_ids": set(),
             "stall_matches": set(),
         }
-        for fingerprint in TARGET_RESULT_FINGERPRINTS
+        for fingerprint in current_fingerprints
     }
     first_stall = next(
         (row for row in rows if row.get("kind") == "first_stall_snapshot"),
@@ -739,10 +765,12 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
         "last_materialization_to_request_end_ms": _latencies(
             post_materialization
         ),
+        "list_shifts_fingerprint": current_fingerprints[0],
+        "target_fingerprints": current_fingerprints,
         "targeted_result_timing": targeted_summary,
         "targeted_timing_complete": all(
             bool(targeted_summary[fingerprint]["evidence_complete"])
-            for fingerprint in TARGET_RESULT_FINGERPRINTS
+            for fingerprint in current_fingerprints
         ),
     }
 
@@ -795,7 +823,19 @@ def _validated_trial_report(
     if expected_mode == "instrumented":
         if trace_summary.get("targeted_timing_complete") is not True:
             raise ValueError("instrumented targeted result timing is incomplete")
-        for fingerprint in TARGET_RESULT_FINGERPRINTS:
+        list_shifts_fingerprint = trace_summary.get("list_shifts_fingerprint")
+        if not isinstance(list_shifts_fingerprint, str) or not list_shifts_fingerprint:
+            raise ValueError("instrumented list_shifts fingerprint is missing")
+        fingerprints = trace_summary.get("target_fingerprints")
+        if not isinstance(fingerprints, (list, tuple)) or len(fingerprints) != 3:
+            raise ValueError("instrumented target fingerprints are malformed")
+        expected_fingerprints = (
+            list_shifts_fingerprint,
+            *UNCHANGED_RESULT_FINGERPRINTS,
+        )
+        if tuple(str(value) for value in fingerprints) != expected_fingerprints:
+            raise ValueError("instrumented target fingerprint recognition is invalid")
+        for fingerprint in expected_fingerprints:
             detail = targeted.get(fingerprint)
             if not isinstance(detail, dict) or detail.get("evidence_complete") is not True:
                 raise ValueError(
