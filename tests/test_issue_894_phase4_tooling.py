@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 import time
 import unittest
 from unittest import mock
@@ -173,6 +175,93 @@ class Issue894Phase4TelemetryFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(baseline["telemetry_validation"]["passed"])
 
 
+class Issue894Phase4StageCheckpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_primary_baseline_failure_survives_cleanup_failure(self) -> None:
+        class FakeClient:
+            async def aclose(self) -> None:
+                return None
+
+        end_active = mock.AsyncMock(
+            side_effect=[None, RuntimeError("cleanup failed")]
+        )
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "isolated-baseline.json"
+            args = SimpleNamespace(
+                base_url="http://frontend:8080",
+                backend_url="http://backend:8000",
+                credentials=Path(tmp) / "sessions.json",
+                output=output,
+                head_sha="HEAD",
+                warmup_seconds=0,
+                measure_seconds=1,
+            )
+            credential = phase4_load.Credential(
+                user_id="ADMIN",
+                session="S",
+                csrf="C",
+                admin=True,
+            )
+            with (
+                patch.object(
+                    phase4_load,
+                    "_load_credentials",
+                    return_value=(credential, []),
+                ),
+                patch.object(
+                    phase4_load.httpx,
+                    "AsyncClient",
+                    return_value=FakeClient(),
+                ),
+                patch.object(phase4_load, "_end_active", new=end_active),
+                patch.object(
+                    phase4_load,
+                    "_ensure_synthetic_resource",
+                    new=mock.AsyncMock(return_value="RESOURCE"),
+                ),
+                patch.object(
+                    phase4_load,
+                    "_capture_loop_metrics",
+                    new=mock.AsyncMock(
+                        return_value={
+                            "available": True,
+                            "metrics": {},
+                            "error": None,
+                        }
+                    ),
+                ),
+                patch.object(
+                    phase4_load,
+                    "_ordinary_driver",
+                    new=mock.AsyncMock(
+                        side_effect=RuntimeError("measurement failed")
+                    ),
+                ),
+            ):
+                report = await phase4_load._run_isolated_baseline(args)
+
+            persisted = __import__("json").loads(output.read_text())
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["primary_failure"]["stage"], "baseline")
+        self.assertEqual(report["cleanup_failure"]["stage"], "cleanup")
+        self.assertEqual(
+            report["primary_failure"]["message"],
+            "measurement failed",
+        )
+        self.assertEqual(
+            persisted["primary_failure"]["message"],
+            "measurement failed",
+        )
+        self.assertEqual(
+            persisted["cleanup_failure"]["message"],
+            "cleanup failed",
+        )
+        self.assertEqual(
+            persisted["stages"]["mixed_emergency_matrix"]["status"],
+            "NOT RUN",
+        )
+        self.assertEqual(persisted["stages"]["ack_waves"]["status"], "NOT RUN")
+
+
 class Issue894Phase4OrdinaryDriverTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_is_recorded_and_remaining_requests_complete(self) -> None:
         client = _OrdinaryTimeoutClient()
@@ -210,6 +299,55 @@ class Issue894Phase4OrdinaryDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(float(error["elapsed_ms"]), 0.0)
         self.assertEqual(sum(statuses.values()), result["succeeded"])
         self.assertEqual(len(latencies), result["completed"])
+
+    async def test_waiting_tasks_do_not_count_as_http_starts_in_window(self) -> None:
+        class SlowClient:
+            async def request(
+                self,
+                method: str,
+                path: str,
+                *,
+                headers=None,
+                json=None,
+            ) -> httpx.Response:
+                await __import__("asyncio").sleep(0.08)
+                request = httpx.Request(
+                    method,
+                    f"http://phase4.test{path}",
+                )
+                return httpx.Response(200, request=request)
+
+        latencies: list[float] = []
+        statuses: dict[str, int] = {}
+        credential = phase4_load.Credential(
+            user_id="U",
+            session="S",
+            csrf="C",
+            admin=True,
+        )
+        with patch.object(phase4_load, "ORDINARY_RPS", 1000.0):
+            result = await phase4_load._ordinary_driver(
+                SlowClient(),
+                credential,
+                "RESOURCE",
+                time.perf_counter() + 0.05,
+                latencies,
+                statuses,
+            )
+
+        self.assertGreater(int(result["scheduled"]), 32)
+        self.assertLess(
+            int(result["started_in_measurement_window"]),
+            int(result["scheduled"]),
+        )
+        self.assertGreater(
+            int(result["outstanding_at_window_end"]),
+            0,
+        )
+        self.assertGreater(
+            float(result["drain_duration_seconds"]),
+            0.0,
+        )
 
 
 class Issue894Phase4ToolingTests(unittest.TestCase):
