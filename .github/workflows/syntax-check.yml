@@ -547,23 +547,43 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Pin exact PR head and current base
+      - name: Pin immutable event PR head and base
         shell: bash
+        env:
+          RP894_EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RP894_EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_HEAD_REF"
-          git checkout --detach FETCH_HEAD
+          initial_checkout_sha="$(git rev-parse HEAD)"
+          event_actions_sha="$GITHUB_SHA"
+
+          git cat-file -e "$RP894_EVENT_PR_HEAD_SHA^{commit}" 2>/dev/null \
+            || git fetch --no-tags origin "$RP894_EVENT_PR_HEAD_SHA"
+          git checkout --detach "$RP894_EVENT_PR_HEAD_SHA"
           head_sha="$(git rev-parse HEAD)"
-          git fetch --no-tags origin "$GITHUB_BASE_REF"
-          base_sha="$(git rev-parse FETCH_HEAD)"
+          test "$head_sha" = "$RP894_EVENT_PR_HEAD_SHA"
+
+          git cat-file -e "$RP894_EVENT_BASE_SHA^{commit}" 2>/dev/null \
+            || git fetch --no-tags origin "$RP894_EVENT_BASE_SHA"
+          base_sha="$RP894_EVENT_BASE_SHA"
           counts="$(git rev-list --left-right --count "$base_sha...$head_sha")"
           behind="$(printf '%s' "$counts" | awk '{print $1}')"
           test "$behind" = "0"
+
           printf 'RP894_HEAD_SHA=%s\n' "$head_sha" >> "$GITHUB_ENV"
           printf 'RP894_BASE_SHA=%s\n' "$base_sha" >> "$GITHUB_ENV"
           mkdir -p "$GITHUB_WORKSPACE/phase4-evidence"
           chmod 0777 "$GITHUB_WORKSPACE/phase4-evidence"
-          printf 'head_sha=%s\nbase_sha=%s\nahead_behind=%s\n'             "$head_sha" "$base_sha" "$counts"             > "$GITHUB_WORKSPACE/phase4-evidence/git-state.txt"
+          {
+            printf 'workflow_event_actions_sha=%s\n' "$event_actions_sha"
+            printf 'initial_checkout_sha=%s\n' "$initial_checkout_sha"
+            printf 'event_pr_head_sha=%s\n' "$RP894_EVENT_PR_HEAD_SHA"
+            printf 'checked_out_source_sha=%s\n' "$head_sha"
+            printf 'event_base_sha=%s\n' "$RP894_EVENT_BASE_SHA"
+            printf 'base_sha=%s\n' "$base_sha"
+            printf 'ahead_behind=%s\n' "$counts"
+            printf 'workload_command=baseline\n'
+          } > "$GITHUB_WORKSPACE/phase4-evidence/git-state.txt"
 
       - name: Build exact-head feature images and verify provenance
         shell: bash
