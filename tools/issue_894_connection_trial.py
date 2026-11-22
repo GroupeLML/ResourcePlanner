@@ -127,28 +127,47 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
     }
     tasks: list[asyncio.Task[None]] = []
     first_stall_sql: dict[str, object] | None = None
+    first_stall_sql_lock = asyncio.Lock()
 
     resource_id = await _ensure_synthetic_resource(client, admin)
 
-    async def watch_stall() -> None:
+    async def capture_sql_stall(trigger: str) -> None:
         nonlocal first_stall_sql
+        if first_stall_sql is not None:
+            return
+        async with first_stall_sql_lock:
+            if first_stall_sql is not None:
+                return
+            captured_at = time.perf_counter()
+            try:
+                snapshot = await asyncio.to_thread(
+                    _sql_wait_snapshot,
+                    args.database_url,
+                )
+                first_stall_sql = {
+                    "trigger": trigger,
+                    "captured_at_monotonic": captured_at,
+                    "snapshot": snapshot,
+                }
+            except Exception as exc:
+                first_stall_sql = {
+                    "trigger": trigger,
+                    "captured_at_monotonic": captured_at,
+                    "snapshot": {
+                        "available": False,
+                        "exception": type(exc).__name__,
+                        "message": str(exc)[:500],
+                    },
+                }
+
+    async def watch_stall() -> None:
         if trace_file is None:
             return
         while not stop_offering.is_set() and time.perf_counter() < stop_at:
             marker = _first_trace_stall(trace_file)
             if marker is not None:
                 stop_offering.set()
-                try:
-                    first_stall_sql = await asyncio.to_thread(
-                        _sql_wait_snapshot,
-                        args.database_url,
-                    )
-                except Exception as exc:
-                    first_stall_sql = {
-                        "available": False,
-                        "exception": type(exc).__name__,
-                        "message": str(exc)[:500],
-                    }
+                await capture_sql_stall("instrumented_first_pool_stall")
                 return
             await asyncio.sleep(0.05)
 
@@ -235,6 +254,8 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
                 if first_failure_monotonic is None:
                     first_failure_monotonic = now
                 stop_offering.set()
+                await capture_sql_stall("client_request_error")
+                await capture_sql_stall("client_timeout")
             except httpx.RequestError as exc:
                 now = time.perf_counter()
                 elapsed = max(0.0, (now - actual_start) * 1000.0)
