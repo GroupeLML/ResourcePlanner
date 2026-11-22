@@ -358,6 +358,42 @@ class Issue894Phase4OrdinaryDriverTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class Issue894Phase4CommandDispatchTests(unittest.TestCase):
+    def test_baseline_command_dispatches_only_isolated_baseline(self) -> None:
+        args = SimpleNamespace(
+            command="baseline",
+            output=Path("unused.json"),
+        )
+        with (
+            patch.object(
+                phase4_load,
+                "_parser",
+                return_value=SimpleNamespace(
+                    parse_args=lambda: args,
+                ),
+            ),
+            patch.object(
+                phase4_load,
+                "_run_isolated_baseline",
+                new=mock.AsyncMock(return_value={"passed": False}),
+            ) as isolated,
+            patch.object(
+                phase4_load,
+                "_run_certification",
+                new=mock.AsyncMock(
+                    side_effect=AssertionError(
+                        "full certification must not run for baseline command"
+                    )
+                ),
+            ) as full,
+        ):
+            result = phase4_load.main()
+
+        self.assertEqual(result, 1)
+        isolated.assert_awaited_once_with(args)
+        full.assert_not_awaited()
+
+
 class Issue894Phase4ToolingTests(unittest.TestCase):
     def test_phase4_python_tools_parse(self) -> None:
         for path in (
