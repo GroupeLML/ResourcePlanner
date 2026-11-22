@@ -24,11 +24,22 @@ _ROUTE_FAMILY = ContextVar("rp894_diagnostic_route_family", default="unknown")
 _EXECUTOR_PHASE = ContextVar("rp894_diagnostic_executor_phase", default="other")
 _ID_RE = re.compile(r"^[a-f0-9]{16,32}$")
 _STALL_WAIT_SECONDS = 1.0
-_TARGET_FINGERPRINTS = frozenset({
-    "6361f6c1e9d43777",
+_LEGACY_LIST_SHIFTS_FINGERPRINT = "6361f6c1e9d43777"
+_UNCHANGED_TARGET_FINGERPRINTS = frozenset({
     "bb0e459d480f9470",
     "44f262328b901259",
 })
+
+
+def _targeted_result_consumer(
+    fingerprint: str,
+    call_site: str,
+) -> bool:
+    return (
+        fingerprint == _LEGACY_LIST_SHIFTS_FINGERPRINT
+        or fingerprint in _UNCHANGED_TARGET_FINGERPRINTS
+        or "app/infrastructure/sql/query_repository.py:list_shifts:" in call_site
+    )
 
 
 def safe_diagnostic_id(candidate: object | None = None) -> str:
@@ -489,7 +500,7 @@ class ConnectionTraceRecorder:
                 float(span["nested_fetch_cpu_ms"]) + fetch_cpu_ms
             )
             span["all_fetches"].append(fetch_record)
-        if fingerprint not in _TARGET_FINGERPRINTS:
+        if not _targeted_result_consumer(fingerprint, call_site):
             return
         targeted = {
             "statement_fingerprint": fingerprint,
