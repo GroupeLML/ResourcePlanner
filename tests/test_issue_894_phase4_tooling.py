@@ -401,6 +401,8 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
             ROOT / "tools" / "issue_894_phase4_server.py",
             ROOT / "tools" / "issue_894_phase4_stats.py",
             ROOT / "tools" / "issue_894_phase4_performance_report.py",
+            ROOT / "tools" / "issue_894_connection_trace.py",
+            ROOT / "tools" / "issue_894_connection_trial.py",
         ):
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
@@ -468,21 +470,35 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn('"max_in_flight"', function_source)
         self.assertIn("ORDINARY_RPS * 0.95", source)
 
-    def test_isolated_baseline_command_checkpoints_and_defers_full_campaign(self) -> None:
+    def test_connection_diagnostic_phase_blocks_full_certification_campaign(self) -> None:
         source = LOAD.read_text(encoding="utf-8")
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        trial = (ROOT / "tools" / "issue_894_connection_trial.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("async def _run_isolated_baseline", source)
-        self.assertIn('"mixed_emergency_matrix"', source)
-        self.assertIn('"status": "NOT RUN"', source)
         self.assertIn('"achieved_request_start_rps"', source)
-        self.assertIn("python tools/issue_894_phase4_load.py baseline", workflow)
+        self.assertIn("DIAGNOSTIC — NOT CERTIFICATION", trial)
+        self.assertIn("--duration-seconds 30", workflow)
+        self.assertIn("--offered-rps 10", workflow)
+        self.assertIn("--concurrency 32", workflow)
+        self.assertIn("--mode canonical", workflow)
+        self.assertIn("--mode instrumented", workflow)
+        self.assertIn(
+            "RESOURCEPLANNER_PHASE4_CONNECTION_TRACE=true",
+            workflow,
+        )
         self.assertNotIn(
             "python tools/issue_894_phase4_load.py run               --credentials",
             workflow,
         )
-        self.assertIn("docker kill --signal=USR1 backend", workflow)
-        self.assertIn("docker kill --signal=USR2 backend", workflow)
-        self.assertIn("python tools/issue_894_phase4_load.py sql-diagnostics", workflow)
+        self.assertNotIn(
+            "python tools/issue_894_phase4_load.py baseline",
+            workflow,
+        )
+        self.assertIn("full_mixed_load=NOT RUN", workflow)
+        self.assertIn("ack_campaign=NOT RUN", workflow)
+        self.assertIn("if: $" + "{{ false }}", workflow)
 
     def test_missing_phase4_monitor_or_pool_telemetry_fails_closed(self) -> None:
         source = LOAD.read_text(encoding="utf-8")
@@ -610,6 +626,21 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn("uvicorn.run(", source)
         self.assertNotIn("workers=", source)
         self.assertNotIn("reload=True", source)
+        self.assertIn("RESOURCEPLANNER_PHASE4_CONNECTION_TRACE", source)
+        self.assertIn("if trace_enabled", source)
+        self.assertIn("install_connection_trace", source)
+
+    def test_connection_trace_remains_tools_only_and_opt_in(self) -> None:
+        trace = (ROOT / "tools" / "issue_894_connection_trace.py").read_text(
+            encoding="utf-8"
+        )
+        security = (ROOT / "app" / "server" / "security.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ConnectionTraceRecorder", trace)
+        self.assertIn("safe_diagnostic_id", trace)
+        self.assertIn("first_stall_snapshot", trace)
+        self.assertNotIn("issue_894_connection_trace", security)
 
 
 if __name__ == "__main__":
