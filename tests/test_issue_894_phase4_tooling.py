@@ -521,15 +521,27 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
 
     def test_isolated_baseline_stats_sampler_keeps_printf_on_one_yaml_line(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn(
-            "line=\"$(docker stats --no-stream --format '{{.CPUPerc}}\\\\t{{.MemUsage}}' backend 2>/dev/null || true)\"",
-            source,
+        physical_lines = [line.strip() for line in source.splitlines()]
+        slash = chr(92)
+        tab_escape = slash + "t"
+        newline_escape = slash + "n"
+        stats_line = (
+            "line=\"$(docker stats --no-stream --format "
+            "'{{.CPUPerc}}" + tab_escape + "{{.MemUsage}}' "
+            "backend 2>/dev/null || true)\""
         )
-        self.assertIn(
-            "printf '%s\\\\t%s\\\\n' \"$(date +%s)\" \"$line\" >> \"$stats\"",
-            source,
+        printf_line = (
+            "printf '%s" + tab_escape + "%s" + newline_escape
+            + "' \"$(date +%s)\" \"$line\" >> \"$stats\""
         )
-        self.assertNotIn("printf '%s\\t%s\n'", source)
+        broken_multiline = (
+            "printf '%s" + chr(9) + "%s" + chr(10)
+            + "' \"$(date +%s)\" \"$line\" >> \"$stats\""
+        )
+
+        self.assertIn(stats_line, physical_lines)
+        self.assertIn(printf_line, physical_lines)
+        self.assertNotIn(broken_multiline, source)
 
     def test_ci_pins_immutable_event_source_and_records_baseline_provenance(self) -> None:
         source = WORKFLOW.read_text(encoding="utf-8")
