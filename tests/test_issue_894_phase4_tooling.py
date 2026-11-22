@@ -195,10 +195,11 @@ class Issue894Phase4OrdinaryDriverTests(unittest.IsolatedAsyncioTestCase):
                 statuses,
             )
 
-        self.assertGreaterEqual(int(result["issued"]), 4)
-        self.assertEqual(result["completed"], result["issued"])
+        self.assertGreaterEqual(int(result["scheduled"]), 4)
+        self.assertEqual(result["completed"], result["scheduled"])
+        self.assertEqual(result["started"], result["scheduled"])
         self.assertEqual(result["failed"], 1)
-        self.assertEqual(result["succeeded"], int(result["issued"]) - 1)
+        self.assertEqual(result["succeeded"], int(result["scheduled"]) - 1)
         self.assertEqual(result["error_counts"], {"read_timeout": 1})
         self.assertEqual(result["operation_errors"]["planning_reads"], 1)
         self.assertEqual(len(result["errors"]), 1)
@@ -273,7 +274,10 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         function_source = source[start:end]
         self.assertIn("asyncio.create_task", function_source)
         self.assertIn("asyncio.Semaphore(32)", function_source)
-        self.assertIn('"achieved_issue_rps"', function_source)
+        self.assertIn('"achieved_request_start_rps"', function_source)
+        self.assertIn('"started_in_measurement_window"', function_source)
+        self.assertIn('"outstanding_at_window_end"', function_source)
+        self.assertIn('"drain_duration_seconds"', function_source)
         self.assertIn('"planning_reads"', function_source)
         self.assertIn('"project_reads"', function_source)
         self.assertIn('"save_mutations"', function_source)
@@ -281,6 +285,22 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertIn('"read_timeout"', function_source)
         self.assertIn('"max_in_flight"', function_source)
         self.assertIn("ORDINARY_RPS * 0.95", source)
+
+    def test_isolated_baseline_command_checkpoints_and_defers_full_campaign(self) -> None:
+        source = LOAD.read_text(encoding="utf-8")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("async def _run_isolated_baseline", source)
+        self.assertIn('"mixed_emergency_matrix"', source)
+        self.assertIn('"status": "NOT RUN"', source)
+        self.assertIn('"achieved_request_start_rps"', source)
+        self.assertIn("python tools/issue_894_phase4_load.py baseline", workflow)
+        self.assertNotIn(
+            "python tools/issue_894_phase4_load.py run               --credentials",
+            workflow,
+        )
+        self.assertIn("docker kill --signal=USR1 backend", workflow)
+        self.assertIn("docker kill --signal=USR2 backend", workflow)
+        self.assertIn("python tools/issue_894_phase4_load.py sql-diagnostics", workflow)
 
     def test_missing_phase4_monitor_or_pool_telemetry_fails_closed(self) -> None:
         source = LOAD.read_text(encoding="utf-8")
@@ -340,6 +360,11 @@ class Issue894Phase4ToolingTests(unittest.TestCase):
         self.assertNotIn('@app.on_event("shutdown")', source)
         self.assertIn('pool._do_get = measured_do_get', source)
         self.assertIn('"checkout_wait_ms"', source)
+        self.assertIn('"hold_ms"', source)
+        self.assertIn('"active_holders"', source)
+        self.assertIn("faulthandler.register", source)
+        self.assertIn("SIGUSR1", source)
+        self.assertIn("SIGUSR2", source)
         self.assertIn('"coverage_ratio"', source)
         self.assertIn('"arrival"', source)
         self.assertIn('"wait_ms"', source)
