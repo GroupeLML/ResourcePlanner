@@ -40,23 +40,32 @@ TARGET_RESULT_FINGERPRINTS = (
 
 def _current_result_fingerprints(
     rows: list[dict[str, object]],
-) -> tuple[str, str, str]:
-    list_shift_fingerprints = sorted(
+) -> tuple[str, ...]:
+    role_fingerprints = sorted(
         {
             str(row.get("statement_fingerprint") or "")
             for row in rows
             if row.get("kind") == "dbapi_fetch"
-            and "app/infrastructure/sql/query_repository.py:list_shifts:"
-            in str(row.get("call_site") or "")
+            and row.get("target_role") == "list_shifts_initial"
             and str(row.get("statement_fingerprint") or "")
         }
     )
-    list_shifts = (
-        list_shift_fingerprints[0]
-        if len(list_shift_fingerprints) == 1
-        else LEGACY_LIST_SHIFTS_FINGERPRINT
+    if len(role_fingerprints) == 1:
+        return (role_fingerprints[0], *UNCHANGED_RESULT_FINGERPRINTS)
+    if len(role_fingerprints) > 1:
+        return (*UNCHANGED_RESULT_FINGERPRINTS,)
+
+    legacy_observed = any(
+        row.get("kind") == "dbapi_fetch"
+        and row.get("statement_fingerprint") == LEGACY_LIST_SHIFTS_FINGERPRINT
+        for row in rows
     )
-    return (list_shifts, *UNCHANGED_RESULT_FINGERPRINTS)
+    if legacy_observed:
+        return (
+            LEGACY_LIST_SHIFTS_FINGERPRINT,
+            *UNCHANGED_RESULT_FINGERPRINTS,
+        )
+    return (*UNCHANGED_RESULT_FINGERPRINTS,)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -765,12 +774,20 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
         "last_materialization_to_request_end_ms": _latencies(
             post_materialization
         ),
-        "list_shifts_fingerprint": current_fingerprints[0],
+        "list_shifts_fingerprint": (
+            current_fingerprints[0]
+            if len(current_fingerprints) == 3
+            else ""
+        ),
         "target_fingerprints": current_fingerprints,
+        "target_identification_ambiguous": len(current_fingerprints) != 3,
         "targeted_result_timing": targeted_summary,
-        "targeted_timing_complete": all(
-            bool(targeted_summary[fingerprint]["evidence_complete"])
-            for fingerprint in current_fingerprints
+        "targeted_timing_complete": (
+            len(current_fingerprints) == 3
+            and all(
+                bool(targeted_summary[fingerprint]["evidence_complete"])
+                for fingerprint in current_fingerprints
+            )
         ),
     }
 
