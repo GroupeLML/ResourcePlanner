@@ -828,10 +828,9 @@ jobs:
 
           (
             while docker inspect backend >/dev/null 2>&1; do
-              line="$(docker stats --no-stream --format '{{.CPUPerc}}	{{.MemUsage}}' backend 2>/dev/null || true)"
+              line="$(docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}' backend 2>/dev/null || true)"
               if [ -n "$line" ]; then
-                printf '%s	%s
-' "$(date +%s)" "$line" >> "$stats"
+                printf '%s\t%s\n' "$(date +%s)" "$line" >> "$stats"
               fi
               sleep 5
             done
