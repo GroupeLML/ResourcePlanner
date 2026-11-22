@@ -5,6 +5,8 @@ from collections import deque
 from contextlib import asynccontextmanager, suppress
 import faulthandler
 import json
+import os
+from pathlib import Path
 import signal
 import statistics
 import sys
@@ -15,6 +17,12 @@ import uvicorn
 from sqlalchemy import event
 
 from app.server.runtime import ServerSettings, create_configured_app
+from tools.issue_894_connection_trace import (
+    ConnectionTraceRecorder,
+    install_connection_trace,
+    route_family,
+    safe_diagnostic_id,
+)
 
 
 _INTERVAL_SECONDS = 0.05
@@ -95,6 +103,19 @@ def create_phase4_app():
     pool = engine.pool if engine is not None else None
     original_lifespan = app.router.lifespan_context
     original_do_get = getattr(pool, "_do_get", None) if pool is not None else None
+    trace_enabled = (
+        os.environ.get("RESOURCEPLANNER_PHASE4_CONNECTION_TRACE", "")
+        .strip()
+        .casefold()
+        in {"1", "true", "yes", "on"}
+    )
+    trace_path = Path(
+        os.environ.get(
+            "RESOURCEPLANNER_PHASE4_CONNECTION_TRACE_PATH",
+            "/home/resourceplanner/.resourceplanner/logs/issue894-connection-trace.jsonl",
+        )
+    )
+    trace_recorder = ConnectionTraceRecorder(trace_path) if trace_enabled else None
 
     def on_checkout(_dbapi_connection, connection_record, _connection_proxy):
         with _POOL_HOLDER_LOCK:
@@ -160,12 +181,18 @@ def create_phase4_app():
     def measured_do_get():
         assert original_do_get is not None
         started = time.perf_counter()
+        trace_started = (
+            trace_recorder.pool_checkout_request()
+            if trace_recorder is not None
+            else None
+        )
         try:
             return original_do_get()
         finally:
-            _POOL_CHECKOUT_WAIT_MS.append(
-                max(0.0, (time.perf_counter() - started) * 1000.0)
-            )
+            elapsed = max(0.0, time.perf_counter() - started)
+            _POOL_CHECKOUT_WAIT_MS.append(elapsed * 1000.0)
+            if trace_recorder is not None and trace_started is not None:
+                trace_recorder.pool_checkout_complete(trace_started)
 
     async def monitor_event_loop() -> None:
         expected = time.perf_counter() + _INTERVAL_SECONDS
@@ -191,10 +218,22 @@ def create_phase4_app():
     @asynccontextmanager
     async def phase4_lifespan(phase4_app):
         async with original_lifespan(phase4_app):
+            trace_uninstall = None
             if pool is not None and original_do_get is not None:
                 pool._do_get = measured_do_get
                 event.listen(pool, "checkout", on_checkout)
                 event.listen(pool, "checkin", on_checkin)
+            if trace_recorder is not None and engine is not None:
+                trace_uninstall = install_connection_trace(
+                    app,
+                    engine,
+                    trace_recorder,
+                )
+                trace_recorder.record(
+                    "trace_enabled",
+                    mode="instrumented",
+                    process_count=1,
+                )
             previous_usr2 = signal.getsignal(signal.SIGUSR2)
             faulthandler.register(
                 signal.SIGUSR1,
@@ -221,6 +260,8 @@ def create_phase4_app():
                 monitor_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await monitor_task
+                if trace_uninstall is not None:
+                    trace_uninstall()
                 if pool is not None and original_do_get is not None:
                     pool._do_get = original_do_get
                     event.remove(pool, "checkout", on_checkout)
@@ -244,12 +285,58 @@ def create_phase4_app():
             or path.startswith("/api/v1/runtime/broadcasts/")
             or path.startswith("/api/v1/admin/runtime")
         )
-        if not feature_path:
+        trace_request = (
+            trace_recorder is not None
+            and path.startswith("/api/v1/")
+        )
+        request_id = ""
+        trace_tokens = None
+        if trace_request:
+            request_id = safe_diagnostic_id(
+                request.headers.get("X-RP894-Diagnostic-ID")
+            )
+            trace_tokens = trace_recorder.begin_request(
+                request_id,
+                route_family(path),
+            )
+
+        if not feature_path and not trace_request:
             return await call_next(request)
 
         ingress_started = time.perf_counter()
-        response = await call_next(request)
-        ingress_ms = max(0.0, (time.perf_counter() - ingress_started) * 1000.0)
+        response = None
+        error_type = ""
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            error_type = type(exc).__name__
+            raise
+        finally:
+            ingress_ms = max(
+                0.0,
+                (time.perf_counter() - ingress_started) * 1000.0,
+            )
+            if trace_request and trace_tokens is not None:
+                trace_recorder.end_request(
+                    request_id,
+                    status=(
+                        str(response.status_code)
+                        if response is not None
+                        else "500"
+                    ),
+                    error_type=error_type,
+                )
+                trace_recorder.reset_request_context(*trace_tokens)
+
+        if response is None:
+            raise RuntimeError("Phase 4 request completed without a response.")
+
+        if trace_request:
+            response.headers["X-RP894-Diagnostic-ID"] = request_id
+
+        if not feature_path:
+            return response
+
         service_ms = _server_timing_total_ms(response.headers.get("Server-Timing", ""))
         admission_wait_ms = (
             max(0.0, ingress_ms - service_ms)
@@ -329,6 +416,11 @@ def create_phase4_app():
                 "hold_ms": _distribution(_POOL_HOLD_MS),
                 "active_holders": active_pool_holders(),
             },
+            "connection_trace": (
+                trace_recorder.summary()
+                if trace_recorder is not None
+                else {"enabled": False}
+            ),
             "admission": {
                 "ingress_total_ms": _distribution(_INGRESS_TOTAL_MS),
                 "arrival": {
