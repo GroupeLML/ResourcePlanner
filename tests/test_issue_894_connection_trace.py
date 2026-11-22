@@ -18,6 +18,7 @@ from tools.issue_894_connection_trace import (
 from tools.issue_894_connection_trial import (
     DIAGNOSTIC_LABEL,
     FAILURE_RATE_MATERIAL_DELTA,
+    TARGET_RESULT_FINGERPRINTS,
     _compare,
     _correlate_timeouts,
     _summarize_trace,
@@ -37,6 +38,12 @@ def _trial_report(
     mode: str,
     **overrides: object,
 ) -> dict[str, object]:
+    targeted = {
+        fingerprint: {
+            "evidence_complete": mode == "instrumented",
+        }
+        for fingerprint in TARGET_RESULT_FINGERPRINTS
+    }
     report: dict[str, object] = {
         "schema": "issue-894-connection-trial-v1",
         "label": DIAGNOSTIC_LABEL,
@@ -48,6 +55,15 @@ def _trial_report(
         "failed": 50,
         "drain_duration_seconds": 20.0,
         "latency": {"p95_ms": 10000.0},
+        "trace_summary": {
+            "event_counts": (
+                {"dbapi_fetch": 3, "result_consumer": 3}
+                if mode == "instrumented"
+                else {}
+            ),
+            "targeted_result_timing": targeted,
+            "targeted_timing_complete": mode == "instrumented",
+        },
     }
     report.update(overrides)
     return report
@@ -526,6 +542,182 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             result = connection_trial.main()
 
         self.assertEqual(result, 1)
+
+    async def test_targeted_fetch_and_consumer_timing_are_correlated_and_private(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trace.jsonl"
+            recorder = ConnectionTraceRecorder(path)
+            request_id = "0123456789abcdef0123"
+            request_token, family_token = recorder.begin_request(
+                request_id,
+                "planning_read",
+            )
+            span = recorder.begin_result_consumer()
+            fetch_started = time.perf_counter()
+            fetch_cpu_started = time.thread_time()
+            await asyncio.sleep(0)
+            fetch_ended = time.perf_counter()
+            fetch_cpu_ended = time.thread_time()
+            recorder.record_dbapi_fetch(
+                fingerprint=TARGET_RESULT_FINGERPRINTS[0],
+                connection_id=12345,
+                started=fetch_started,
+                ended=fetch_ended,
+                cpu_started=fetch_cpu_started,
+                cpu_ended=fetch_cpu_ended,
+                row_count=321,
+                call_site=(
+                    "app/infrastructure/sql/demand_repository.py:"
+                    "_aggregate_children:479"
+                ),
+            )
+            recorder.end_result_consumer(span)
+            recorder.end_request(request_id, status="200")
+            recorder.reset_request_context(request_token, family_token)
+            rows = _rows(path)
+
+        fetch = next(row for row in rows if row["kind"] == "dbapi_fetch")
+        consumer = next(
+            row for row in rows if row["kind"] == "result_consumer"
+        )
+        self.assertEqual(fetch["request_id"], request_id)
+        self.assertEqual(fetch["connection_id"], 12345)
+        self.assertEqual(
+            fetch["statement_fingerprint"],
+            TARGET_RESULT_FINGERPRINTS[0],
+        )
+        self.assertEqual(fetch["fetched_row_count"], 321)
+        self.assertGreaterEqual(float(fetch["fetch_elapsed_ms"]), 0.0)
+        self.assertGreaterEqual(float(fetch["fetch_cpu_ms"]), 0.0)
+        self.assertEqual(consumer["request_id"], request_id)
+        self.assertEqual(consumer["connection_id"], 12345)
+        self.assertGreaterEqual(float(consumer["consumer_elapsed_ms"]), 0.0)
+        self.assertGreaterEqual(
+            float(consumer["nested_fetch_elapsed_ms"]),
+            0.0,
+        )
+        self.assertGreaterEqual(
+            float(consumer["non_nested_consumer_elapsed_ms"]),
+            0.0,
+        )
+        self.assertGreaterEqual(
+            float(consumer["immediate_projection_elapsed_ms"]),
+            0.0,
+        )
+        self.assertGreaterEqual(float(consumer["worker_cpu_ms"]), 0.0)
+        self.assertGreaterEqual(
+            float(consumer["non_nested_worker_cpu_ms"]),
+            0.0,
+        )
+        serialized = json.dumps([fetch, consumer], sort_keys=True)
+        self.assertNotIn("parameters", serialized)
+        self.assertNotIn("row_contents", serialized)
+        self.assertNotIn("model_fields", serialized)
+
+    def test_targeted_summary_separates_nested_fetch_from_non_nested_projection(self) -> None:
+        rows: list[dict[str, object]] = []
+        holders: list[dict[str, object]] = []
+        for index, fingerprint in enumerate(TARGET_RESULT_FINGERPRINTS, start=1):
+            request_id = f"request-{index}"
+            connection_id = index
+            call_site = (
+                "app/infrastructure/sql/demand_repository.py:"
+                f"consumer_{index}:100"
+            )
+            rows.extend(
+                [
+                    {
+                        "kind": "dbapi_fetch",
+                        "request_id": request_id,
+                        "route_family": "planning_read",
+                        "connection_id": connection_id,
+                        "statement_fingerprint": fingerprint,
+                        "call_site": call_site,
+                        "fetched_row_count": 100 * index,
+                        "fetch_elapsed_ms": 250.0 * index,
+                        "fetch_cpu_ms": 10.0 * index,
+                    },
+                    {
+                        "kind": "result_consumer",
+                        "request_id": request_id,
+                        "route_family": "planning_read",
+                        "connection_id": connection_id,
+                        "statement_fingerprint": fingerprint,
+                        "call_site": call_site,
+                        "consumer_elapsed_ms": 300.0 * index,
+                        "nested_fetch_elapsed_ms": 250.0 * index,
+                        "non_nested_consumer_elapsed_ms": 50.0 * index,
+                        "immediate_projection_elapsed_ms": 40.0 * index,
+                        "worker_cpu_ms": 20.0 * index,
+                        "non_nested_worker_cpu_ms": 10.0 * index,
+                    },
+                ]
+            )
+            holders.append(
+                {
+                    "request_id": request_id,
+                    "connection_id": connection_id,
+                }
+            )
+        rows.append(
+            {
+                "kind": "first_stall_snapshot",
+                "holders": holders,
+            }
+        )
+
+        summary = _summarize_trace(rows)
+
+        self.assertTrue(summary["targeted_timing_complete"])
+        for fingerprint in TARGET_RESULT_FINGERPRINTS:
+            detail = summary["targeted_result_timing"][fingerprint]
+            self.assertTrue(detail["evidence_complete"])
+            self.assertEqual(detail["observed_fetches"], 1)
+            self.assertEqual(detail["observed_consumers"], 1)
+            self.assertEqual(
+                detail["first_stall_request_connection_matches"],
+                1,
+            )
+            self.assertGreater(
+                detail["consumer_elapsed_ms"]["median_ms"],
+                detail["nested_fetch_elapsed_ms"]["median_ms"],
+            )
+            self.assertGreaterEqual(
+                detail["non_nested_consumer_elapsed_ms"]["median_ms"],
+                detail["immediate_projection_elapsed_ms"]["median_ms"],
+            )
+            self.assertGreater(
+                detail["worker_cpu_ms"]["median_ms"],
+                0.0,
+            )
+
+    def test_instrumented_trial_validation_fails_closed_when_target_timing_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "instrumented.json"
+            report = _trial_report("instrumented")
+            trace_summary = report["trace_summary"]
+            trace_summary["targeted_result_timing"][
+                TARGET_RESULT_FINGERPRINTS[0]
+            ]["evidence_complete"] = False
+            trace_summary["targeted_timing_complete"] = False
+            output.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                _validated_trial_report(
+                    output,
+                    expected_mode="instrumented",
+                )
+
+    def test_canonical_trial_rejects_detailed_result_tracing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "canonical.json"
+            report = _trial_report("canonical")
+            report["trace_summary"]["event_counts"]["dbapi_fetch"] = 1
+            output.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                _validated_trial_report(
+                    output,
+                    expected_mode="canonical",
+                )
 
     async def test_first_stall_snapshot_is_bounded_to_one_capture(self) -> None:
         with TemporaryDirectory() as tmp:
