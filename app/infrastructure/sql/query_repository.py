@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import unicodedata
 
 from sqlalchemy import case, false, or_, select, true
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, load_only
 
 from ...application.project_manager_color import project_manager_color_marker
 from ...application.project_managers import ProjectManagerResolutionService
@@ -2266,6 +2266,15 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             .outerjoin(
                 WorkforceRequest,
                 ResourceRequirement.workforce_request_id == WorkforceRequest.id,
+            )
+            .options(
+                load_only(
+                    WorkforceRequest.id,
+                    WorkforceRequest.legacy_demand_number,
+                    WorkforceRequest.requester_name,
+                    WorkforceRequest.emergency_override_active,
+                    raiseload=True,
+                )
             )
         )
         if start is not None:
