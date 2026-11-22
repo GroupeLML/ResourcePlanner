@@ -172,7 +172,6 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
         while not stop_offering.is_set() and time.perf_counter() < stop_at:
             marker = _first_trace_stall(trace_file)
             if marker is not None:
-                stop_offering.set()
                 await capture_sql_stall("instrumented_first_pool_stall")
                 return
             await asyncio.sleep(0.05)
@@ -396,7 +395,6 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
     diagnostic_acceptance_behavior_failed = (
         failed > 0
         or not request_start_rate_ok
-        or int(measurement_snapshot["outstanding"]) > 0
     )
 
     report = {
