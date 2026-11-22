@@ -584,7 +584,7 @@ jobs:
             printf 'event_base_sha=%s\n' "$RP894_EVENT_BASE_SHA"
             printf 'base_sha=%s\n' "$base_sha"
             printf 'ahead_behind=%s\n' "$counts"
-            printf 'workload_command=baseline\n'
+            printf 'workload_command=connection-diagnostic\n'
           } > "$GITHUB_WORKSPACE/phase4-evidence/git-state.txt"
 
       - name: Build exact-head feature images and verify provenance
