@@ -61,6 +61,8 @@ def _trial_report(
                 if mode == "instrumented"
                 else {}
             ),
+            "list_shifts_fingerprint": TARGET_RESULT_FINGERPRINTS[0],
+            "target_fingerprints": TARGET_RESULT_FINGERPRINTS,
             "targeted_result_timing": targeted,
             "targeted_timing_complete": mode == "instrumented",
         },
@@ -713,6 +715,88 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 detail["worker_cpu_ms"]["p50_ms"],
                 0.0,
             )
+
+    def test_summary_discovers_changed_list_shifts_fingerprint_from_call_site(self) -> None:
+        changed = "abcdef0123456789"
+        rows: list[dict[str, object]] = [
+            {
+                "kind": "dbapi_fetch",
+                "request_id": "req-shifts",
+                "connection_id": 101,
+                "statement_fingerprint": changed,
+                "call_site": (
+                    "app/infrastructure/sql/query_repository.py:"
+                    "list_shifts:2100"
+                ),
+                "fetched_row_count": 180,
+                "fetch_elapsed_ms": 100.0,
+                "fetch_cpu_ms": 3.0,
+            },
+            {
+                "kind": "result_consumer",
+                "request_id": "req-shifts",
+                "connection_id": 101,
+                "statement_fingerprint": changed,
+                "call_site": (
+                    "app/infrastructure/sql/query_repository.py:"
+                    "list_shifts:2100"
+                ),
+                "consumer_elapsed_ms": 102.0,
+                "nested_fetch_elapsed_ms": 100.0,
+                "non_nested_consumer_elapsed_ms": 2.0,
+                "immediate_projection_elapsed_ms": 1.0,
+                "worker_cpu_ms": 4.0,
+                "non_nested_worker_cpu_ms": 1.0,
+            },
+        ]
+        for index, fingerprint in enumerate(TARGET_RESULT_FINGERPRINTS[1:], start=1):
+            rows.extend(
+                [
+                    {
+                        "kind": "dbapi_fetch",
+                        "request_id": f"req-{index}",
+                        "connection_id": 101 + index,
+                        "statement_fingerprint": fingerprint,
+                        "call_site": (
+                            "app/infrastructure/sql/demand_repository.py:"
+                            f"consumer_{index}:100"
+                        ),
+                        "fetched_row_count": 20,
+                        "fetch_elapsed_ms": 10.0,
+                        "fetch_cpu_ms": 1.0,
+                    },
+                    {
+                        "kind": "result_consumer",
+                        "request_id": f"req-{index}",
+                        "connection_id": 101 + index,
+                        "statement_fingerprint": fingerprint,
+                        "call_site": (
+                            "app/infrastructure/sql/demand_repository.py:"
+                            f"consumer_{index}:100"
+                        ),
+                        "consumer_elapsed_ms": 12.0,
+                        "nested_fetch_elapsed_ms": 10.0,
+                        "non_nested_consumer_elapsed_ms": 2.0,
+                        "immediate_projection_elapsed_ms": 1.0,
+                        "worker_cpu_ms": 2.0,
+                        "non_nested_worker_cpu_ms": 1.0,
+                    },
+                ]
+            )
+
+        summary = _summarize_trace(rows)
+
+        self.assertEqual(summary["list_shifts_fingerprint"], changed)
+        self.assertEqual(
+            tuple(summary["target_fingerprints"]),
+            (changed, *TARGET_RESULT_FINGERPRINTS[1:]),
+        )
+        self.assertTrue(summary["targeted_timing_complete"])
+        self.assertIn(changed, summary["targeted_result_timing"])
+        self.assertNotIn(
+            TARGET_RESULT_FINGERPRINTS[0],
+            summary["targeted_result_timing"],
+        )
 
     def test_instrumented_trial_validation_fails_closed_when_target_timing_missing(self) -> None:
         with TemporaryDirectory() as tmp:
