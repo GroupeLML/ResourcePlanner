@@ -186,9 +186,22 @@ def create_phase4_app():
             if trace_recorder is not None
             else None
         )
+        stall_timer = None
+        if trace_recorder is not None:
+            stall_timer = threading.Timer(
+                1.0,
+                lambda: trace_recorder.capture_first_stall(
+                    trigger="pool_checkout_wait_sustained",
+                    trigger_value_ms=1000.0,
+                ),
+            )
+            stall_timer.daemon = True
+            stall_timer.start()
         try:
             return original_do_get()
         finally:
+            if stall_timer is not None:
+                stall_timer.cancel()
             elapsed = max(0.0, time.perf_counter() - started)
             _POOL_CHECKOUT_WAIT_MS.append(elapsed * 1000.0)
             if trace_recorder is not None and trace_started is not None:
