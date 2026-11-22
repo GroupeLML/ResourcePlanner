@@ -130,6 +130,12 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
     first_stall_sql_lock = asyncio.Lock()
 
     resource_id = await _ensure_synthetic_resource(client, admin)
+    reset_response = await client.patch(
+        f"/api/v1/resources/{resource_id}",
+        headers=_headers(admin, csrf=True),
+        json={"name": "Ressource synthetique Phase 4 #894 diagnostic"},
+    )
+    reset_response.raise_for_status()
 
     async def capture_sql_stall(trigger: str) -> None:
         nonlocal first_stall_sql
