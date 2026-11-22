@@ -1019,6 +1019,7 @@ async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
 
     admin, _users = _load_credentials(args.credentials)
     setup_started = time.perf_counter()
+    setup_operation = "end_active"
     resource_id: str | None = None
     client = httpx.AsyncClient(
         base_url=args.base_url,
@@ -1029,7 +1030,9 @@ async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
         try:
             await _end_active(client, admin)
             report["broadcast_state"] = "no_active_verified"
+            setup_operation = "ensure_synthetic_resource"
             resource_id = await _ensure_synthetic_resource(client, admin)
+            setup_operation = "warmup_planning"
             warmup_until = time.perf_counter() + args.warmup_seconds
             while time.perf_counter() < warmup_until:
                 response = await client.get(
@@ -1050,10 +1053,12 @@ async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
         except Exception as exc:
             failure = _failure_evidence(
                 stage="setup",
-                operation="prepare_no_active_resource_and_warmup",
+                operation=setup_operation,
                 started=setup_started,
                 exc=exc,
             )
+            failure["available_workload"] = None
+            failure["available_telemetry"] = None
             report["primary_failure"] = failure
             report["stages"]["setup"] = {
                 "status": "FAIL",
@@ -1067,13 +1072,18 @@ async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
 
         if report["primary_failure"] is None and resource_id is not None:
             baseline_started = time.perf_counter()
+            baseline_operation = "reset_telemetry"
             latencies: list[float] = []
             statuses: dict[str, int] = {}
+            telemetry_reset: dict[str, object] | None = None
+            telemetry_capture: dict[str, object] | None = None
+            ordinary_workload: dict[str, object] | None = None
             try:
                 telemetry_reset = await _capture_loop_metrics(
                     args.backend_url,
                     reset=True,
                 )
+                baseline_operation = "ordinary_workload"
                 stop_at = time.perf_counter() + args.measure_seconds
                 ordinary_workload = await _ordinary_driver(
                     client,
@@ -1083,10 +1093,12 @@ async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
                     latencies,
                     statuses,
                 )
+                baseline_operation = "collect_telemetry"
                 telemetry_capture = await _capture_loop_metrics(
                     args.backend_url,
                     reset=False,
                 )
+                baseline_operation = "validate_telemetry"
                 telemetry_validation = _validate_phase4_telemetry_capture(
                     telemetry_capture,
                     minimum_coverage_seconds=args.measure_seconds,
@@ -1144,15 +1156,19 @@ async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
                             "isolated baseline did not satisfy required "
                             "traffic/response/telemetry gates"
                         ),
+                        "available_workload": ordinary_workload,
+                        "available_telemetry": telemetry_capture,
                     }
                 _write_json_checkpoint(args.output, report)
             except Exception as exc:
                 failure = _failure_evidence(
                     stage="baseline",
-                    operation="measure_ordinary_workload",
+                    operation=baseline_operation,
                     started=baseline_started,
                     exc=exc,
                 )
+                failure["available_workload"] = ordinary_workload
+                failure["available_telemetry"] = telemetry_capture
                 report["primary_failure"] = failure
                 report["stages"]["baseline"] = {
                     "status": "FAIL",
@@ -1184,6 +1200,17 @@ async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
                 operation="end_active_if_known",
                 started=cleanup_started,
                 exc=exc,
+            )
+            baseline_payload = report.get("baseline")
+            cleanup_failure["available_workload"] = (
+                baseline_payload.get("ordinary_workload")
+                if isinstance(baseline_payload, dict)
+                else None
+            )
+            cleanup_failure["available_telemetry"] = (
+                baseline_payload.get("telemetry_capture")
+                if isinstance(baseline_payload, dict)
+                else None
             )
             report["cleanup_failure"] = cleanup_failure
             report["stages"]["cleanup"] = {
