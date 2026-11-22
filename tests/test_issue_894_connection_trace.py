@@ -13,6 +13,7 @@ import tools.issue_894_connection_trial as connection_trial
 
 from tools.issue_894_connection_trace import (
     ConnectionTraceRecorder,
+    _statement_target_role,
     safe_diagnostic_id,
 )
 from tools.issue_894_connection_trial import (
@@ -716,8 +717,40 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 0.0,
             )
 
-    def test_summary_discovers_changed_list_shifts_fingerprint_from_call_site(self) -> None:
-        changed = "abcdef0123456789"
+    def test_statement_role_matches_initial_list_shifts_projection_only(self) -> None:
+        initial_sql = """
+            SELECT shifts.id,
+                   resource_requirements.id,
+                   resources.id,
+                   projects.id,
+                   workforce_requests.id,
+                   workforce_requests.legacy_demand_number,
+                   workforce_requests.requester_name,
+                   workforce_requests.emergency_override_active
+            FROM shifts
+            JOIN resource_requirements
+              ON shifts.resource_requirement_id = resource_requirements.id
+            JOIN resources ON shifts.resource_id = resources.id
+            JOIN projects ON resource_requirements.project_id = projects.id
+            LEFT OUTER JOIN workforce_requests
+              ON resource_requirements.workforce_request_id = workforce_requests.id
+        """
+        later_asset_sql = """
+            SELECT asset_requirements.id, asset_allocations.id, assets.id
+            FROM asset_requirements
+            LEFT OUTER JOIN asset_allocations
+              ON asset_allocations.asset_requirement_id = asset_requirements.id
+        """
+
+        self.assertEqual(
+            _statement_target_role(initial_sql),
+            "list_shifts_initial",
+        )
+        self.assertEqual(_statement_target_role(later_asset_sql), "")
+
+    def test_real_style_trace_identifies_initial_list_shifts_and_ignores_later_fetch(self) -> None:
+        changed = "7490421461222515"
+        later_list_shifts_fetch = "9abe91efc0db1ae6"
         rows: list[dict[str, object]] = [
             {
                 "kind": "dbapi_fetch",
@@ -726,11 +759,12 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "statement_fingerprint": changed,
                 "call_site": (
                     "app/infrastructure/sql/query_repository.py:"
-                    "list_shifts:2100"
+                    "list_shifts:2346"
                 ),
+                "target_role": "list_shifts_initial",
                 "fetched_row_count": 180,
-                "fetch_elapsed_ms": 100.0,
-                "fetch_cpu_ms": 3.0,
+                "fetch_elapsed_ms": 110.0,
+                "fetch_cpu_ms": 58.0,
             },
             {
                 "kind": "result_consumer",
@@ -739,17 +773,42 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "statement_fingerprint": changed,
                 "call_site": (
                     "app/infrastructure/sql/query_repository.py:"
-                    "list_shifts:2100"
+                    "list_shifts:2346"
                 ),
-                "consumer_elapsed_ms": 102.0,
-                "nested_fetch_elapsed_ms": 100.0,
-                "non_nested_consumer_elapsed_ms": 2.0,
-                "immediate_projection_elapsed_ms": 1.0,
-                "worker_cpu_ms": 4.0,
-                "non_nested_worker_cpu_ms": 1.0,
+                "target_role": "list_shifts_initial",
+                "consumer_elapsed_ms": 118.0,
+                "nested_fetch_elapsed_ms": 110.0,
+                "non_nested_consumer_elapsed_ms": 8.0,
+                "immediate_projection_elapsed_ms": 7.5,
+                "worker_cpu_ms": 66.0,
+                "non_nested_worker_cpu_ms": 8.0,
+            },
+            {
+                "kind": "dbapi_fetch",
+                "request_id": "req-shifts",
+                "connection_id": 101,
+                "statement_fingerprint": later_list_shifts_fetch,
+                "call_site": (
+                    "app/infrastructure/sql/query_repository.py:"
+                    "list_shifts:2548"
+                ),
+                "fetched_row_count": 8,
+                "fetch_elapsed_ms": 15.0,
+                "fetch_cpu_ms": 4.0,
             },
         ]
-        for index, fingerprint in enumerate(TARGET_RESULT_FINGERPRINTS[1:], start=1):
+        for index, fingerprint in enumerate(
+            TARGET_RESULT_FINGERPRINTS[1:],
+            start=1,
+        ):
+            call_site = (
+                "app/infrastructure/sql/demand_repository.py:"
+                + (
+                    "list_with_cancellation_materialization:791"
+                    if index == 1
+                    else "_aggregate_children:479"
+                )
+            )
             rows.extend(
                 [
                     {
@@ -757,28 +816,22 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                         "request_id": f"req-{index}",
                         "connection_id": 101 + index,
                         "statement_fingerprint": fingerprint,
-                        "call_site": (
-                            "app/infrastructure/sql/demand_repository.py:"
-                            f"consumer_{index}:100"
-                        ),
-                        "fetched_row_count": 20,
-                        "fetch_elapsed_ms": 10.0,
-                        "fetch_cpu_ms": 1.0,
+                        "call_site": call_site,
+                        "fetched_row_count": 120 if index == 1 else 8,
+                        "fetch_elapsed_ms": 20.0,
+                        "fetch_cpu_ms": 2.0,
                     },
                     {
                         "kind": "result_consumer",
                         "request_id": f"req-{index}",
                         "connection_id": 101 + index,
                         "statement_fingerprint": fingerprint,
-                        "call_site": (
-                            "app/infrastructure/sql/demand_repository.py:"
-                            f"consumer_{index}:100"
-                        ),
-                        "consumer_elapsed_ms": 12.0,
-                        "nested_fetch_elapsed_ms": 10.0,
+                        "call_site": call_site,
+                        "consumer_elapsed_ms": 22.0,
+                        "nested_fetch_elapsed_ms": 20.0,
                         "non_nested_consumer_elapsed_ms": 2.0,
                         "immediate_projection_elapsed_ms": 1.0,
-                        "worker_cpu_ms": 2.0,
+                        "worker_cpu_ms": 3.0,
                         "non_nested_worker_cpu_ms": 1.0,
                     },
                 ]
@@ -791,12 +844,68 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             tuple(summary["target_fingerprints"]),
             (changed, *TARGET_RESULT_FINGERPRINTS[1:]),
         )
+        self.assertFalse(summary["target_identification_ambiguous"])
         self.assertTrue(summary["targeted_timing_complete"])
         self.assertIn(changed, summary["targeted_result_timing"])
         self.assertNotIn(
-            TARGET_RESULT_FINGERPRINTS[0],
+            later_list_shifts_fetch,
             summary["targeted_result_timing"],
         )
+        self.assertEqual(
+            summary["targeted_result_timing"][changed]["fetched_row_count"][
+                "p50"
+            ],
+            180.0,
+        )
+
+    def test_list_shifts_target_identification_fails_closed_when_ambiguous(self) -> None:
+        rows = []
+        for fingerprint in ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"):
+            rows.append(
+                {
+                    "kind": "dbapi_fetch",
+                    "request_id": "req-shifts",
+                    "connection_id": 101,
+                    "statement_fingerprint": fingerprint,
+                    "call_site": (
+                        "app/infrastructure/sql/query_repository.py:"
+                        "list_shifts:2346"
+                    ),
+                    "target_role": "list_shifts_initial",
+                    "fetched_row_count": 180,
+                    "fetch_elapsed_ms": 10.0,
+                    "fetch_cpu_ms": 1.0,
+                }
+            )
+
+        summary = _summarize_trace(rows)
+
+        self.assertEqual(summary["list_shifts_fingerprint"], "")
+        self.assertTrue(summary["target_identification_ambiguous"])
+        self.assertFalse(summary["targeted_timing_complete"])
+
+    def test_list_shifts_target_identification_fails_closed_when_missing(self) -> None:
+        rows = [
+            {
+                "kind": "dbapi_fetch",
+                "request_id": "req-shifts",
+                "connection_id": 101,
+                "statement_fingerprint": "9abe91efc0db1ae6",
+                "call_site": (
+                    "app/infrastructure/sql/query_repository.py:"
+                    "list_shifts:2548"
+                ),
+                "fetched_row_count": 8,
+                "fetch_elapsed_ms": 10.0,
+                "fetch_cpu_ms": 1.0,
+            }
+        ]
+
+        summary = _summarize_trace(rows)
+
+        self.assertEqual(summary["list_shifts_fingerprint"], "")
+        self.assertTrue(summary["target_identification_ambiguous"])
+        self.assertFalse(summary["targeted_timing_complete"])
 
     def test_instrumented_trial_validation_fails_closed_when_target_timing_missing(self) -> None:
         with TemporaryDirectory() as tmp:
