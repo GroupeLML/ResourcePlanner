@@ -98,6 +98,8 @@ jobs:
           tools/issue_894_phase4_load.py
           tools/issue_894_phase4_stats.py
           tools/issue_894_phase4_performance_report.py
+          tools/issue_894_connection_trace.py
+          tools/issue_894_connection_trial.py
           tools/cutover_inventory.py
       - name: Guard Web/SQL boundaries from V1 imports
         run: python tools/cutover_inventory.py --check-boundaries
@@ -675,239 +677,191 @@ jobs:
           docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets"             -w /workspace             -e PYTHONPATH=/app:/workspace             -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py seed               --database-url "$RP894_DATABASE_URL"               --users 500               --output /secrets/sessions.json
 
           sh -n tools/build_issue_894_rollback_bundle.sh
-          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_issue_894_phase4_capacity               tests.test_issue_894_phase4_tooling
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_issue_894_phase4_capacity               tests.test_issue_894_phase4_tooling               tests.test_issue_894_connection_trace
 
-      - name: Start feature stack and prove real restart durability
-        shell: bash
-        run: |
-          set -euo pipefail
-          evidence="$GITHUB_WORKSPACE/phase4-evidence"
-          mkdir -p "$evidence/performance"
-          chmod 0777 "$evidence/performance"
-
-          phase4_probe() {
-            url="$1"
-            docker run --rm --network "$RP894_NETWORK" \
-              resourceplanner-894-feature-backend \
-              curl --fail --silent --show-error --max-time 3 "$url" \
-              >/dev/null
-          }
-
-          phase4_diagnostics() {
-            stage="$1"
-            output="$evidence/restart-${stage}-diagnostics.txt"
-            {
-              echo "stage=$stage"
-              echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              echo "containers:"
-              docker ps -a \
-                --filter name=backend \
-                --filter name=frontend \
-                --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
-              for container in backend frontend; do
-                if docker inspect "$container" >/dev/null 2>&1; then
-                  docker inspect "$container" \
-                    --format "$container status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} restarts={{.RestartCount}}"
-                  docker inspect "$container" \
-                    --format "$container health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"
-                else
-                  echo "$container missing"
-                fi
-              done
-              for target in \
-                http://backend:8000/health \
-                http://backend:8000/ready \
-                http://frontend:8080/health \
-                http://frontend:8080/ready; do
-                echo "probe=$target"
-                docker run --rm --network "$RP894_NETWORK" \
-                  resourceplanner-894-feature-backend \
-                  curl --silent --show-error --include --max-time 5 "$target" \
-                  || true
-              done
-              echo "backend logs:"
-              docker logs --tail=200 backend 2>&1 || true
-              echo "frontend logs:"
-              docker logs --tail=200 frontend 2>&1 || true
-            } > "$output" 2>&1
-            cat "$output"
-          }
-
-          wait_phase4_ready() {
-            stage="$1"
-            url="$2"
-            for attempt in $(seq 1 60); do
-              if phase4_probe "$url"; then
-                printf '%s ready after attempt %s\n' "$stage" "$attempt" \
-                  | tee -a "$evidence/restart-probe-summary.txt"
-                return 0
-              fi
-              sleep 2
-            done
-            phase4_diagnostics "$stage"
-            return 1
-          }
-
-          docker run -d \
-            --name backend \
-            --network "$RP894_NETWORK" \
-            -v "$GITHUB_WORKSPACE:/workspace:ro" \
-            -v "$evidence/performance:/home/resourceplanner/.resourceplanner/logs" \
-            -w /app \
-            -e PYTHONPATH=/app \
-            -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL" \
-            -e RESOURCEPLANNER_HOST=0.0.0.0 \
-            -e RESOURCEPLANNER_PORT=8000 \
-            -e RESOURCEPLANNER_LOG_LEVEL=info \
-            -e RESOURCEPLANNER_AUTH_MODE=oidc \
-            -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration \
-            -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-phase4 \
-            -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback \
-            -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false \
-            -e RESOURCEPLANNER_API_DOCS_ENABLED=false \
-            -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false \
-            resourceplanner-894-feature-backend \
-            python /workspace/tools/issue_894_phase4_server.py >/dev/null
-
-          wait_phase4_ready initial-backend http://backend:8000/ready
-
-          docker run -d \
-            --name frontend \
-            --network "$RP894_NETWORK" \
-            -e RESOURCEPLANNER_ENVIRONMENT=PROD \
-            resourceplanner-894-feature-frontend >/dev/null
-
-          wait_phase4_ready initial-proxy http://frontend:8080/ready
-
-          docker run --rm \
-            --network "$RP894_NETWORK" \
-            -v "$GITHUB_WORKSPACE:/workspace:ro" \
-            -v "$RP894_SECRETS_DIR:/secrets:ro" \
-            -v "$evidence:/evidence" \
-            -w /workspace \
-            -e PYTHONPATH=/app:/workspace \
-            resourceplanner-894-feature-backend \
-            python tools/issue_894_phase4_load.py restart-prepare \
-              --credentials /secrets/sessions.json \
-              --output /evidence/restart-state.json
-
-          docker restart backend >/dev/null
-
-          wait_phase4_ready restarted-backend http://backend:8000/ready
-          wait_phase4_ready restarted-proxy http://frontend:8080/ready
-
-          set +e
-          docker run --rm \
-            --network "$RP894_NETWORK" \
-            -v "$GITHUB_WORKSPACE:/workspace:ro" \
-            -v "$RP894_SECRETS_DIR:/secrets:ro" \
-            -v "$evidence:/evidence" \
-            -w /workspace \
-            -e PYTHONPATH=/app:/workspace \
-            resourceplanner-894-feature-backend \
-            python tools/issue_894_phase4_load.py restart-verify \
-              --credentials /secrets/sessions.json \
-              --state /evidence/restart-state.json \
-            | tee "$evidence/restart-proof.json"
-          restart_verify_status=${PIPESTATUS[0]}
-          set -e
-          if [ "$restart_verify_status" != "0" ]; then
-            phase4_diagnostics restart-state-verification
-            exit "$restart_verify_status"
-          fi
-
-      - name: Run isolated ordinary baseline proof
+      - name: Run short canonical versus instrumented connection-residence diagnostics
         id: load
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           evidence="$GITHUB_WORKSPACE/phase4-evidence"
-          stats="$evidence/docker-stats.tsv"
-          : > "$stats"
+          mkdir -p "$evidence/performance"
+          chmod 0777 "$evidence/performance"
+          trace="$evidence/performance/issue894-connection-trace.jsonl"
 
-          (
-            while docker inspect backend >/dev/null 2>&1; do
-              line="$(docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}' backend 2>/dev/null || true)"
-              if [ -n "$line" ]; then
-                printf '%s\t%s\n' "$(date +%s)" "$line" >> "$stats"
+          wait_backend_ready() {
+            mode="$1"
+            for attempt in $(seq 1 60); do
+              if docker run --rm --network "$RP894_NETWORK" \
+                resourceplanner-894-feature-backend \
+                curl --fail --silent --show-error --max-time 3 \
+                http://backend:8000/ready >/dev/null 2>&1; then
+                printf '%s backend ready after attempt %s\n' "$mode" "$attempt" \
+                  >> "$evidence/connection-trial-readiness.txt"
+                return 0
               fi
-              sleep 5
+              sleep 1
             done
-          ) &
-          sampler_pid=$!
+            docker logs --tail=300 backend \
+              > "$evidence/connection-trial-${mode}-startup-failure.txt" 2>&1 || true
+            return 1
+          }
 
-          set +e
-          docker run --rm \
-            --network "$RP894_NETWORK" \
-            -v "$GITHUB_WORKSPACE:/workspace:ro" \
-            -v "$RP894_SECRETS_DIR:/secrets:ro" \
-            -v "$evidence:/evidence" \
-            -w /workspace \
-            -e PYTHONPATH=/app:/workspace \
-            -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL" \
-            -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER \
-            resourceplanner-894-feature-backend \
-            python tools/issue_894_phase4_load.py baseline \
-              --credentials /secrets/sessions.json \
-              --output /evidence/isolated-baseline.json \
-              --head-sha "$RP894_HEAD_SHA"
-          load_status=$?
+          start_backend() {
+            mode="$1"
+            docker rm -f backend >/dev/null 2>&1 || true
+            common_args=(
+              --name backend
+              --network "$RP894_NETWORK"
+              -v "$evidence/performance:/home/resourceplanner/.resourceplanner/logs"
+              -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL"
+              -e RESOURCEPLANNER_HOST=0.0.0.0
+              -e RESOURCEPLANNER_PORT=8000
+              -e RESOURCEPLANNER_LOG_LEVEL=info
+              -e RESOURCEPLANNER_AUTH_MODE=oidc
+              -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration
+              -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-phase4
+              -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback
+              -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false
+              -e RESOURCEPLANNER_API_DOCS_ENABLED=false
+              -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false
+            )
+            if [ "$mode" = "canonical" ]; then
+              docker run -d "${common_args[@]}" \
+                resourceplanner-894-feature-backend \
+                python -m app.server >/dev/null
+            else
+              : > "$trace"
+              chmod 0666 "$trace"
+              docker run -d "${common_args[@]}" \
+                -v "$GITHUB_WORKSPACE:/workspace:ro" \
+                -w /app \
+                -e PYTHONPATH=/app:/workspace \
+                -e RESOURCEPLANNER_PHASE4_CONNECTION_TRACE=true \
+                -e RESOURCEPLANNER_PHASE4_CONNECTION_TRACE_PATH=/home/resourceplanner/.resourceplanner/logs/issue894-connection-trace.jsonl \
+                resourceplanner-894-feature-backend \
+                python /workspace/tools/issue_894_phase4_server.py >/dev/null
+            fi
+            wait_backend_ready "$mode"
+          }
 
-          if [ "$load_status" != "0" ]; then
-            docker kill --signal=USR1 backend >/dev/null 2>&1 || true
-            docker kill --signal=USR2 backend >/dev/null 2>&1 || true
-            sleep 1
-            docker logs --tail=600 backend \
-              > "$evidence/isolated-baseline-backend-diagnostics.txt" 2>&1 || true
-            docker stats --no-stream --format '{{json .}}' backend \
-              > "$evidence/isolated-baseline-final-backend-stats.jsonl" || true
+          ensure_frontend() {
+            docker rm -f frontend >/dev/null 2>&1 || true
+            docker run -d \
+              --name frontend \
+              --network "$RP894_NETWORK" \
+              -e RESOURCEPLANNER_ENVIRONMENT=PROD \
+              resourceplanner-894-feature-frontend >/dev/null
+            for attempt in $(seq 1 60); do
+              if docker run --rm --network "$RP894_NETWORK" \
+                resourceplanner-894-feature-backend \
+                curl --fail --silent --show-error --max-time 3 \
+                http://frontend:8080/ready >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 1
+            done
+            return 1
+          }
+
+          run_trial() {
+            mode="$1"
+            output="$2"
+            trace_args=()
+            if [ "$mode" = "instrumented" ]; then
+              trace_args=(--trace-file /evidence/performance/issue894-connection-trace.jsonl)
+            fi
             docker run --rm \
               --network "$RP894_NETWORK" \
               -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$RP894_SECRETS_DIR:/secrets:ro" \
               -v "$evidence:/evidence" \
               -w /workspace \
               -e PYTHONPATH=/app:/workspace \
               -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL" \
+              -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER \
               resourceplanner-894-feature-backend \
-              python tools/issue_894_phase4_load.py sql-diagnostics \
+              python tools/issue_894_connection_trial.py trial \
+                --credentials /secrets/sessions.json \
                 --database-url "$RP894_DATABASE_URL" \
-                --output /evidence/isolated-baseline-sql-diagnostics.json \
-              || true
+                --output "$output" \
+                --mode "$mode" \
+                --duration-seconds 30 \
+                --offered-rps 10 \
+                --concurrency 32 \
+                "${trace_args[@]}"
+          }
+
+          set +e
+
+          start_backend canonical
+          canonical_start_status=$?
+          if [ "$canonical_start_status" = "0" ]; then
+            ensure_frontend
+            canonical_frontend_status=$?
+          else
+            canonical_frontend_status=1
+          fi
+          if [ "$canonical_start_status" = "0" ] && [ "$canonical_frontend_status" = "0" ]; then
+            run_trial canonical /evidence/connection-trial-canonical.json
+            canonical_status=$?
+          else
+            canonical_status=1
+          fi
+          docker logs --tail=500 backend \
+            > "$evidence/connection-trial-canonical-backend.txt" 2>&1 || true
+
+          start_backend instrumented
+          instrumented_start_status=$?
+          if [ "$instrumented_start_status" = "0" ]; then
+            ensure_frontend
+            instrumented_frontend_status=$?
+          else
+            instrumented_frontend_status=1
+          fi
+          if [ "$instrumented_start_status" = "0" ] && [ "$instrumented_frontend_status" = "0" ]; then
+            run_trial instrumented /evidence/connection-trial-instrumented.json
+            instrumented_status=$?
+          else
+            instrumented_status=1
+          fi
+          docker logs --tail=700 backend \
+            > "$evidence/connection-trial-instrumented-backend.txt" 2>&1 || true
+
+          if [ -f "$evidence/connection-trial-canonical.json" ] \
+            && [ -f "$evidence/connection-trial-instrumented.json" ]; then
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py compare \
+                --canonical /evidence/connection-trial-canonical.json \
+                --instrumented /evidence/connection-trial-instrumented.json \
+                --output /evidence/connection-trial-comparison.json
+            comparison_status=$?
+          else
+            comparison_status=1
           fi
 
-          kill "$sampler_pid" >/dev/null 2>&1 || true
-          wait "$sampler_pid" >/dev/null 2>&1 || true
-
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace:ro" \
-            -v "$evidence:/evidence" \
-            -w /workspace \
-            -e PYTHONPATH=/app:/workspace \
-            resourceplanner-894-feature-backend \
-            python tools/issue_894_phase4_stats.py \
-              --input /evidence/docker-stats.tsv \
-              --output /evidence/docker-stats.json \
-              --allocated-cpus "$(nproc)"
-          stats_status=$?
-
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace:ro" \
-            -v "$evidence:/evidence" \
-            -w /workspace \
-            -e PYTHONPATH=/app:/workspace \
-            resourceplanner-894-feature-backend \
-            python tools/issue_894_phase4_performance_report.py \
-              --input /evidence/performance/performance.jsonl \
-              --output /evidence/performance-summary.json
-          performance_status=$?
-
-          docker logs --tail=200 backend > "$evidence/backend-log-tail.txt" 2>&1 || true
           set -e
 
-          test "$load_status" = "0"
-          test "$stats_status" = "0"
-          test "$performance_status" = "0"
+          {
+            printf 'label=DIAGNOSTIC - NOT CERTIFICATION\n'
+            printf 'canonical_status=%s\n' "$canonical_status"
+            printf 'instrumented_status=%s\n' "$instrumented_status"
+            printf 'comparison_status=%s\n' "$comparison_status"
+            printf 'full_mixed_load=NOT RUN\n'
+            printf 'ack_campaign=NOT RUN\n'
+            printf 'v2_campaign=NOT RUN\n'
+            printf 'rollback_campaign=NOT RUN\n'
+          } > "$evidence/connection-trial-status.txt"
+
+          test "$canonical_status" = "0"
+          test "$instrumented_status" = "0"
+          test "$comparison_status" = "0"
 
       - name: Run existing V2 API performance budget
         id: benchmark
