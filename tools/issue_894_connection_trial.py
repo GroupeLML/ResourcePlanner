@@ -318,40 +318,11 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
 
     observation_finished = time.perf_counter()
     trace_rows = _trace_rows(trace_file)
-    trace_by_request: dict[str, list[dict[str, object]]] = {}
-    for row in trace_rows:
-        request_id = str(row.get("request_id") or "")
-        if request_id:
-            trace_by_request.setdefault(request_id, []).append(row)
-
-    timeout_correlations: list[dict[str, object]] = []
-    for error in errors[:50]:
-        diagnostic_id = str(error["diagnostic_id"])
-        record = request_records[diagnostic_id]
-        timeout_at = record.get("client_timeout_monotonic")
-        rows = trace_by_request.get(diagnostic_id, [])
-        request_end = next(
-            (row for row in rows if row.get("kind") == "request_end"),
-            None,
-        )
-        returns = [
-            row for row in rows
-            if row.get("kind") == "connection_return"
-        ]
-        later_returns = [
-            row for row in returns
-            if isinstance(timeout_at, float)
-            and float(row.get("monotonic") or 0.0) > timeout_at
-        ]
-        timeout_correlations.append(
-            {
-                "diagnostic_id": diagnostic_id,
-                "operation": error["operation"],
-                "client_timeout_monotonic": timeout_at,
-                "server_request_end": request_end,
-                "connection_returns_after_client_timeout": later_returns,
-            }
-        )
+    timeout_correlations = _correlate_timeouts(
+        errors,
+        request_records,
+        trace_rows,
+    )
 
     first_stall = next(
         (row for row in trace_rows if row.get("kind") == "first_stall_snapshot"),
@@ -417,10 +388,53 @@ async def _trial(args: argparse.Namespace) -> dict[str, object]:
     return report
 
 
+def _correlate_timeouts(
+    errors: list[dict[str, object]],
+    request_records: dict[str, dict[str, object]],
+    trace_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    trace_by_request: dict[str, list[dict[str, object]]] = {}
+    for row in trace_rows:
+        request_id = str(row.get("request_id") or "")
+        if request_id:
+            trace_by_request.setdefault(request_id, []).append(row)
+
+    correlations: list[dict[str, object]] = []
+    for error in errors[:50]:
+        diagnostic_id = str(error["diagnostic_id"])
+        record = request_records[diagnostic_id]
+        timeout_at = record.get("client_timeout_monotonic")
+        rows = trace_by_request.get(diagnostic_id, [])
+        request_end = next(
+            (row for row in rows if row.get("kind") == "request_end"),
+            None,
+        )
+        returns = [
+            row for row in rows
+            if row.get("kind") == "connection_return"
+        ]
+        later_returns = [
+            row for row in returns
+            if isinstance(timeout_at, float)
+            and float(row.get("monotonic") or 0.0) > timeout_at
+        ]
+        correlations.append(
+            {
+                "diagnostic_id": diagnostic_id,
+                "operation": error["operation"],
+                "client_timeout_monotonic": timeout_at,
+                "server_request_end": request_end,
+                "connection_returns_after_client_timeout": later_returns,
+            }
+        )
+    return correlations
+
+
 def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
     by_kind: dict[str, int] = {}
     executor_queue: list[float] = []
     worker_ms: list[float] = []
+    executor_by_phase: dict[str, dict[str, list[float]]] = {}
     pool_wait: list[float] = []
     statement_ms: list[float] = []
     post_statement: list[float] = []
@@ -431,9 +445,21 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
         kind = str(row.get("kind") or "unknown")
         by_kind[kind] = by_kind.get(kind, 0) + 1
         if kind == "executor_worker_start":
-            executor_queue.append(float(row.get("queue_wait_ms") or 0.0))
+            queue_value = float(row.get("queue_wait_ms") or 0.0)
+            executor_queue.append(queue_value)
+            phase = str(row.get("phase") or "other")
+            executor_by_phase.setdefault(
+                phase,
+                {"queue_ms": [], "worker_ms": []},
+            )["queue_ms"].append(queue_value)
         elif kind == "executor_worker_complete":
-            worker_ms.append(float(row.get("worker_ms") or 0.0))
+            worker_value = float(row.get("worker_ms") or 0.0)
+            worker_ms.append(worker_value)
+            phase = str(row.get("phase") or "other")
+            executor_by_phase.setdefault(
+                phase,
+                {"queue_ms": [], "worker_ms": []},
+            )["worker_ms"].append(worker_value)
         elif kind == "pool_checkout_complete":
             pool_wait.append(float(row.get("wait_ms") or 0.0))
         elif kind == "statement_end":
@@ -454,6 +480,13 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
         "event_counts": by_kind,
         "executor_queue_ms": _latencies(executor_queue),
         "executor_worker_ms": _latencies(worker_ms),
+        "executor_by_phase": {
+            phase: {
+                "queue_ms": _latencies(values["queue_ms"]),
+                "worker_ms": _latencies(values["worker_ms"]),
+            }
+            for phase, values in sorted(executor_by_phase.items())
+        },
         "pool_checkout_wait_ms": _latencies(pool_wait),
         "statement_execution_ms": _latencies(statement_ms),
         "post_statement_connection_residence_ms": _latencies(post_statement),
