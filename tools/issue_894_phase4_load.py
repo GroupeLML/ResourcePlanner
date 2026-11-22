@@ -1017,8 +1017,36 @@ async def _run_isolated_baseline(args: argparse.Namespace) -> dict[str, object]:
     }
     _write_json_checkpoint(args.output, report)
 
-    admin, _users = _load_credentials(args.credentials)
     setup_started = time.perf_counter()
+    setup_operation = "load_credentials"
+    try:
+        admin, _users = _load_credentials(args.credentials)
+    except Exception as exc:
+        failure = _failure_evidence(
+            stage="setup",
+            operation=setup_operation,
+            started=setup_started,
+            exc=exc,
+        )
+        failure["available_workload"] = None
+        failure["available_telemetry"] = None
+        report["primary_failure"] = failure
+        report["stages"]["setup"] = {
+            "status": "FAIL",
+            "failure": failure,
+        }
+        report["stages"]["baseline"] = {
+            "status": "NOT RUN",
+            "reason": "setup failed",
+        }
+        report["stages"]["cleanup"] = {
+            "status": "NOT RUN",
+            "reason": "broadcast state is unknown; no forced cleanup attempted",
+            "broadcast_state": "unknown",
+        }
+        _write_json_checkpoint(args.output, report)
+        return report
+
     setup_operation = "end_active"
     resource_id: str | None = None
     client = httpx.AsyncClient(
