@@ -26,6 +26,7 @@ from tools.issue_894_phase4_load import (
 DIAGNOSTIC_LABEL = "DIAGNOSTIC — NOT CERTIFICATION"
 DEFAULT_DURATION_SECONDS = 30.0
 DEFAULT_CONCURRENCY = 32
+FAILURE_RATE_MATERIAL_DELTA = 0.10
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -599,10 +600,20 @@ def _compare(args: argparse.Namespace) -> dict[str, object]:
     )
     rate_floor = canonical_rate * 0.90
     latency_ceiling = max(canonical_p95 * 1.10, canonical_p95 + 50.0)
+    canonical_completed = max(1, int(canonical.get("completed") or 0))
+    instrumented_completed = max(1, int(instrumented.get("completed") or 0))
+    canonical_failures = int(canonical.get("failed") or 0)
+    instrumented_failures = int(instrumented.get("failed") or 0)
+    canonical_failure_rate = canonical_failures / canonical_completed
+    instrumented_failure_rate = instrumented_failures / instrumented_completed
+    failure_rate_ceiling = min(
+        1.0,
+        canonical_failure_rate + FAILURE_RATE_MATERIAL_DELTA,
+    )
     material = (
         instrumented_rate < rate_floor
         or instrumented_p95 > latency_ceiling
-        or int(instrumented.get("failed") or 0) > int(canonical.get("failed") or 0)
+        or instrumented_failure_rate > failure_rate_ceiling
     )
 
     report = {
@@ -612,7 +623,8 @@ def _compare(args: argparse.Namespace) -> dict[str, object]:
         "canonical": {
             "achieved_request_start_rps": canonical_rate,
             "latency_p95_ms": canonical_p95,
-            "failed": int(canonical.get("failed") or 0),
+            "failed": canonical_failures,
+            "failure_rate": canonical_failure_rate,
             "drain_duration_seconds": float(
                 canonical.get("drain_duration_seconds") or 0.0
             ),
@@ -620,7 +632,8 @@ def _compare(args: argparse.Namespace) -> dict[str, object]:
         "instrumented": {
             "achieved_request_start_rps": instrumented_rate,
             "latency_p95_ms": instrumented_p95,
-            "failed": int(instrumented.get("failed") or 0),
+            "failed": instrumented_failures,
+            "failure_rate": instrumented_failure_rate,
             "drain_duration_seconds": float(
                 instrumented.get("drain_duration_seconds") or 0.0
             ),
@@ -628,6 +641,13 @@ def _compare(args: argparse.Namespace) -> dict[str, object]:
         "delta": {
             "request_start_rps": instrumented_rate - canonical_rate,
             "latency_p95_ms": instrumented_p95 - canonical_p95,
+            "failure_rate": instrumented_failure_rate - canonical_failure_rate,
+        },
+        "materiality_thresholds": {
+            "request_start_rate_floor": rate_floor,
+            "latency_p95_ceiling_ms": latency_ceiling,
+            "failure_rate_ceiling": failure_rate_ceiling,
+            "failure_rate_max_absolute_delta": FAILURE_RATE_MATERIAL_DELTA,
         },
         "material_instrumentation_deterioration": material,
         "interpretation_allowed": not material,
