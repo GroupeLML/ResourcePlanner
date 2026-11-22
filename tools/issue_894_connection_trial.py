@@ -588,9 +588,55 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
+def _validated_trial_report(
+    path: Path,
+    *,
+    expected_mode: str,
+) -> dict[str, object]:
+    report = json.loads(path.read_text(encoding="utf-8"))
+    if report.get("schema") != "issue-894-connection-trial-v1":
+        raise ValueError(f"{expected_mode} trial schema is invalid")
+    if report.get("label") != DIAGNOSTIC_LABEL:
+        raise ValueError(f"{expected_mode} trial label is invalid")
+    if report.get("mode") != expected_mode:
+        raise ValueError(f"{expected_mode} trial mode is invalid")
+    if report.get("certification_pass") is not False:
+        raise ValueError(f"{expected_mode} trial must never certify")
+    if not isinstance(report.get("diagnostic_acceptance_behavior_failed"), bool):
+        raise ValueError(
+            f"{expected_mode} diagnostic outcome is missing or malformed"
+        )
+    for field in (
+        "achieved_request_start_rps",
+        "completed",
+        "failed",
+        "drain_duration_seconds",
+    ):
+        value = report.get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(
+                f"{expected_mode} trial field {field} is missing or malformed"
+            )
+    latency = report.get("latency")
+    if not isinstance(latency, dict):
+        raise ValueError(f"{expected_mode} trial latency is missing or malformed")
+    p95 = latency.get("p95_ms")
+    if not isinstance(p95, (int, float)) or isinstance(p95, bool):
+        raise ValueError(
+            f"{expected_mode} trial latency p95 is missing or malformed"
+        )
+    return report
+
+
 def _compare(args: argparse.Namespace) -> dict[str, object]:
-    canonical = json.loads(args.canonical.read_text(encoding="utf-8"))
-    instrumented = json.loads(args.instrumented.read_text(encoding="utf-8"))
+    canonical = _validated_trial_report(
+        args.canonical,
+        expected_mode="canonical",
+    )
+    instrumented = _validated_trial_report(
+        args.instrumented,
+        expected_mode="instrumented",
+    )
 
     canonical_rate = float(canonical.get("achieved_request_start_rps") or 0.0)
     instrumented_rate = float(instrumented.get("achieved_request_start_rps") or 0.0)
@@ -699,16 +745,18 @@ def main() -> int:
     args = _parser().parse_args()
     if args.command == "trial":
         report = asyncio.run(_trial(args))
+        _validated_trial_report(args.output, expected_mode=args.mode)
         print(json.dumps(report, sort_keys=True))
-        return (
-            1
-            if bool(report["diagnostic_acceptance_behavior_failed"])
-            else 0
-        )
+        return 0
     if args.command == "compare":
         report = _compare(args)
         print(json.dumps(report, sort_keys=True))
-        return 1 if bool(report["material_instrumentation_deterioration"]) else 0
+        return (
+            0
+            if report.get("material_instrumentation_deterioration") is False
+            and report.get("interpretation_allowed") is True
+            else 1
+        )
     return 2
 
 
