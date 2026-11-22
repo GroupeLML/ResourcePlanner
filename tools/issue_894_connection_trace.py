@@ -31,14 +31,31 @@ _UNCHANGED_TARGET_FINGERPRINTS = frozenset({
 })
 
 
+def _statement_target_role(statement: object) -> str:
+    normalized = " ".join(str(statement or "").split()).casefold()
+    required = (
+        "workforce_requests.id",
+        "workforce_requests.legacy_demand_number",
+        "workforce_requests.requester_name",
+        "workforce_requests.emergency_override_active",
+        " from shifts ",
+        " join resource_requirements ",
+        " join resources ",
+        " join projects ",
+        " join workforce_requests ",
+    )
+    if all(fragment in normalized for fragment in required):
+        return "list_shifts_initial"
+    return ""
+
+
 def _targeted_result_consumer(
     fingerprint: str,
-    call_site: str,
+    target_role: str,
 ) -> bool:
     return (
-        fingerprint == _LEGACY_LIST_SHIFTS_FINGERPRINT
+        target_role == "list_shifts_initial"
         or fingerprint in _UNCHANGED_TARGET_FINGERPRINTS
-        or "app/infrastructure/sql/query_repository.py:list_shifts:" in call_site
     )
 
 
@@ -482,6 +499,7 @@ class ConnectionTraceRecorder:
         cpu_ended: float,
         row_count: int,
         call_site: str,
+        target_role: str = "",
         error: bool = False,
     ) -> None:
         fetch_ms = max(0.0, (ended - started) * 1000.0)
@@ -500,7 +518,7 @@ class ConnectionTraceRecorder:
                 float(span["nested_fetch_cpu_ms"]) + fetch_cpu_ms
             )
             span["all_fetches"].append(fetch_record)
-        if not _targeted_result_consumer(fingerprint, call_site):
+        if not _targeted_result_consumer(fingerprint, target_role):
             return
         targeted = {
             "statement_fingerprint": fingerprint,
@@ -511,6 +529,7 @@ class ConnectionTraceRecorder:
             "fetch_cpu_ms": fetch_cpu_ms,
             "fetched_row_count": int(row_count),
             "call_site": str(call_site),
+            "target_role": str(target_role),
             "error": bool(error),
         }
         for span in stack:
@@ -523,6 +542,7 @@ class ConnectionTraceRecorder:
             connection_id=int(connection_id),
             statement_fingerprint=fingerprint,
             call_site=str(call_site),
+            target_role=str(target_role),
             fetch_started_monotonic=float(started),
             fetch_ended_monotonic=float(ended),
             fetch_elapsed_ms=fetch_ms,
@@ -582,6 +602,7 @@ class ConnectionTraceRecorder:
                 connection_id=connection_id,
                 statement_fingerprint=fingerprint,
                 call_site=call_site,
+                target_role=str(fetches[0].get("target_role") or ""),
                 fetch_count=len(fetches),
                 fetched_row_count=sum(
                     int(fetch["fetched_row_count"]) for fetch in fetches
@@ -744,6 +765,9 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         connection_id = int(
             getattr(context, "_rp894_trace_connection_id", 0) or 0
         )
+        target_role = str(
+            getattr(context, "_rp894_trace_target_role", "") or ""
+        )
         started = time.perf_counter()
         cpu_started = time.thread_time()
         try:
@@ -760,6 +784,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
                 cpu_ended=cpu_ended,
                 row_count=0,
                 call_site=_repository_call_site(),
+                target_role=target_role,
                 error=True,
             )
             raise
@@ -774,6 +799,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             cpu_ended=cpu_ended,
             row_count=len(rows),
             call_site=_repository_call_site(),
+            target_role=target_role,
             error=False,
         )
         return rows
@@ -803,6 +829,9 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         execution_context._rp894_trace_started = started
         execution_context._rp894_trace_fingerprint = fingerprint
         execution_context._rp894_trace_connection_id = _connection_record_id(conn)
+        execution_context._rp894_trace_target_role = _statement_target_role(
+            statement
+        )
         recorder.on_statement_start(conn, statement)
 
     @event.listens_for(engine, "after_cursor_execute")
