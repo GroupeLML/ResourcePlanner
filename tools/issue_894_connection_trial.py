@@ -201,6 +201,9 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
             ADD EVENT sqlserver.rpc_completed(
                 ACTION(sqlserver.database_id, sqlserver.session_id)
             ),
+            ADD EVENT sqlserver.sql_batch_completed(
+                ACTION(sqlserver.database_id, sqlserver.session_id)
+            ),
             ADD EVENT sqlos.wait_info(
                 ACTION(sqlserver.database_id, sqlserver.session_id)
                 WHERE ([duration] > (1000))
@@ -304,9 +307,13 @@ def _parse_xe_event_xml(
     session_id = _safe_int(_xe_value(node, "session_id"))
     if not session_id:
         return None
-    if event_name == "rpc_completed":
+    if event_name in {"rpc_completed", "sql_batch_completed"}:
+        is_rpc = event_name == "rpc_completed"
         return {
-            "event": "rpc_completed",
+            "event": event_name,
+            "execution_category": (
+                "prepared_rpc" if is_rpc else "direct_batch"
+            ),
             "timestamp_utc": timestamp,
             "session_id": session_id,
             "database_id": event_database_id,
@@ -315,7 +322,11 @@ def _parse_xe_event_xml(
             "logical_reads": _safe_int(_xe_value(node, "logical_reads")),
             "physical_reads": _safe_int(_xe_value(node, "physical_reads")),
             "row_count": _safe_int(_xe_value(node, "row_count")),
-            "object_name": str(_xe_value(node, "object_name") or ""),
+            "object_name": (
+                str(_xe_value(node, "object_name") or "")
+                if is_rpc
+                else ""
+            ),
         }
     if event_name == "wait_info":
         return {
@@ -538,15 +549,71 @@ def _count_distribution(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def _physical_connection_lifetimes(
+    trace_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    probes = [
+        dict(row)
+        for row in trace_rows
+        if row.get("kind") == "spid_probe"
+        and _safe_int(row.get("spid")) > 0
+        and _safe_int(row.get("connection_id")) > 0
+        and _safe_int(row.get("connection_execution_sequence")) == 1
+    ]
+    lifetimes: list[dict[str, object]] = []
+    for probe in probes:
+        connection_id = _safe_int(probe.get("connection_id"))
+        spid = _safe_int(probe.get("spid"))
+        related = [
+            row
+            for row in trace_rows
+            if _safe_int(row.get("connection_id")) == connection_id
+        ]
+        returns = [
+            row
+            for row in related
+            if row.get("kind") == "connection_return"
+        ]
+        if returns:
+            end_utc = max(
+                _parse_utc(row.get("timestamp_utc"))
+                for row in returns
+            )
+        elif related:
+            end_utc = max(
+                _parse_utc(row.get("timestamp_utc"))
+                for row in related
+                if row.get("timestamp_utc")
+            )
+        else:
+            end_utc = _parse_utc(probe.get("timestamp_utc"))
+        lifetimes.append({
+            "connection_id": connection_id,
+            "spid": spid,
+            "start_utc": _parse_utc(probe.get("timestamp_utc")),
+            "end_utc": end_utc,
+        })
+    lifetimes.sort(
+        key=lambda row: (
+            int(row["spid"]),
+            row["start_utc"],
+            int(row["connection_id"]),
+        )
+    )
+    return lifetimes
+
+
 def _application_execution_markers(
     trace_rows: list[dict[str, object]],
     *,
+    connection_id: int,
     spid: int,
 ) -> list[dict[str, object]]:
     markers = [
         dict(row)
         for row in trace_rows
-        if _safe_int(row.get("spid")) == spid
+        if _safe_int(row.get("connection_id")) == connection_id
+        and _safe_int(row.get("spid")) == spid
         and row.get("kind") in {"spid_probe", "statement_start"}
         and _safe_int(row.get("connection_execution_sequence")) > 0
     ]
@@ -569,15 +636,30 @@ def _server_execution_events(
     capture: dict[str, object],
     *,
     spid: int,
+    start_utc: datetime,
+    end_utc: datetime,
 ) -> tuple[list[dict[str, object]], int]:
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
     executions: list[dict[str, object]] = []
     ignored = 0
     for row in capture.get("events", []):
         if (
             not isinstance(row, dict)
-            or row.get("event") != "rpc_completed"
             or _safe_int(row.get("session_id")) != spid
         ):
+            continue
+        event_time = _parse_utc(row.get("timestamp_utc"))
+        if not (
+            start_utc - margin
+            <= event_time
+            <= end_utc + margin
+        ):
+            continue
+        event_kind = str(row.get("event") or "")
+        if event_kind == "sql_batch_completed":
+            executions.append(dict(row))
+            continue
+        if event_kind != "rpc_completed":
             continue
         name = _normalized_rpc_name(row.get("object_name"))
         if name in _PREPARED_EXECUTION_RPC_NAMES:
@@ -588,22 +670,6 @@ def _server_execution_events(
     for sequence, event in enumerate(executions, start=1):
         event["server_execution_sequence"] = sequence
     return executions, ignored
-
-
-def _fetch_time_consistent(
-    app_fetch: dict[str, object],
-    app_statement: dict[str, object],
-    server_event: dict[str, object],
-) -> bool:
-    statement_start = _parse_utc(app_statement.get("timestamp_utc"))
-    fetch_end = _parse_utc(app_fetch.get("timestamp_utc"))
-    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
-    event_time = _parse_utc(server_event.get("timestamp_utc"))
-    return (
-        statement_start - margin
-        <= event_time
-        <= fetch_end + margin
-    )
 
 
 def _server_client_correlation(
@@ -625,25 +691,39 @@ def _server_client_correlation(
         for row in capture.get("events", [])
         if isinstance(row, dict) and row.get("event") == "wait_info"
     ]
-    observed_spids = sorted(
-        {_safe_int(row.get("spid")) for row in app_fetches}
-    )
+    target_connection_ids = {
+        _safe_int(row.get("connection_id")) for row in app_fetches
+    }
+    lifetimes = [
+        row
+        for row in _physical_connection_lifetimes(trace_rows)
+        if int(row["connection_id"]) in target_connection_ids
+    ]
 
-    marker_by_spid: dict[int, list[dict[str, object]]] = {}
-    server_by_spid: dict[int, list[dict[str, object]]] = {}
+    marker_by_connection: dict[int, list[dict[str, object]]] = {}
+    server_by_connection: dict[int, list[dict[str, object]]] = {}
     ignored_rpc_events = 0
     sequence_alignment_failures: list[dict[str, object]] = []
-    for spid in observed_spids:
-        markers = _application_execution_markers(trace_rows, spid=spid)
+    for lifetime in lifetimes:
+        connection_id = int(lifetime["connection_id"])
+        spid = int(lifetime["spid"])
+        markers = _application_execution_markers(
+            trace_rows,
+            connection_id=connection_id,
+            spid=spid,
+        )
         server_events, ignored = _server_execution_events(
             capture,
             spid=spid,
+            start_utc=lifetime["start_utc"],
+            end_utc=lifetime["end_utc"],
         )
-        marker_by_spid[spid] = markers
-        server_by_spid[spid] = server_events
+        marker_by_connection[connection_id] = markers
+        server_by_connection[connection_id] = server_events
         ignored_rpc_events += ignored
         if not markers:
             sequence_alignment_failures.append({
+                "connection_id": connection_id,
                 "spid": spid,
                 "reason": "application_sequence_missing_or_non_contiguous",
                 "application_execution_count": 0,
@@ -652,6 +732,7 @@ def _server_client_correlation(
             continue
         if len(markers) != len(server_events):
             sequence_alignment_failures.append({
+                "connection_id": connection_id,
                 "spid": spid,
                 "reason": "execution_count_mismatch",
                 "application_execution_count": len(markers),
@@ -659,31 +740,33 @@ def _server_client_correlation(
             })
 
     server_lookup: dict[tuple[int, int], dict[str, object]] = {}
-    for spid, events in server_by_spid.items():
+    for connection_id, events in server_by_connection.items():
         for event in events:
             key = (
-                spid,
+                connection_id,
                 _safe_int(event.get("server_execution_sequence")),
             )
             if key in server_lookup:
                 sequence_alignment_failures.append({
-                    "spid": spid,
+                    "connection_id": connection_id,
+                    "spid": _safe_int(event.get("session_id")),
                     "reason": "duplicate_server_execution_sequence",
                     "server_execution_sequence": key[1],
                 })
             server_lookup[key] = event
 
     app_statement_lookup: dict[tuple[int, int], dict[str, object]] = {}
-    for spid, markers in marker_by_spid.items():
+    for connection_id, markers in marker_by_connection.items():
         for marker in markers:
             sequence = _safe_int(
                 marker.get("connection_execution_sequence")
             )
-            key = (spid, sequence)
+            key = (connection_id, sequence)
             if marker.get("kind") == "statement_start":
                 if key in app_statement_lookup:
                     sequence_alignment_failures.append({
-                        "spid": spid,
+                        "connection_id": connection_id,
+                        "spid": _safe_int(marker.get("spid")),
                         "reason": "duplicate_application_execution_sequence",
                         "connection_execution_sequence": sequence,
                     })
@@ -702,11 +785,12 @@ def _server_client_correlation(
             _safe_int(row.get("connection_execution_sequence")),
         ),
     ):
+        connection_id = _safe_int(app.get("connection_id"))
         spid = _safe_int(app.get("spid"))
         sequence = _safe_int(
             app.get("connection_execution_sequence")
         )
-        key = (spid, sequence)
+        key = (connection_id, sequence)
         marker = app_statement_lookup.get(key)
         event = server_lookup.get(key)
         if (
@@ -773,7 +857,7 @@ def _server_client_correlation(
                 app.get("statement_fingerprint") or ""
             ),
             "request_id": str(app.get("request_id") or ""),
-            "connection_id": _safe_int(app.get("connection_id")),
+            "connection_id": connection_id,
             "spid": spid,
             "statement_sequence": _safe_int(
                 app.get("statement_sequence")
@@ -794,6 +878,9 @@ def _server_client_correlation(
             "logical_reads": _safe_int(event.get("logical_reads")),
             "physical_reads": _safe_int(event.get("physical_reads")),
             "row_count": _safe_int(event.get("row_count")),
+            "execution_category": str(
+                event.get("execution_category") or ""
+            ),
             "rpc_object_name": str(
                 event.get("object_name") or ""
             ),
@@ -806,10 +893,10 @@ def _server_client_correlation(
 
     unmatched_server = [
         event
-        for spid, events in server_by_spid.items()
+        for connection_id, events in server_by_connection.items()
         for event in events
         if (
-            spid,
+            connection_id,
             _safe_int(event.get("server_execution_sequence")),
         )
         not in used_server_keys
@@ -865,8 +952,11 @@ def _server_client_correlation(
         }
 
     prepared_execution_observed = any(
-        _normalized_rpc_name(match.get("rpc_object_name"))
-        in _PREPARED_EXECUTION_RPC_NAMES
+        match.get("execution_category") == "prepared_rpc"
+        for match in matches
+    )
+    direct_batch_execution_observed = any(
+        match.get("execution_category") == "direct_batch"
         for match in matches
     )
     dropped = _safe_int(capture.get("dropped_event_count"))
@@ -892,6 +982,7 @@ def _server_client_correlation(
         and not truncated
         and cleanup_succeeded
         and prepared_execution_observed
+        and direct_batch_execution_observed
     )
     return {
         "schema": "issue-894-server-client-correlation-v2",
@@ -910,6 +1001,10 @@ def _server_client_correlation(
         "capture_truncated": truncated,
         "cleanup_succeeded": cleanup_succeeded,
         "prepared_execution_observed": prepared_execution_observed,
+        "direct_batch_execution_observed": (
+            direct_batch_execution_observed
+        ),
+        "physical_connection_lifetime_count": len(lifetimes),
         "clock_uncertainty_ms": XE_CLOCK_UNCERTAINTY_MS,
         "clock_correlation_basis": (
             "physical-connection/SPID execution order is the primary "
