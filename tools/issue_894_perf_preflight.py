@@ -1364,6 +1364,27 @@ def summarize(
         value["decoded_event_count"]
         for value in phase_scheduler.values()
     )
+    decoder_accounting["retained_after_phase_window_filtering_by_event"] = {
+        event: sum(
+            1
+            for phase in (
+                "libc_block",
+                "odbc_wait_read",
+                "runnable_control",
+            )
+            for row in events
+            if row["event"] == event
+            and int(observed[phase].get("start_ns") or 0)
+            <= int(float(row["time_seconds"]) * 1_000_000_000)
+            <= int(observed[phase].get("end_ns") or 0)
+            and observed[phase].get("complete") is True
+        )
+        for event in (
+            "sched_switch",
+            "sched_wakeup",
+            "sched_wakeup_new",
+        )
+    }
     decoder_accounting["target_associated_after_phase_window_filtering"] = sum(
         value["target_associated_event_count"]
         for value in phase_scheduler.values()
@@ -1821,6 +1842,20 @@ idle 99 1.150000: sched:sched_switch: idle:99 [120] R ==> worker:11 [120]
     }
     assert key_events[1]["payload"]["pid"] == "11"
     assert compact_events[1]["payload"]["pid"] == "11"
+    for event in ("sched_wakeup", "sched_wakeup_new"):
+        key_wakeup, key_format = _decode_scheduler_payload(
+            event,
+            "comm=worker pid=11 prio=120 target_cpu=001",
+        )
+        compact_wakeup, compact_format = _decode_scheduler_payload(
+            event,
+            "worker:11 [120] CPU:001",
+        )
+        assert key_wakeup is not None
+        assert compact_wakeup is not None
+        assert key_wakeup["pid"] == compact_wakeup["pid"] == "11"
+        assert key_format == "key_value"
+        assert compact_format == "compact"
     assert len(key_stacks) == len(compact_stacks) == 1
     assert key_stacks[0]["tid"] == compact_stacks[0]["tid"] == 11
     assert len(key_stacks[0]["frames"]) == len(compact_stacks[0]["frames"]) == 1
