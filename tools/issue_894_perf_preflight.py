@@ -113,7 +113,9 @@ def _validate_workflow_text(text: str) -> None:
         '--perf-executable "$perf_executable"',
         '--parser-argv-lines "$raw_dir/perf-parser-argv.txt"',
         'sudo "${parser_args[@]}"',
+        'test "${parser_args[0]}" = "$perf_executable"',
         'sudo "${perf_args[@]}"',
+        'test "${perf_args[0]}" = "$perf_executable"',
     )
     if any(token not in region for token in workflow_required):
         raise ValueError("perf gate/recorder execution context is not aligned")
@@ -1689,8 +1691,21 @@ jobs:
     # RP894_PREFLIGHT_EXECUTION_BEGIN
     run: |
       docker load
-      python tools/issue_894_perf_preflight.py command --tids 11,22 --raw "$raw_dir/perf.data" --output out.json
       raw_dir="$RUNNER_TEMP/raw"
+      perf_executable="$(command -v perf)"
+      python tools/issue_894_perf_preflight.py command \
+        --tids 11,22 \
+        --perf-executable "$perf_executable" \
+        --raw "$raw_dir/perf.data" \
+        --output out.json \
+        --argv-lines "$raw_dir/perf-argv.txt" \
+        --parser-argv-lines "$raw_dir/perf-parser-argv.txt"
+      mapfile -t parser_args < "$raw_dir/perf-parser-argv.txt"
+      test "${parser_args[0]}" = "$perf_executable"
+      sudo "${parser_args[@]}"
+      mapfile -t perf_args < "$raw_dir/perf-argv.txt"
+      test "${perf_args[0]}" = "$perf_executable"
+      sudo "${perf_args[@]}"
       trap cleanup EXIT
       rm -rf "$raw_dir"
     uses: actions/upload-artifact@v4
@@ -1703,6 +1718,33 @@ outputs:
   rp894_perf_preflight_only: true
 """
     _validate_workflow_text(sample_workflow)
+
+    rejected_non_sudo_gate = sample_workflow.replace(
+        'sudo "${parser_args[@]}"',
+        '"${parser_args[@]}"',
+    )
+    try:
+        _validate_workflow_text(rejected_non_sudo_gate)
+    except ValueError as exc:
+        assert "execution context" in str(exc)
+    else:
+        raise AssertionError(
+            "synthetic non-sudo parser gate was accepted"
+        )
+
+    rejected_parser_executable = sample_workflow.replace(
+        'test "${parser_args[0]}" = "$perf_executable"',
+        'test "${parser_args[0]}" = "/different/perf"',
+    )
+    try:
+        _validate_workflow_text(rejected_parser_executable)
+    except ValueError as exc:
+        assert "execution context" in str(exc)
+    else:
+        raise AssertionError(
+            "synthetic parser executable mismatch was accepted"
+        )
+
     rejected = sample_workflow.replace(
         "docker load",
         "docker load\n      py-spy record",
