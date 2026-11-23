@@ -636,6 +636,18 @@ EVENT_RE = re.compile(
 FIELD_RE = re.compile(
     r"([A-Za-z_]+)=([^ ]+)"
 )
+COMPACT_SWITCH_RE = re.compile(
+    r"^(?P<prev_comm>.+):(?P<prev_pid>\d+)\s+"
+    r"\[(?P<prev_prio>-?\d+)\]\s+"
+    r"(?P<prev_state>[A-Za-z+|]+)\s+==>\s+"
+    r"(?P<next_comm>.+):(?P<next_pid>\d+)\s+"
+    r"\[(?P<next_prio>-?\d+)\]\s*$"
+)
+COMPACT_WAKE_RE = re.compile(
+    r"^(?P<comm>.+):(?P<pid>\d+)\s+"
+    r"\[(?P<prio>-?\d+)\]"
+    r"(?:\s+CPU:\s*\d+)?\s*$"
+)
 FRAME_RE = re.compile(
     r"^\s*([0-9a-fA-F]+)\s+"
     r"(.+?)\s+\((.+)\)\s*$"
@@ -749,114 +761,152 @@ def _phase_metrics(
     return output
 
 
+def _decode_scheduler_payload(
+    event: str,
+    text: str,
+) -> tuple[dict[str, str] | None, str]:
+    fields = dict(FIELD_RE.findall(text))
+    if event == "sched_switch":
+        required = ("prev_pid", "next_pid", "prev_state")
+        if all(fields.get(name) for name in required):
+            try:
+                int(fields["prev_pid"])
+                int(fields["next_pid"])
+            except ValueError:
+                return None, "rejected"
+            return fields, "key_value"
+        compact = COMPACT_SWITCH_RE.fullmatch(text.strip())
+        if compact is None:
+            return None, "rejected"
+        return {
+            "prev_pid": compact.group("prev_pid"),
+            "next_pid": compact.group("next_pid"),
+            "prev_state": compact.group("prev_state"),
+        }, "compact"
+    if event in {"sched_wakeup", "sched_wakeup_new"}:
+        if fields.get("pid"):
+            try:
+                int(fields["pid"])
+            except ValueError:
+                return None, "rejected"
+            return fields, "key_value"
+        compact = COMPACT_WAKE_RE.fullmatch(text.strip())
+        if compact is None:
+            return None, "rejected"
+        return {"pid": compact.group("pid")}, "compact"
+    return None, "rejected"
+
+
+def _empty_decoder_accounting() -> dict[str, Any]:
+    return {
+        "recognized_scheduler_event_lines": 0,
+        "decoded_scheduler_event_lines": 0,
+        "rejected_scheduler_event_lines": 0,
+        "target_associated_decoded_events": 0,
+        "by_event": {
+            event: {
+                "recognized": 0,
+                "decoded": 0,
+                "rejected": 0,
+                "target_associated": 0,
+                "key_value": 0,
+                "compact": 0,
+            }
+            for event in (
+                "sched_switch",
+                "sched_wakeup",
+                "sched_wakeup_new",
+            )
+        },
+    }
+
+
+def _parse_perf_script_text(
+    text: str,
+    tids: set[int],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, Any],
+]:
+    events: list[dict[str, Any]] = []
+    stacks: list[dict[str, Any]] = []
+    accounting = _empty_decoder_accounting()
+    current_stack: dict[str, Any] | None = None
+    for raw in text.splitlines():
+        match = EVENT_RE.search(raw)
+        if match:
+            event = match.group("event")
+            counters = accounting["by_event"][event]
+            accounting["recognized_scheduler_event_lines"] += 1
+            counters["recognized"] += 1
+            current_stack = None
+            payload, payload_format = _decode_scheduler_payload(
+                event,
+                match.group("payload"),
+            )
+            if payload is None:
+                accounting["rejected_scheduler_event_lines"] += 1
+                counters["rejected"] += 1
+                continue
+            target_associated = False
+            if event == "sched_switch":
+                prev_pid = int(payload["prev_pid"])
+                next_pid = int(payload["next_pid"])
+                target_associated = prev_pid in tids or next_pid in tids
+            else:
+                target_associated = int(payload["pid"]) in tids
+            row = {
+                "time_seconds": float(match.group("time")),
+                "event": event,
+                "payload": payload,
+                "target_associated": target_associated,
+            }
+            events.append(row)
+            accounting["decoded_scheduler_event_lines"] += 1
+            counters["decoded"] += 1
+            counters[payload_format] += 1
+            if target_associated:
+                accounting["target_associated_decoded_events"] += 1
+                counters["target_associated"] += 1
+            if event == "sched_switch":
+                prev_pid = int(payload["prev_pid"])
+                if prev_pid in tids:
+                    current_stack = {
+                        "time_seconds": row["time_seconds"],
+                        "tid": prev_pid,
+                        "frames": [],
+                    }
+                    stacks.append(current_stack)
+            continue
+        if current_stack is not None:
+            frame = FRAME_RE.match(raw)
+            if frame:
+                current_stack["frames"].append(
+                    {
+                        "ip": "0x" + frame.group(1).lower(),
+                        "symbol": frame.group(2).strip()[:240],
+                        "module": frame.group(3).strip()[:400],
+                    }
+                )
+    return events, stacks, accounting
+
+
 def _parse_perf_script(
     path: Path,
     tids: set[int],
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
+    dict[str, Any],
 ]:
-    events: list[
-        dict[str, Any]
-    ] = []
-    stacks: list[
-        dict[str, Any]
-    ] = []
-    current_stack: (
-        dict[str, Any]
-        | None
-    ) = None
-    for raw in path.read_text(
-        encoding="utf-8",
-        errors="replace",
-    ).splitlines():
-        match = EVENT_RE.search(
-            raw
-        )
-        if match:
-            payload = dict(
-                FIELD_RE.findall(
-                    match.group(
-                        "payload"
-                    )
-                )
-            )
-            event = match.group(
-                "event"
-            )
-            row = {
-                "time_seconds": float(
-                    match.group(
-                        "time"
-                    )
-                ),
-                "event": event,
-                "payload": payload,
-            }
-            events.append(row)
-            current_stack = None
-            if (
-                event
-                == "sched_switch"
-            ):
-                try:
-                    prev_pid = int(
-                        payload.get(
-                            "prev_pid",
-                            "0",
-                        )
-                    )
-                except ValueError:
-                    prev_pid = 0
-                if prev_pid in tids:
-                    current_stack = {
-                        "time_seconds": (
-                            row[
-                                "time_seconds"
-                            ]
-                        ),
-                        "tid": prev_pid,
-                        "frames": [],
-                    }
-                    stacks.append(
-                        current_stack
-                    )
-            continue
-        if (
-            current_stack
-            is not None
-        ):
-            frame = FRAME_RE.match(
-                raw
-            )
-            if frame:
-                current_stack[
-                    "frames"
-                ].append(
-                    {
-                        "ip": (
-                            "0x"
-                            + frame.group(
-                                1
-                            ).lower()
-                        ),
-                        "symbol": (
-                            frame.group(
-                                2
-                            ).strip()[
-                                :240
-                            ]
-                        ),
-                        "module": (
-                            frame.group(
-                                3
-                            ).strip()[
-                                :400
-                            ]
-                        ),
-                    }
-                )
-    return events, stacks
+    return _parse_perf_script_text(
+        path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ),
+        tids,
+    )
 
 
 def _transitions(
@@ -887,20 +937,8 @@ def _transitions(
         event = row["event"]
         payload = row["payload"]
         if event == "sched_switch":
-            prev = int(
-                payload.get(
-                    "prev_pid",
-                    "0",
-                )
-                or 0
-            )
-            nxt = int(
-                payload.get(
-                    "next_pid",
-                    "0",
-                )
-                or 0
-            )
+            prev = int(payload["prev_pid"])
+            nxt = int(payload["next_pid"])
             if prev in tids:
                 kind = (
                     _prev_state_kind(
@@ -970,13 +1008,7 @@ def _transitions(
                     }
                 )
         else:
-            tid = int(
-                payload.get(
-                    "pid",
-                    "0",
-                )
-                or 0
-            )
+            tid = int(payload["pid"])
             if tid in tids:
                 block = (
                     pending_block.pop(
@@ -1205,7 +1237,7 @@ def summarize(
             "host_tids"
         ]
     )
-    events, stacks = (
+    events, stacks, decoder_accounting = (
         _parse_perf_script(
             args.perf_script,
             tids,
@@ -1270,8 +1302,73 @@ def summarize(
                 for row in phase_timeline
             ),
             "unresolved_transition_count": phase_unresolved,
+            "decoded_event_count": len(selected_events),
+            "target_associated_event_count": sum(
+                bool(row.get("target_associated"))
+                for row in selected_events
+            ),
             "timeline": phase_timeline[:80],
         }
+    phase_starts = [
+        int(observed[phase].get("start_ns") or 0)
+        for phase in (
+            "libc_block",
+            "odbc_wait_read",
+            "runnable_control",
+        )
+        if observed[phase].get("complete") is True
+    ]
+    phase_ends = [
+        int(observed[phase].get("end_ns") or 0)
+        for phase in (
+            "libc_block",
+            "odbc_wait_read",
+            "runnable_control",
+        )
+        if observed[phase].get("complete") is True
+    ]
+    first_phase_ns = min(phase_starts) if phase_starts else 0
+    last_phase_ns = max(phase_ends) if phase_ends else 0
+    timing_counts = {
+        "before_controlled_phases": 0,
+        "inside_controlled_phases": 0,
+        "after_controlled_phases": 0,
+    }
+    for row in events:
+        if not row.get("target_associated"):
+            continue
+        event_ns = int(float(row["time_seconds"]) * 1_000_000_000)
+        inside = any(
+            int(observed[phase].get("start_ns") or 0)
+            <= event_ns
+            <= int(observed[phase].get("end_ns") or 0)
+            for phase in (
+                "libc_block",
+                "odbc_wait_read",
+                "runnable_control",
+            )
+            if observed[phase].get("complete") is True
+        )
+        if inside:
+            timing_counts["inside_controlled_phases"] += 1
+        elif first_phase_ns and event_ns < first_phase_ns:
+            timing_counts["before_controlled_phases"] += 1
+        elif last_phase_ns and event_ns > last_phase_ns:
+            timing_counts["after_controlled_phases"] += 1
+    decoder_accounting["retained_before_phase_window_filtering"] = len(events)
+    decoder_accounting["target_associated_before_phase_window_filtering"] = sum(
+        bool(row.get("target_associated"))
+        for row in events
+    )
+    decoder_accounting["retained_after_phase_window_filtering"] = sum(
+        value["decoded_event_count"]
+        for value in phase_scheduler.values()
+    )
+    decoder_accounting["target_associated_after_phase_window_filtering"] = sum(
+        value["target_associated_event_count"]
+        for value in phase_scheduler.values()
+    )
+    decoder_accounting["target_event_timing"] = timing_counts
     controlled_timeline = (
         phase_timelines["libc_block"]
         + phase_timelines["odbc_wait_read"]
@@ -1498,6 +1595,7 @@ def summarize(
         "control_phases": control,
         "observed_phases": observed,
         "scheduler": {
+            "decoder_accounting": decoder_accounting,
             "blocked_switch_out_count": (
                 len(blocked)
             ),
@@ -1683,6 +1781,68 @@ def _self_test() -> None:
     assert _essential_chain([], [])["complete"] is False
     assert RAW_STACK_BYTES == 8192
     assert REFERENCE_HEAD == "1cb01861ddba17babb0b6b3b09d062bd15107f20"
+    key_value_script = """
+worker 11 1.000000: sched:sched_switch: prev_comm=worker prev_pid=11 prev_prio=120 prev_state=S ==> next_comm=idle next_pid=99 next_prio=120
+  7fff0000 blocked_call (/lib/libc.so.6)
+worker 11 1.100000: sched:sched_wakeup: comm=worker pid=11 prio=120 target_cpu=001
+idle 99 1.150000: sched:sched_switch: prev_comm=idle prev_pid=99 prev_prio=120 prev_state=R ==> next_comm=worker next_pid=11 next_prio=120
+"""
+    compact_script = """
+worker 11 1.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
+  7fff0000 blocked_call (/lib/libc.so.6)
+worker 11 1.100000: sched:sched_wakeup: worker:11 [120] CPU:001
+idle 99 1.150000: sched:sched_switch: idle:99 [120] R ==> worker:11 [120]
+"""
+    key_events, key_stacks, key_accounting = _parse_perf_script_text(
+        key_value_script,
+        {11},
+    )
+    compact_events, compact_stacks, compact_accounting = _parse_perf_script_text(
+        compact_script,
+        {11},
+    )
+    assert [row["kind"] for row in _transitions(key_events, {11})[0]] == [
+        "BLOCKED_SWITCH_OUT",
+        "WAKEUP",
+        "SWITCH_IN",
+    ]
+    assert [row["kind"] for row in _transitions(compact_events, {11})[0]] == [
+        "BLOCKED_SWITCH_OUT",
+        "WAKEUP",
+        "SWITCH_IN",
+    ]
+    assert key_events[0]["payload"]["prev_pid"] == "11"
+    assert key_events[0]["payload"]["next_pid"] == "99"
+    assert key_events[0]["payload"]["prev_state"] == "S"
+    assert compact_events[0]["payload"] == {
+        "prev_pid": "11",
+        "next_pid": "99",
+        "prev_state": "S",
+    }
+    assert key_events[1]["payload"]["pid"] == "11"
+    assert compact_events[1]["payload"]["pid"] == "11"
+    assert len(key_stacks) == len(compact_stacks) == 1
+    assert key_stacks[0]["tid"] == compact_stacks[0]["tid"] == 11
+    assert len(key_stacks[0]["frames"]) == len(compact_stacks[0]["frames"]) == 1
+    assert key_accounting["rejected_scheduler_event_lines"] == 0
+    assert compact_accounting["rejected_scheduler_event_lines"] == 0
+    malformed_script = """
+worker 11 1.000000: sched:sched_switch: prev_comm=worker prev_state=S ==> next_comm=idle next_pid=99
+worker 11 1.100000: sched:sched_wakeup: worker [120] CPU:001
+"""
+    malformed_events, malformed_stacks, malformed_accounting = (
+        _parse_perf_script_text(
+            malformed_script,
+            {11},
+        )
+    )
+    assert malformed_events == []
+    assert malformed_stacks == []
+    assert malformed_accounting["recognized_scheduler_event_lines"] == 2
+    assert malformed_accounting["decoded_scheduler_event_lines"] == 0
+    assert malformed_accounting["rejected_scheduler_event_lines"] == 2
+    assert "payload" not in malformed_accounting
+    assert "raw" not in malformed_accounting
     synthetic_markers = []
     for index, phase in enumerate(
         (
