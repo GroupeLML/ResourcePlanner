@@ -125,14 +125,18 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 request_id,
                 "planning_read",
             )
-            connection_record = object()
+            spid_cursor = mock.MagicMock()
+            spid_cursor.fetchone.return_value = (77,)
+            dbapi_connection = mock.MagicMock()
+            dbapi_connection.cursor.return_value = spid_cursor
+            connection_record = SimpleNamespace(info={})
             connection = SimpleNamespace(
                 connection=SimpleNamespace(
                     _connection_record=connection_record,
                 )
             )
             checkout_started = recorder.pool_checkout_request()
-            recorder.on_checkout(connection_record)
+            recorder.on_checkout(dbapi_connection, connection_record)
             recorder.pool_checkout_complete(checkout_started)
             statement_started = time.perf_counter()
             recorder.on_statement_start(connection, "SELECT synthetic")
