@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
-from typing import Any
-
 from tools.issue_894_connection_trial import (
     DIAGNOSTIC_LABEL,
     FAILURE_RATE_MATERIAL_DELTA,
@@ -205,7 +203,6 @@ def _preflight(args: argparse.Namespace) -> dict[str, object]:
         if isinstance(frame, dict)
     ]
     tids = sorted({_native_tid(profile) for profile in profiles} - {0})
-    referenced: set[int] = set()
     waiting_samples = 0
     native_samples = 0
     for profile in profiles:
@@ -217,11 +214,6 @@ def _preflight(args: argparse.Namespace) -> dict[str, object]:
                 for index in sample
                 if isinstance(index, int) and 0 <= index < len(frames)
             ]
-            referenced.update(
-                index
-                for index in sample
-                if isinstance(index, int) and 0 <= index < len(frames)
-            )
             if any(_is_native_frame(frame) for frame in sample_frames):
                 native_samples += 1
             if any(_is_wait_frame(frame) for frame in sample_frames):
