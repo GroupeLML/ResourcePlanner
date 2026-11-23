@@ -732,14 +732,25 @@ jobs:
                 resourceplanner-894-feature-backend \
                 python -m app.server >/dev/null
             else
-              : > "$trace"
-              chmod 0666 "$trace"
+              trace_name="issue894-connection-trace.jsonl"
+              profile_args=()
+              if [ "$mode" = "profile-baseline" ]; then
+                trace_name="issue894-profile-baseline-trace.jsonl"
+              elif [ "$mode" = "profiled" ]; then
+                trace_name="issue894-profiled-trace.jsonl"
+                profile_args=(
+                  -e RESOURCEPLANNER_PHASE4_FETCH_PROFILE=true
+                )
+              fi
+              : > "$evidence/performance/$trace_name"
+              chmod 0666 "$evidence/performance/$trace_name"
               docker run -d "${common_args[@]}" \
                 -v "$GITHUB_WORKSPACE:/workspace:ro" \
                 -w /app \
                 -e PYTHONPATH=/app:/workspace \
                 -e RESOURCEPLANNER_PHASE4_CONNECTION_TRACE=true \
-                -e RESOURCEPLANNER_PHASE4_CONNECTION_TRACE_PATH=/home/resourceplanner/.resourceplanner/logs/issue894-connection-trace.jsonl \
+                -e RESOURCEPLANNER_PHASE4_CONNECTION_TRACE_PATH="/home/resourceplanner/.resourceplanner/logs/$trace_name" \
+                "${profile_args[@]}" \
                 resourceplanner-894-feature-backend \
                 python /workspace/tools/issue_894_phase4_server.py >/dev/null
             fi
@@ -768,9 +779,10 @@ jobs:
           run_trial() {
             mode="$1"
             output="$2"
+            trace_file="${3:-}"
             trace_args=()
-            if [ "$mode" = "instrumented" ]; then
-              trace_args=(--trace-file /evidence/performance/issue894-connection-trace.jsonl)
+            if [ -n "$trace_file" ]; then
+              trace_args=(--trace-file "$trace_file")
             fi
             docker run --rm \
               --network "$RP894_NETWORK" \
@@ -837,7 +849,7 @@ jobs:
             instrumented_frontend_status=1
           fi
           if [ "$instrumented_start_status" = "0" ] && [ "$instrumented_frontend_status" = "0" ]; then
-            run_trial instrumented /evidence/connection-trial-instrumented.json
+            run_trial instrumented /evidence/connection-trial-instrumented.json /evidence/performance/issue894-connection-trace.jsonl
             instrumented_execution_status=$?
           else
             instrumented_execution_status=1
@@ -930,6 +942,63 @@ jobs:
             comparison_execution_status=1
           fi
 
+          start_backend profile-baseline
+          profile_baseline_start_status=$?
+          if [ "$profile_baseline_start_status" = "0" ]; then
+            ensure_frontend
+            profile_baseline_frontend_status=$?
+          else
+            profile_baseline_frontend_status=1
+          fi
+          if [ "$profile_baseline_start_status" = "0" ] \
+            && [ "$profile_baseline_frontend_status" = "0" ]; then
+            run_trial instrumented \
+              /evidence/connection-trial-profile-baseline.json \
+              /evidence/performance/issue894-profile-baseline-trace.jsonl
+            profile_baseline_execution_status=$?
+          else
+            profile_baseline_execution_status=1
+          fi
+          docker logs --tail=700 backend \
+            > "$evidence/connection-trial-profile-baseline-backend.txt" 2>&1 || true
+
+          start_backend profiled
+          profiled_start_status=$?
+          if [ "$profiled_start_status" = "0" ]; then
+            ensure_frontend
+            profiled_frontend_status=$?
+          else
+            profiled_frontend_status=1
+          fi
+          if [ "$profiled_start_status" = "0" ] \
+            && [ "$profiled_frontend_status" = "0" ]; then
+            run_trial profiled \
+              /evidence/connection-trial-profiled.json \
+              /evidence/performance/issue894-profiled-trace.jsonl
+            profiled_execution_status=$?
+          else
+            profiled_execution_status=1
+          fi
+          docker logs --tail=700 backend \
+            > "$evidence/connection-trial-profiled-backend.txt" 2>&1 || true
+
+          if [ "$profile_baseline_execution_status" = "0" ] \
+            && [ "$profiled_execution_status" = "0" ]; then
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py compare-profiled \
+                --instrumented /evidence/connection-trial-profile-baseline.json \
+                --profiled /evidence/connection-trial-profiled.json \
+                --output /evidence/connection-trial-profile-comparison.json
+            profile_comparison_status=$?
+          else
+            profile_comparison_status=1
+          fi
+
           set -e
 
           {
@@ -944,6 +1013,9 @@ jobs:
             printf 'xe_finalize_cleanup_status=%s\n' "$xe_finalize_cleanup_status"
             printf 'correlation_status=%s\n' "$correlation_status"
             printf 'comparison_execution_status=%s\n' "$comparison_execution_status"
+            printf 'profile_baseline_execution_status=%s\n' "$profile_baseline_execution_status"
+            printf 'profiled_execution_status=%s\n' "$profiled_execution_status"
+            printf 'profile_comparison_status=%s\n' "$profile_comparison_status"
             printf 'full_mixed_load=NOT RUN\n'
             printf 'ack_campaign=NOT RUN\n'
             printf 'v2_campaign=NOT RUN\n'
@@ -953,6 +1025,9 @@ jobs:
           test "$canonical_execution_status" = "0"
           test "$instrumented_execution_status" = "0"
           test "$comparison_execution_status" = "0"
+          test "$profile_baseline_execution_status" = "0"
+          test "$profiled_execution_status" = "0"
+          test "$profile_comparison_status" = "0"
 
       - name: Run existing V2 API performance budget
         id: benchmark
