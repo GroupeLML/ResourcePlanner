@@ -25,7 +25,9 @@ from tools.issue_894_connection_trial import (
     _fetch_time_consistent,
     _ordered_xe_file_rows,
     _parse_xe_event_xml,
+    _resolve_probe_server_anchor,
     _server_client_correlation,
+    _server_execution_events,
     _summarize_trace,
     _validated_trial_report,
     _xe_cleanup,
@@ -1129,6 +1131,27 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "object_name": "sp_prepexec",
             },
             {
+                "event": "rpc_completed",
+                "timestamp_utc": "2026-11-23T02:00:00.020+00:00",
+                "session_id": spid,
+                "duration_us": 800,
+                "cpu_us": 8,
+                "logical_reads": 2,
+                "physical_reads": 0,
+                "row_count": 0,
+                "object_name": "sp_prepexec",
+            },
+            {
+                "event": "sql_batch_completed",
+                "timestamp_utc": "2026-11-23T02:00:00.050+00:00",
+                "session_id": spid,
+                "duration_us": 900,
+                "cpu_us": 9,
+                "logical_reads": 0,
+                "physical_reads": 0,
+                "row_count": 0,
+            },
+            {
                 "event": "sql_batch_completed",
                 "timestamp_utc": "2026-11-23T02:00:00.090+00:00",
                 "session_id": spid,
@@ -1320,6 +1343,125 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_probe_anchor_discards_same_spid_preprobe_executions(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        probe = next(
+            row for row in trace_rows if row.get("kind") == "spid_probe"
+        )
+        events, _ignored, error = _server_execution_events(
+            capture,
+            spid=70,
+            probe=probe,
+            end_utc=connection_trial._parse_utc(
+                "2026-11-23T02:00:03.200+00:00"
+            ),
+        )
+
+        self.assertEqual(error, "")
+        self.assertEqual(len(events), 6)
+        self.assertEqual(events[0]["server_execution_sequence"], 1)
+        self.assertEqual(events[0]["execution_category"], "direct_batch")
+        self.assertEqual(events[0]["row_count"], 1)
+        self.assertEqual(
+            events[0]["timestamp_utc"],
+            "2026-11-23T02:00:00.090+00:00",
+        )
+
+    def test_probe_anchor_chooses_latest_one_row_batch_before_probe(self) -> None:
+        probe = {"timestamp_utc": "2026-11-23T02:00:00.100+00:00"}
+        executions = [
+            {
+                "execution_category": "direct_batch",
+                "timestamp_utc": "2026-11-23T02:00:00.020+00:00",
+                "row_count": 1,
+            },
+            {
+                "execution_category": "prepared_rpc",
+                "timestamp_utc": "2026-11-23T02:00:00.060+00:00",
+                "row_count": 1,
+            },
+            {
+                "execution_category": "direct_batch",
+                "timestamp_utc": "2026-11-23T02:00:00.090+00:00",
+                "row_count": 1,
+            },
+        ]
+
+        index, error = _resolve_probe_server_anchor(executions, probe)
+
+        self.assertEqual(error, "")
+        self.assertEqual(index, 2)
+
+    def test_probe_anchor_missing_server_probe_fails_closed(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        capture["events"] = [
+            row
+            for row in capture["events"]
+            if not (
+                row.get("event") == "sql_batch_completed"
+                and row.get("timestamp_utc")
+                == "2026-11-23T02:00:00.090+00:00"
+            )
+        ]
+
+        report = _server_client_correlation(trace_rows, capture)
+
+        self.assertFalse(report["complete"])
+        self.assertTrue(
+            any(
+                failure.get("reason")
+                == "probe_server_execution_missing"
+                for failure in report["sequence_alignment_failures"]
+            )
+        )
+
+    def test_probe_anchor_multiple_latest_candidates_fails_closed(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        capture["events"].append({
+            "event": "sql_batch_completed",
+            "timestamp_utc": "2026-11-23T02:00:00.090+00:00",
+            "session_id": 70,
+            "duration_us": 500,
+            "cpu_us": 5,
+            "logical_reads": 0,
+            "physical_reads": 0,
+            "row_count": 1,
+        })
+
+        report = _server_client_correlation(trace_rows, capture)
+
+        self.assertFalse(report["complete"])
+        self.assertTrue(
+            any(
+                failure.get("reason")
+                == "probe_server_execution_ambiguous"
+                for failure in report["sequence_alignment_failures"]
+            )
+        )
+
+    def test_probe_anchor_outside_uncertainty_window_fails_closed(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        for row in capture["events"]:
+            if (
+                row.get("event") == "sql_batch_completed"
+                and row.get("timestamp_utc")
+                == "2026-11-23T02:00:00.090+00:00"
+            ):
+                row["timestamp_utc"] = (
+                    "2026-11-23T01:59:59.849+00:00"
+                )
+
+        report = _server_client_correlation(trace_rows, capture)
+
+        self.assertFalse(report["complete"])
+        self.assertTrue(
+            any(
+                failure.get("reason")
+                == "probe_server_execution_missing"
+                for failure in report["sequence_alignment_failures"]
+            )
+        )
+
     def test_server_client_correlation_maps_mixed_execution_stream(self) -> None:
         trace_rows, capture = self._correlation_fixture()
         report = _server_client_correlation(trace_rows, capture)
@@ -1331,6 +1473,16 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["unmatched_application_fetches"], 0)
         self.assertEqual(report["sequence_alignment_failures"], [])
         self.assertEqual(report["timing_inconsistencies"], [])
+        self.assertEqual(
+            len(
+                connection_trial._application_execution_markers(
+                    trace_rows,
+                    connection_id=100,
+                    spid=70,
+                )
+            ),
+            6,
+        )
         self.assertEqual(report["row_count_mismatches"], [])
         self.assertEqual(report["ignored_non_execution_rpc_events"], 1)
         self.assertEqual(
