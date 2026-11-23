@@ -1242,6 +1242,373 @@ def _bounded_execution_divergence_evidence(
     return evidence
 
 
+def _server_rpc_lifecycle(
+    capture: dict[str, object],
+    *,
+    spid: int,
+) -> dict[str, object]:
+    rpc_events = [
+        dict(row)
+        for row in capture.get("events", [])
+        if isinstance(row, dict)
+        and _safe_int(row.get("session_id")) == spid
+        and row.get("event") in {"rpc_starting", "rpc_completed"}
+    ]
+    rpc_events.sort(
+        key=lambda row: (
+            _safe_int(row.get("event_sequence"))
+            if _safe_int(row.get("event_sequence")) > 0
+            else 2**63 - 1,
+            str(row.get("timestamp_utc") or ""),
+        )
+    )
+    pending: dict[
+        tuple[str, str],
+        list[dict[str, object]],
+    ] = {}
+    pairs: list[dict[str, object]] = []
+    ambiguous_completions: list[dict[str, object]] = []
+    orphan_completions: list[dict[str, object]] = []
+    for row in rpc_events:
+        key = (
+            str(row.get("client_connection_id") or ""),
+            _normalized_rpc_name(row.get("object_name")),
+        )
+        if row.get("event") == "rpc_starting":
+            pending.setdefault(key, []).append(row)
+            continue
+        starts = pending.get(key, [])
+        if len(starts) == 1:
+            start = starts.pop()
+            pairs.append({
+                "client_connection_id": key[0],
+                "normalized_rpc_name": key[1],
+                "start_event_sequence": _safe_int(
+                    start.get("event_sequence")
+                ),
+                "completion_event_sequence": _safe_int(
+                    row.get("event_sequence")
+                ),
+                "start_timestamp_utc": str(
+                    start.get("timestamp_utc") or ""
+                ),
+                "completion_timestamp_utc": str(
+                    row.get("timestamp_utc") or ""
+                ),
+                "completion_row_count": _safe_int(
+                    row.get("row_count")
+                ),
+            })
+        elif len(starts) > 1:
+            ambiguous_completions.append({
+                "client_connection_id": key[0],
+                "normalized_rpc_name": key[1],
+                "completion_event_sequence": _safe_int(
+                    row.get("event_sequence")
+                ),
+                "pending_start_count": len(starts),
+            })
+        else:
+            orphan_completions.append({
+                "client_connection_id": key[0],
+                "normalized_rpc_name": key[1],
+                "completion_event_sequence": _safe_int(
+                    row.get("event_sequence")
+                ),
+            })
+    unmatched_starts = [
+        {
+            "client_connection_id": key[0],
+            "normalized_rpc_name": key[1],
+            "start_event_sequence": _safe_int(
+                start.get("event_sequence")
+            ),
+            "start_timestamp_utc": str(
+                start.get("timestamp_utc") or ""
+            ),
+        }
+        for key, starts in pending.items()
+        for start in starts
+    ]
+    return {
+        "pairs": pairs,
+        "ambiguous_completions": ambiguous_completions,
+        "orphan_completions": orphan_completions,
+        "unmatched_starts": unmatched_starts,
+    }
+
+
+def _execution_lifecycle_evidence(
+    *,
+    trace_rows: list[dict[str, object]],
+    capture: dict[str, object],
+    marker_by_connection: dict[int, list[dict[str, object]]],
+    server_by_connection: dict[int, list[dict[str, object]]],
+    sequence_alignment_failures: list[dict[str, object]],
+    divergence_evidence: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    references = _aligned_execution_references(
+        marker_by_connection,
+        server_by_connection,
+        sequence_alignment_failures,
+    )
+    driver_by_key: dict[
+        tuple[int, int],
+        dict[str, list[dict[str, object]]],
+    ] = {}
+    for row in trace_rows:
+        kind = str(row.get("kind") or "")
+        if kind not in {
+            "driver_execute_entry",
+            "driver_execute_return",
+            "driver_execute_error",
+        }:
+            continue
+        key = (
+            _safe_int(row.get("connection_id")),
+            _safe_int(row.get("connection_execution_sequence")),
+        )
+        if key[0] <= 0 or key[1] <= 0:
+            continue
+        driver_by_key.setdefault(
+            key,
+            {"entry": [], "return": [], "error": []},
+        )[kind.removeprefix("driver_execute_")].append(dict(row))
+
+    divergence_by_connection = {
+        _safe_int(row.get("connection_id")): row
+        for row in divergence_evidence
+    }
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    output: list[dict[str, object]] = []
+
+    for failure in sequence_alignment_failures:
+        if failure.get("reason") != "execution_count_mismatch":
+            continue
+        connection_id = _safe_int(failure.get("connection_id"))
+        spid = _safe_int(failure.get("spid"))
+        markers = marker_by_connection.get(connection_id, [])
+        divergence = divergence_by_connection.get(connection_id, {})
+        center = _safe_int(
+            divergence.get("diagnostic_window_anchor_sequence")
+        )
+        if center <= 0:
+            center = 1
+        lower = max(1, center - 2)
+        upper = min(len(markers), center + 2)
+        rpc_lifecycle = _server_rpc_lifecycle(capture, spid=spid)
+        participating_completion_sequences = {
+            _safe_int(row.get("event_sequence"))
+            for row in server_by_connection.get(connection_id, [])
+            if _safe_int(row.get("event_sequence")) > 0
+        }
+        executions: list[dict[str, object]] = []
+
+        for marker in markers:
+            sequence = _safe_int(
+                marker.get("connection_execution_sequence")
+            )
+            if not lower <= sequence <= upper:
+                continue
+            key = (connection_id, sequence)
+            driver = driver_by_key.get(
+                key,
+                {"entry": [], "return": [], "error": []},
+            )
+            entries = driver["entry"]
+            returns = driver["return"]
+            errors = driver["error"]
+            reference = references.get(
+                str(marker.get("statement_fingerprint") or "")
+            )
+            expected_category = str(
+                (reference or {}).get(
+                    "stable_execution_category",
+                    "",
+                )
+                or ""
+            )
+            expected_rpc = str(
+                (reference or {}).get(
+                    "stable_normalized_rpc_name",
+                    "",
+                )
+                or ""
+            )
+
+            classification = "execution_lifecycle_ambiguous"
+            candidate_pairs: list[dict[str, object]] = []
+            candidate_starts: list[dict[str, object]] = []
+            if not entries:
+                classification = (
+                    "application_marker_without_driver_execute"
+                )
+            elif len(entries) != 1 or len(returns) + len(errors) != 1:
+                classification = "execution_lifecycle_ambiguous"
+            elif errors:
+                classification = "driver_execute_error"
+            elif expected_category == "direct_batch":
+                classification = (
+                    "driver_execute_observed_direct_batch_start_not_captured"
+                )
+            elif expected_category == "prepared_rpc":
+                entry_time = _parse_utc(entries[0].get("timestamp_utc"))
+                terminal_time = _parse_utc(
+                    returns[0].get("timestamp_utc")
+                )
+                window_start = entry_time - margin
+                window_end = terminal_time + margin
+                for pair in rpc_lifecycle["pairs"]:
+                    if (
+                        expected_rpc
+                        and str(pair.get("normalized_rpc_name") or "")
+                        != expected_rpc
+                    ):
+                        continue
+                    start_time = _parse_utc(
+                        pair.get("start_timestamp_utc")
+                    )
+                    complete_time = _parse_utc(
+                        pair.get("completion_timestamp_utc")
+                    )
+                    if (
+                        window_start <= start_time <= window_end
+                        and window_start <= complete_time <= window_end
+                    ):
+                        candidate_pairs.append(pair)
+                for start in rpc_lifecycle["unmatched_starts"]:
+                    if (
+                        expected_rpc
+                        and str(start.get("normalized_rpc_name") or "")
+                        != expected_rpc
+                    ):
+                        continue
+                    start_time = _parse_utc(
+                        start.get("start_timestamp_utc")
+                    )
+                    if window_start <= start_time <= window_end:
+                        candidate_starts.append(start)
+
+                if len(candidate_pairs) == 1 and not candidate_starts:
+                    completion_sequence = _safe_int(
+                        candidate_pairs[0].get(
+                            "completion_event_sequence"
+                        )
+                    )
+                    if (
+                        completion_sequence
+                        in participating_completion_sequences
+                    ):
+                        classification = (
+                            "server_start_completion_observed"
+                        )
+                    else:
+                        classification = (
+                            "server_start_completion_reconstruction_omission"
+                        )
+                elif not candidate_pairs and len(candidate_starts) == 1:
+                    classification = "server_start_without_completion"
+                elif not candidate_pairs and not candidate_starts:
+                    classification = (
+                        "driver_execute_without_identifiable_server_start"
+                    )
+                else:
+                    classification = "execution_lifecycle_ambiguous"
+
+            executions.append({
+                "connection_execution_sequence": sequence,
+                "statement_fingerprint": str(
+                    marker.get("statement_fingerprint") or ""
+                ),
+                "application_marker_utc": str(
+                    marker.get("timestamp_utc") or ""
+                ),
+                "driver_execute_entry": (
+                    {
+                        "timestamp_utc": str(
+                            entries[0].get("timestamp_utc") or ""
+                        )
+                    }
+                    if len(entries) == 1
+                    else None
+                ),
+                "driver_execute_terminal": (
+                    {
+                        "kind": (
+                            "return" if returns else "error"
+                        ),
+                        "timestamp_utc": str(
+                            (returns or errors)[0].get(
+                                "timestamp_utc"
+                            )
+                            or ""
+                        ),
+                        "error_type": str(
+                            (errors[0].get("error_type") if errors else "")
+                            or ""
+                        ),
+                    }
+                    if len(returns) + len(errors) == 1
+                    else None
+                ),
+                "aligned_reference": reference,
+                "server_rpc_pair_candidates": candidate_pairs[:4],
+                "server_rpc_unmatched_start_candidates": (
+                    candidate_starts[:4]
+                ),
+                "classification": classification,
+            })
+
+        candidate = next(
+            (
+                row
+                for row in executions
+                if _safe_int(
+                    row.get("connection_execution_sequence")
+                )
+                == center
+            ),
+            None,
+        )
+        output.append({
+            "connection_id": connection_id,
+            "spid": spid,
+            "candidate_sequence": center,
+            "candidate_classification": (
+                str(candidate.get("classification") or "")
+                if isinstance(candidate, dict)
+                else "execution_lifecycle_ambiguous"
+            ),
+            "pairing_semantics": {
+                "application_driver_identity": (
+                    "physical connection_id + "
+                    "connection_execution_sequence"
+                ),
+                "server_event_sequence": (
+                    "ordering evidence only, never treated as a "
+                    "per-execution identity"
+                ),
+                "server_client_connection_id": (
+                    "connection identity only, never treated as a "
+                    "per-execution identity"
+                ),
+                "rpc_start_completion_pairing": (
+                    "same SPID/client_connection_id/normalized RPC with "
+                    "exactly one pending start before completion; "
+                    "repeated overlapping signatures remain ambiguous"
+                ),
+            },
+            "rpc_pairing_ambiguities": (
+                rpc_lifecycle["ambiguous_completions"][:8]
+            ),
+            "rpc_orphan_completions": (
+                rpc_lifecycle["orphan_completions"][:8]
+            ),
+            "executions": executions,
+        })
+    return output
+
+
 def _server_client_correlation(
     trace_rows: list[dict[str, object]],
     capture: dict[str, object],
@@ -1603,6 +1970,15 @@ def _server_client_correlation(
         unmatched_app=unmatched_app,
     )
 
+    lifecycle_evidence = _execution_lifecycle_evidence(
+        trace_rows=trace_rows,
+        capture=capture,
+        marker_by_connection=marker_by_connection,
+        server_by_connection=server_by_connection,
+        sequence_alignment_failures=sequence_alignment_failures,
+        divergence_evidence=divergence_evidence,
+    )
+
     complete = (
         len(target_fingerprints) == 3
         and all(
@@ -1643,6 +2019,7 @@ def _server_client_correlation(
         "timing_inconsistencies": timing_inconsistencies,
         "row_count_mismatches": row_count_mismatches,
         "execution_divergence_evidence": divergence_evidence,
+        "execution_lifecycle_evidence": lifecycle_evidence,
         "ignored_non_execution_rpc_events": ignored_rpc_events,
         "dropped_event_count": dropped,
         "capture_truncated": truncated,
