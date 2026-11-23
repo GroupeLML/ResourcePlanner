@@ -982,17 +982,6 @@ def _correlate_timeouts(
     return correlations
 
 
-def _count_distribution(values: list[float]) -> dict[str, float | int]:
-    latency_shape = _latencies(values)
-    return {
-        "count": int(latency_shape["count"]),
-        "p50": float(latency_shape["p50_ms"]),
-        "p95": float(latency_shape["p95_ms"]),
-        "max": float(latency_shape["max_ms"]),
-        "mean": float(latency_shape["mean_ms"]),
-    }
-
-
 def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
     by_kind: dict[str, int] = {}
     executor_queue: list[float] = []
@@ -1248,6 +1237,7 @@ def _validated_trial_report(
     path: Path,
     *,
     expected_mode: str,
+    require_server_correlation: bool = True,
 ) -> dict[str, object]:
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("schema") != "issue-894-connection-trial-v1":
@@ -1309,6 +1299,15 @@ def _validated_trial_report(
             if not isinstance(detail, dict) or detail.get("evidence_complete") is not True:
                 raise ValueError(
                     f"instrumented timing evidence incomplete for {fingerprint}"
+                )
+        if require_server_correlation:
+            correlation = report.get("server_client_correlation")
+            if (
+                not isinstance(correlation, dict)
+                or correlation.get("complete") is not True
+            ):
+                raise ValueError(
+                    "instrumented SQL Server correlation is incomplete"
                 )
     else:
         event_counts = trace_summary.get("event_counts")
@@ -1429,6 +1428,23 @@ def _parser() -> argparse.ArgumentParser:
         default=35.0,
     )
 
+    xe_start = sub.add_parser("xe-start")
+    xe_start.add_argument("--database-url", required=True)
+    xe_start.add_argument("--output", type=Path, required=True)
+
+    xe_stop = sub.add_parser("xe-stop")
+    xe_stop.add_argument("--database-url", required=True)
+    xe_stop.add_argument("--output", type=Path, required=True)
+
+    xe_cleanup = sub.add_parser("xe-cleanup")
+    xe_cleanup.add_argument("--database-url", required=True)
+
+    correlate = sub.add_parser("correlate")
+    correlate.add_argument("--trial", type=Path, required=True)
+    correlate.add_argument("--trace", type=Path, required=True)
+    correlate.add_argument("--server", type=Path, required=True)
+    correlate.add_argument("--output", type=Path, required=True)
+
     compare = sub.add_parser("compare")
     compare.add_argument("--canonical", type=Path, required=True)
     compare.add_argument("--instrumented", type=Path, required=True)
@@ -1440,8 +1456,37 @@ def main() -> int:
     args = _parser().parse_args()
     if args.command == "trial":
         report = asyncio.run(_trial(args))
-        _validated_trial_report(args.output, expected_mode=args.mode)
+        _validated_trial_report(
+            args.output,
+            expected_mode=args.mode,
+            require_server_correlation=False,
+        )
         print(json.dumps(report, sort_keys=True))
+        return 0
+    if args.command == "xe-start":
+        report = _xe_start(args.database_url, args.output)
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if args.command == "xe-stop":
+        report = _xe_stop_collect(args.database_url, args.output)
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if args.command == "xe-cleanup":
+        _xe_cleanup(args.database_url)
+        return 0
+    if args.command == "correlate":
+        report = _correlate_report(
+            args.trial,
+            args.trace,
+            args.server,
+            args.output,
+        )
+        _validated_trial_report(
+            args.output,
+            expected_mode="instrumented",
+            require_server_correlation=True,
+        )
+        print(json.dumps(report["server_client_correlation"], sort_keys=True))
         return 0
     if args.command == "compare":
         report = _compare(args)
