@@ -76,6 +76,223 @@ def _current_result_fingerprints(
     return (*UNCHANGED_RESULT_FINGERPRINTS,)
 
 
+
+def _xe_connection(database_url: str):
+    engine = create_engine(database_url, pool_pre_ping=True)
+    connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    return engine, connection
+
+
+def _xe_cleanup(database_url: str) -> None:
+    engine, connection = _xe_connection(database_url)
+    try:
+        connection.exec_driver_sql(
+            f"""
+            IF EXISTS (
+                SELECT 1 FROM sys.server_event_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+            )
+            DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+            """
+        )
+    finally:
+        connection.close()
+        engine.dispose()
+
+
+def _xe_start(database_url: str, output: Path) -> dict[str, object]:
+    engine, connection = _xe_connection(database_url)
+    try:
+        database_id = int(connection.exec_driver_sql("SELECT DB_ID()").scalar_one())
+        connection.exec_driver_sql(
+            f"""
+            IF EXISTS (
+                SELECT 1 FROM sys.server_event_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+            )
+            DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+            """
+        )
+        connection.exec_driver_sql(
+            f"""
+            CREATE EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+            ADD EVENT sqlserver.rpc_completed(
+                ACTION(sqlserver.database_id, sqlserver.session_id)
+            ),
+            ADD EVENT sqlos.wait_info(
+                ACTION(sqlserver.database_id, sqlserver.session_id)
+                WHERE ([duration] > (1000))
+            )
+            ADD TARGET package0.ring_buffer(
+                SET max_memory=(8192), max_events_limit=(30000)
+            )
+            WITH (
+                MAX_MEMORY=8192 KB,
+                EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,
+                MAX_DISPATCH_LATENCY=1 SECONDS,
+                TRACK_CAUSALITY=OFF,
+                STARTUP_STATE=OFF
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            f"ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=START"
+        )
+        report = {
+            "schema": "issue-894-sqlserver-xe-start-v1",
+            "label": DIAGNOSTIC_LABEL,
+            "session_name": XE_SESSION_NAME,
+            "database_id": database_id,
+            "bounded": True,
+            "raw_sql_captured_in_evidence": False,
+        }
+        _write_json(output, report)
+        return report
+    except Exception:
+        try:
+            connection.exec_driver_sql(
+                f"""
+                IF EXISTS (
+                    SELECT 1 FROM sys.server_event_sessions
+                    WHERE name = N'{XE_SESSION_NAME}'
+                )
+                DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+                """
+            )
+        except Exception:
+            pass
+        raise
+    finally:
+        connection.close()
+        engine.dispose()
+
+
+def _xe_value(event: ET.Element, name: str) -> str:
+    node = event.find(f"./data[@name='{name}']")
+    if node is None:
+        node = event.find(f"./action[@name='{name}']")
+    if node is None:
+        return ""
+    text_node = node.find("./text")
+    if text_node is not None and text_node.text:
+        return str(text_node.text)
+    value_node = node.find("./value")
+    if value_node is not None and value_node.text:
+        return str(value_node.text)
+    return ""
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(str(value or "0"))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_xe_ring_buffer(
+    target_xml: str,
+    *,
+    database_id: int,
+) -> dict[str, object]:
+    root = ET.fromstring(target_xml)
+    dropped = _safe_int(root.attrib.get("droppedCount"))
+    truncated = str(root.attrib.get("truncated") or "0") not in {
+        "0", "false", "False"
+    }
+    events: list[dict[str, object]] = []
+    for node in root.findall("./event"):
+        event_name = str(node.attrib.get("name") or "")
+        timestamp = str(node.attrib.get("timestamp") or "")
+        event_database_id = _safe_int(_xe_value(node, "database_id"))
+        if event_database_id and event_database_id != database_id:
+            continue
+        session_id = _safe_int(_xe_value(node, "session_id"))
+        if not session_id:
+            continue
+        if event_name == "rpc_completed":
+            events.append({
+                "event": "rpc_completed",
+                "timestamp_utc": timestamp,
+                "session_id": session_id,
+                "database_id": event_database_id,
+                "duration_us": _safe_int(_xe_value(node, "duration")),
+                "cpu_us": _safe_int(_xe_value(node, "cpu_time")),
+                "logical_reads": _safe_int(_xe_value(node, "logical_reads")),
+                "physical_reads": _safe_int(_xe_value(node, "physical_reads")),
+                "row_count": _safe_int(_xe_value(node, "row_count")),
+                "object_name": str(_xe_value(node, "object_name") or ""),
+            })
+        elif event_name == "wait_info":
+            events.append({
+                "event": "wait_info",
+                "timestamp_utc": timestamp,
+                "session_id": session_id,
+                "database_id": event_database_id,
+                "wait_type": str(_xe_value(node, "wait_type") or "UNKNOWN"),
+                "duration_ms": float(_safe_int(_xe_value(node, "duration"))),
+                "opcode": str(_xe_value(node, "opcode") or ""),
+            })
+    events.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
+    return {
+        "events": events,
+        "event_count": len(events),
+        "dropped_event_count": dropped,
+        "truncated": truncated,
+    }
+
+
+def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
+    engine, connection = _xe_connection(database_url)
+    capture: dict[str, object] | None = None
+    cleanup_error = ""
+    try:
+        database_id = int(connection.exec_driver_sql("SELECT DB_ID()").scalar_one())
+        connection.exec_driver_sql(
+            f"ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP"
+        )
+        row = connection.exec_driver_sql(
+            f"""
+            SELECT CAST(target_data AS nvarchar(max))
+            FROM sys.dm_xe_session_targets AS target
+            JOIN sys.dm_xe_sessions AS session
+              ON session.address = target.event_session_address
+            WHERE session.name = N'{XE_SESSION_NAME}'
+              AND target.target_name = N'ring_buffer'
+            """
+        ).first()
+        if row is None or not row[0]:
+            raise ValueError("SQL Server Extended Events ring buffer is missing")
+        parsed = _parse_xe_ring_buffer(str(row[0]), database_id=database_id)
+        capture = {
+            "schema": "issue-894-sqlserver-xe-capture-v1",
+            "label": DIAGNOSTIC_LABEL,
+            "session_name": XE_SESSION_NAME,
+            "database_id": database_id,
+            "raw_sql_captured_in_evidence": False,
+            **parsed,
+        }
+    finally:
+        try:
+            connection.exec_driver_sql(
+                f"""
+                IF EXISTS (
+                    SELECT 1 FROM sys.server_event_sessions
+                    WHERE name = N'{XE_SESSION_NAME}'
+                )
+                DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+                """
+            )
+        except Exception as exc:
+            cleanup_error = type(exc).__name__
+        connection.close()
+        engine.dispose()
+    if capture is None:
+        raise ValueError("SQL Server Extended Events capture was not collected")
+    capture["cleanup_succeeded"] = not cleanup_error
+    capture["cleanup_error_type"] = cleanup_error
+    _write_json(output, capture)
+    return capture
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
