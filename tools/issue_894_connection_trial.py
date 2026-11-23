@@ -756,6 +756,152 @@ def _fetch_time_consistent(
     )
 
 
+def _bounded_execution_divergence_evidence(
+    *,
+    trace_rows: list[dict[str, object]],
+    capture: dict[str, object],
+    app_fetches: list[dict[str, object]],
+    marker_by_connection: dict[int, list[dict[str, object]]],
+    server_by_connection: dict[int, list[dict[str, object]]],
+    sequence_alignment_failures: list[dict[str, object]],
+    row_count_mismatches: list[dict[str, object]],
+    timing_inconsistencies: list[dict[str, object]],
+    unmatched_app: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    for failure in sequence_alignment_failures:
+        if failure.get("reason") != "execution_count_mismatch":
+            continue
+        connection_id = _safe_int(failure.get("connection_id"))
+        spid = _safe_int(failure.get("spid"))
+        candidate_sequences = [
+            _safe_int(row.get("connection_execution_sequence"))
+            for row in (
+                *row_count_mismatches,
+                *timing_inconsistencies,
+                *unmatched_app,
+            )
+            if _safe_int(row.get("connection_id")) == connection_id
+            or (
+                not row.get("connection_id")
+                and _safe_int(row.get("spid")) == spid
+            )
+        ]
+        candidate_sequences = [
+            sequence for sequence in candidate_sequences if sequence > 0
+        ]
+        if not candidate_sequences:
+            continue
+        anchor_sequence = min(candidate_sequences)
+        lower = max(1, anchor_sequence - 2)
+        upper = anchor_sequence + 2
+
+        fetch_by_sequence = {
+            _safe_int(row.get("connection_execution_sequence")): row
+            for row in app_fetches
+            if _safe_int(row.get("connection_id")) == connection_id
+        }
+        app_window: list[dict[str, object]] = []
+        for marker in marker_by_connection.get(connection_id, []):
+            sequence = _safe_int(
+                marker.get("connection_execution_sequence")
+            )
+            if not lower <= sequence <= upper:
+                continue
+            fetch = fetch_by_sequence.get(sequence)
+            item = {
+                "connection_execution_sequence": sequence,
+                "kind": str(marker.get("kind") or ""),
+                "timestamp_utc": str(marker.get("timestamp_utc") or ""),
+                "statement_fingerprint": str(
+                    marker.get("statement_fingerprint") or ""
+                ),
+            }
+            if fetch is not None:
+                item["fetch_timestamp_utc"] = str(
+                    fetch.get("timestamp_utc") or ""
+                )
+                item["fetched_row_count"] = _safe_int(
+                    fetch.get("fetched_row_count")
+                )
+                item["target_role"] = str(
+                    fetch.get("target_role") or ""
+                )
+            app_window.append(item)
+
+        server_window: list[dict[str, object]] = []
+        for event in server_by_connection.get(connection_id, []):
+            sequence = _safe_int(event.get("server_execution_sequence"))
+            if not lower <= sequence <= upper:
+                continue
+            server_window.append({
+                "server_execution_sequence": sequence,
+                "timestamp_utc": str(event.get("timestamp_utc") or ""),
+                "event": str(event.get("event") or ""),
+                "execution_category": str(
+                    event.get("execution_category") or ""
+                ),
+                "normalized_rpc_name": _normalized_rpc_name(
+                    event.get("object_name")
+                ),
+                "row_count": _safe_int(event.get("row_count")),
+            })
+
+        timestamps: list[datetime] = []
+        for item in (*app_window, *server_window):
+            for key in ("timestamp_utc", "fetch_timestamp_utc"):
+                value = item.get(key)
+                if not value:
+                    continue
+                try:
+                    timestamps.append(_parse_utc(value))
+                except (TypeError, ValueError):
+                    pass
+        excluded_rpc_window: list[dict[str, object]] = []
+        if timestamps:
+            start_utc = min(timestamps) - margin
+            end_utc = max(timestamps) + margin
+            for row in capture.get("events", []):
+                if (
+                    not isinstance(row, dict)
+                    or row.get("event") != "rpc_completed"
+                    or _safe_int(row.get("session_id")) != spid
+                ):
+                    continue
+                name = _normalized_rpc_name(row.get("object_name"))
+                if name in _PREPARED_EXECUTION_RPC_NAMES:
+                    continue
+                try:
+                    event_utc = _parse_utc(row.get("timestamp_utc"))
+                except (TypeError, ValueError):
+                    continue
+                if start_utc <= event_utc <= end_utc:
+                    excluded_rpc_window.append({
+                        "timestamp_utc": str(
+                            row.get("timestamp_utc") or ""
+                        ),
+                        "normalized_rpc_name": name,
+                        "row_count": _safe_int(row.get("row_count")),
+                    })
+                if len(excluded_rpc_window) >= 8:
+                    break
+
+        evidence.append({
+            "connection_id": connection_id,
+            "spid": spid,
+            "diagnostic_window_anchor_sequence": anchor_sequence,
+            "diagnostic_window_basis": (
+                "first observable target correlation anomaly on an "
+                "execution-count-mismatched physical connection"
+            ),
+            "application_window": app_window,
+            "server_window": server_window,
+            "excluded_rpc_window": excluded_rpc_window,
+        })
+    return evidence
+
+
 def _server_client_correlation(
     trace_rows: list[dict[str, object]],
     capture: dict[str, object],
@@ -1081,6 +1227,18 @@ def _server_client_correlation(
     dropped = _safe_int(capture.get("dropped_event_count"))
     truncated = bool(capture.get("truncated"))
     cleanup_succeeded = capture.get("cleanup_succeeded") is True
+    divergence_evidence = _bounded_execution_divergence_evidence(
+        trace_rows=trace_rows,
+        capture=capture,
+        app_fetches=app_fetches,
+        marker_by_connection=marker_by_connection,
+        server_by_connection=server_by_connection,
+        sequence_alignment_failures=sequence_alignment_failures,
+        row_count_mismatches=row_count_mismatches,
+        timing_inconsistencies=timing_inconsistencies,
+        unmatched_app=unmatched_app,
+    )
+
     complete = (
         len(target_fingerprints) == 3
         and all(
@@ -1115,6 +1273,7 @@ def _server_client_correlation(
         "sequence_alignment_failures": sequence_alignment_failures,
         "timing_inconsistencies": timing_inconsistencies,
         "row_count_mismatches": row_count_mismatches,
+        "execution_divergence_evidence": divergence_evidence,
         "ignored_non_execution_rpc_events": ignored_rpc_events,
         "dropped_event_count": dropped,
         "capture_truncated": truncated,
