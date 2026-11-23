@@ -1481,6 +1481,39 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["session_cleanup_succeeded"])
         self.assertFalse(report["cleanup_succeeded"])
 
+    def test_xe_stop_collect_rollover_capacity_exhausted_fails_closed(self) -> None:
+        dbid = mock.MagicMock()
+        dbid.scalar_one.return_value = 5
+        dropped = mock.MagicMock()
+        dropped.scalar_one.return_value = 0
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            dbid,
+            dropped,
+            mock.MagicMock(),
+            mock.MagicMock(),
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        files = [
+            f"rp894_short_correlation_{index}.xel"
+            for index in range(8)
+        ]
+        with TemporaryDirectory() as tmp, mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=files,
+        ), mock.patch.object(connection_trial.time, "sleep"):
+            with self.assertRaises(ValueError):
+                _xe_stop_collect(
+                    "database-url",
+                    Path(tmp) / "capture.json",
+                )
+
     def test_xe_stop_collect_missing_rollover_file_fails_closed(self) -> None:
         dbid = mock.MagicMock()
         dbid.scalar_one.return_value = 5
