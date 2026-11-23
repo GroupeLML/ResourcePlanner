@@ -568,6 +568,9 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             request_row.legacy_demand_number = ""
             request_row.requester_name = "Coordonnateur"
             request_row.emergency_override_active = True
+            requirement_row = session.get(ResourceRequirement, "REQ1")
+            assert requirement_row is not None
+            requirement_row.confirmation = "Tentative"
             session.add(
                 ResourceRequirement(
                     id="REQ-ADHOC",
@@ -627,6 +630,42 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
         sql = " ".join(statements[0].lower().split())
         select_clause = sql.split(" from ", 1)[0]
         for column in (
+            "resources.id",
+            "resources.name",
+        ):
+            self.assertIn(column, select_clause)
+        for column in (
+            "resources.resource_class",
+            "resources.competencies",
+            "resources.note",
+            "resources.active",
+            "resources.erp_active",
+            "resources.sort_order",
+        ):
+            self.assertNotIn(column, select_clause)
+
+        for column in (
+            "resource_requirements.id",
+            "resource_requirements.legacy_segment_id",
+            "resource_requirements.project_id",
+            "resource_requirements.workforce_request_id",
+            "resource_requirements.confirmation",
+            "resource_requirements.created_by_name",
+            "resource_requirements.status",
+        ):
+            self.assertIn(column, select_clause)
+        for column in (
+            "resource_requirements.assigned_resource_id",
+            "resource_requirements.start_date",
+            "resource_requirements.end_date",
+            "resource_requirements.planned_hours",
+            "resource_requirements.planning_type",
+            "resource_requirements.priority",
+            "resource_requirements.origin",
+        ):
+            self.assertNotIn(column, select_clause)
+
+        for column in (
             "workforce_requests.id",
             "workforce_requests.legacy_demand_number",
             "workforce_requests.requester_name",
@@ -645,6 +684,8 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
         ):
             self.assertNotIn(column, select_clause)
 
+        self.assertIn("order by shifts.work_date, resources.sort_order", sql)
+
         by_allocation = {row.allocation_id: row for row in rows}
         self.assertEqual(set(by_allocation), {"MAN-1", "MAN-ADHOC"})
 
@@ -659,6 +700,7 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
         self.assertEqual(requested.project_id, "P1")
         self.assertEqual(requested.project_number, "P-1")
         self.assertEqual(requested.hours, 4.0)
+        self.assertEqual(requested.confirmation, "Tentative")
         self.assertTrue(requested.locked)
         self.assertIsNone(requested.asset_assignment)
         self.assertEqual(requested.related_asset_reservations, ())
@@ -673,6 +715,96 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
         self.assertEqual(requestless.hours, 2.0)
         self.assertIsNone(requestless.asset_assignment)
         self.assertEqual(requestless.related_asset_reservations, ())
+
+    def test_list_shifts_narrow_projection_preserves_shared_operator_asset_context(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                AssetType(
+                    id="AT-PROJ",
+                    code="VEH-PROJ",
+                    label="Véhicule projection",
+                    category="VEHICLE",
+                )
+            )
+            session.flush()
+            session.add(
+                Asset(
+                    id="A-PROJ",
+                    code="ASSET-PROJ",
+                    label="Actif projection",
+                    asset_type_id="AT-PROJ",
+                )
+            )
+            session.flush()
+            session.add(
+                AssetRequirement(
+                    id="AR-PROJ",
+                    origin="RESOURCE_PERIOD",
+                    context_resource_id="R1",
+                    asset_type_id="AT-PROJ",
+                    start_date=D1,
+                    end_date=D1,
+                    resource_period_mode="BOUNDED",
+                    status="Planifié",
+                )
+            )
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="AA-PROJ",
+                    asset_requirement_id="AR-PROJ",
+                    asset_id="A-PROJ",
+                    operator_resource_id="R1",
+                    start_date=D1,
+                    end_date=D1,
+                    locked=True,
+                )
+            )
+
+        statements: list[str] = []
+
+        def capture_statement(
+            _conn,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            statements.append(str(statement))
+
+        event.listen(self.engine, "before_cursor_execute", capture_statement)
+        try:
+            with self.factory() as session:
+                rows = SqlPlannerQueryRepository(session).list_shifts(
+                    start=D1,
+                    end=D1,
+                    resource_id="R1",
+                    can_manage_planning=True,
+                )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", capture_statement)
+
+        self.assertEqual(len(statements), 2)
+        self.assertEqual(len(rows), 1)
+        shift = rows[0]
+        self.assertEqual(shift.resource_id, "R1")
+        self.assertEqual(shift.resource_name, "Alice")
+        self.assertIsNone(shift.asset_assignment)
+        self.assertEqual(len(shift.related_asset_reservations), 1)
+        reservation = shift.related_asset_reservations[0]
+        self.assertEqual(reservation.requirement_id, "AR-PROJ")
+        self.assertEqual(reservation.allocation_id, "AA-PROJ")
+        self.assertEqual(
+            reservation.association_kind,
+            "INHERITED_RESOURCE_PERIOD",
+        )
+        self.assertEqual(reservation.operator_resource_id, "R1")
+        self.assertEqual(reservation.qualification_state, "SATISFIED")
+        self.assertEqual(reservation.asset_id, "A-PROJ")
+        self.assertEqual(reservation.asset_code, "ASSET-PROJ")
+        self.assertEqual(reservation.asset_label, "Actif projection")
+        self.assertEqual(shift.asset_diagnostics, ())
 
     def test_shift_manager_marker_tracks_stable_erp_identity_not_display_name(self) -> None:
         with transactional_session(self.factory) as session:
