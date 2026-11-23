@@ -1274,7 +1274,7 @@ def _validated_trial_report(
     path: Path,
     *,
     expected_mode: str,
-    require_server_correlation: bool = True,
+    require_server_correlation: bool = False,
 ) -> dict[str, object]:
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("schema") != "issue-894-connection-trial-v1":
@@ -1367,6 +1367,7 @@ def _compare(args: argparse.Namespace) -> dict[str, object]:
     instrumented = _validated_trial_report(
         args.instrumented,
         expected_mode="instrumented",
+        require_server_correlation=True,
     )
 
     canonical_rate = float(canonical.get("achieved_request_start_rps") or 0.0)
@@ -1493,11 +1494,7 @@ def main() -> int:
     args = _parser().parse_args()
     if args.command == "trial":
         report = asyncio.run(_trial(args))
-        _validated_trial_report(
-            args.output,
-            expected_mode=args.mode,
-            require_server_correlation=False,
-        )
+        _validated_trial_report(args.output, expected_mode=args.mode)
         print(json.dumps(report, sort_keys=True))
         return 0
     if args.command == "xe-start":
