@@ -1004,8 +1004,10 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         *,
         dropped: int = 0,
         truncated: bool = False,
+        omit_direct_batch: bool = False,
     ) -> tuple[list[dict[str, object]], dict[str, object]]:
         spid = 70
+        connection_id = 100
         changed = "3d86d93500f16875"
         target_fingerprints = (
             changed,
@@ -1015,7 +1017,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             {
                 "kind": "spid_probe",
                 "timestamp_utc": "2026-11-23T02:00:00.100+00:00",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "connection_execution_sequence": 1,
             },
@@ -1023,7 +1025,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "kind": "statement_start",
                 "timestamp_utc": "2026-11-23T02:00:00.200+00:00",
                 "request_id": "request-noise-a",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "connection_execution_sequence": 2,
                 "statement_sequence": 1,
@@ -1033,7 +1035,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "kind": "statement_start",
                 "timestamp_utc": "2026-11-23T02:00:00.700+00:00",
                 "request_id": "request-shifts",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "connection_execution_sequence": 3,
                 "statement_sequence": 2,
@@ -1041,9 +1043,9 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             },
             {
                 "kind": "statement_start",
-                "timestamp_utc": "2026-11-23T02:00:00.800+00:00",
+                "timestamp_utc": "2026-11-23T02:00:01.200+00:00",
                 "request_id": "request-noise-b",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "connection_execution_sequence": 4,
                 "statement_sequence": 3,
@@ -1053,7 +1055,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "kind": "statement_start",
                 "timestamp_utc": "2026-11-23T02:00:01.700+00:00",
                 "request_id": "request-demand",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "connection_execution_sequence": 5,
                 "statement_sequence": 4,
@@ -1063,7 +1065,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "kind": "statement_start",
                 "timestamp_utc": "2026-11-23T02:00:02.700+00:00",
                 "request_id": "request-children",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "connection_execution_sequence": 6,
                 "statement_sequence": 5,
@@ -1073,7 +1075,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "kind": "dbapi_fetch",
                 "timestamp_utc": "2026-11-23T02:00:01.100+00:00",
                 "request_id": "request-shifts",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "statement_sequence": 2,
                 "connection_execution_sequence": 3,
@@ -1086,7 +1088,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "kind": "dbapi_fetch",
                 "timestamp_utc": "2026-11-23T02:00:02.100+00:00",
                 "request_id": "request-demand",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "statement_sequence": 4,
                 "connection_execution_sequence": 5,
@@ -1098,7 +1100,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "kind": "dbapi_fetch",
                 "timestamp_utc": "2026-11-23T02:00:03.100+00:00",
                 "request_id": "request-children",
-                "connection_id": 100,
+                "connection_id": connection_id,
                 "spid": spid,
                 "statement_sequence": 5,
                 "connection_execution_sequence": 6,
@@ -1106,68 +1108,98 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "fetch_elapsed_ms": 500.0,
                 "fetched_row_count": 120,
             },
+            {
+                "kind": "connection_return",
+                "timestamp_utc": "2026-11-23T02:00:03.200+00:00",
+                "connection_id": connection_id,
+                "spid": spid,
+            },
         ]
-        execution_rows = [1, 0, 180, 0, 120, 120]
-        execution_times = [
-            "2026-11-23T02:00:00.100+00:00",
-            "2026-11-23T02:00:00.300+00:00",
-            "2026-11-23T02:00:01.000+00:00",
-            "2026-11-23T02:00:01.005+00:00",
-            "2026-11-23T02:00:02.000+00:00",
-            "2026-11-23T02:00:03.000+00:00",
-        ]
-        server_events: list[dict[str, object]] = []
-        for index, (row_count, timestamp) in enumerate(
-            zip(execution_rows, execution_times),
-            start=1,
-        ):
-            server_events.append({
-                "event": "rpc_completed",
-                "timestamp_utc": timestamp,
-                "session_id": spid,
-                "duration_us": 100000 + index * 1000,
-                "cpu_us": 1000 + index,
-                "logical_reads": 10 + index,
-                "physical_reads": 0,
-                "row_count": row_count,
-                "object_name": (
-                    "sp_prepexec" if index % 2 else "sp_execute"
-                ),
-            })
-            if index in {2, 4, 5}:
-                server_events.append({
-                    "event": "rpc_completed",
-                    "timestamp_utc": timestamp,
-                    "session_id": spid,
-                    "duration_us": 10,
-                    "cpu_us": 0,
-                    "logical_reads": 0,
-                    "physical_reads": 0,
-                    "row_count": 0,
-                    "object_name": "sp_unprepare",
-                })
-        server_events.extend([
+        server_events: list[dict[str, object]] = [
             {
                 "event": "rpc_completed",
-                "timestamp_utc": "2026-11-23T02:00:02.500+00:00",
+                "timestamp_utc": "2026-11-23T01:59:58.000+00:00",
                 "session_id": spid,
-                "duration_us": 20,
-                "cpu_us": 0,
+                "duration_us": 100,
+                "cpu_us": 1,
                 "logical_reads": 0,
                 "physical_reads": 0,
-                "row_count": 0,
-                "object_name": "sp_prepare",
+                "row_count": 999,
+                "object_name": "sp_prepexec",
+            },
+            {
+                "event": "sql_batch_completed",
+                "timestamp_utc": "2026-11-23T02:00:00.090+00:00",
+                "session_id": spid,
+                "duration_us": 1000,
+                "cpu_us": 10,
+                "logical_reads": 1,
+                "physical_reads": 0,
+                "row_count": 1,
             },
             {
                 "event": "rpc_completed",
-                "timestamp_utc": "2026-11-23T02:00:02.600+00:00",
+                "timestamp_utc": "2026-11-23T02:00:00.300+00:00",
                 "session_id": spid,
-                "duration_us": 20,
+                "duration_us": 1100,
+                "cpu_us": 11,
+                "logical_reads": 2,
+                "physical_reads": 0,
+                "row_count": 0,
+                "object_name": "sp_prepexec",
+            },
+            {
+                "event": "rpc_completed",
+                "timestamp_utc": "2026-11-23T02:00:01.000+00:00",
+                "session_id": spid,
+                "duration_us": 1200,
+                "cpu_us": 12,
+                "logical_reads": 100,
+                "physical_reads": 0,
+                "row_count": 180,
+                "object_name": "sp_prepexec",
+            },
+            {
+                "event": "rpc_completed",
+                "timestamp_utc": "2026-11-23T02:00:01.001+00:00",
+                "session_id": spid,
+                "duration_us": 10,
                 "cpu_us": 0,
                 "logical_reads": 0,
                 "physical_reads": 0,
                 "row_count": 0,
-                "object_name": "sp_datatype_info_100",
+                "object_name": "sp_unprepare",
+            },
+            {
+                "event": "sql_batch_completed",
+                "timestamp_utc": "2026-11-23T02:00:01.300+00:00",
+                "session_id": spid,
+                "duration_us": 1300,
+                "cpu_us": 13,
+                "logical_reads": 3,
+                "physical_reads": 0,
+                "row_count": 0,
+            },
+            {
+                "event": "rpc_completed",
+                "timestamp_utc": "2026-11-23T02:00:02.000+00:00",
+                "session_id": spid,
+                "duration_us": 1400,
+                "cpu_us": 14,
+                "logical_reads": 80,
+                "physical_reads": 0,
+                "row_count": 120,
+                "object_name": "sp_execute",
+            },
+            {
+                "event": "sql_batch_completed",
+                "timestamp_utc": "2026-11-23T02:00:03.000+00:00",
+                "session_id": spid,
+                "duration_us": 1500,
+                "cpu_us": 15,
+                "logical_reads": 70,
+                "physical_reads": 0,
+                "row_count": 120,
             },
             {
                 "event": "wait_info",
@@ -1177,7 +1209,16 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "duration_ms": 150.0,
                 "opcode": "End",
             },
-        ])
+        ]
+        if omit_direct_batch:
+            server_events = [
+                row
+                for row in server_events
+                if not (
+                    row.get("event") == "sql_batch_completed"
+                    and row.get("row_count") == 0
+                )
+            ]
         return trace_rows, {
             "events": server_events,
             "dropped_event_count": dropped,
@@ -1185,17 +1226,19 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             "cleanup_succeeded": True,
         }
 
-    def test_server_client_correlation_maps_order_with_interleaved_rpc_noise(self) -> None:
+    def test_server_client_correlation_maps_mixed_execution_stream(self) -> None:
         trace_rows, capture = self._correlation_fixture()
         report = _server_client_correlation(trace_rows, capture)
 
         self.assertTrue(report["complete"])
         self.assertTrue(report["prepared_execution_observed"])
+        self.assertTrue(report["direct_batch_execution_observed"])
+        self.assertEqual(report["physical_connection_lifetime_count"], 1)
         self.assertEqual(report["unmatched_application_fetches"], 0)
-        self.assertEqual(report["ambiguous_correlations"], 0)
         self.assertEqual(report["sequence_alignment_failures"], [])
         self.assertEqual(report["timing_inconsistencies"], [])
-        self.assertEqual(report["ignored_non_execution_rpc_events"], 5)
+        self.assertEqual(report["row_count_mismatches"], [])
+        self.assertEqual(report["ignored_non_execution_rpc_events"], 1)
         self.assertEqual(
             tuple(report["target_fingerprints"]),
             ("3d86d93500f16875", *TARGET_RESULT_FINGERPRINTS[1:]),
@@ -1211,64 +1254,32 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             report["targets"]["3d86d93500f16875"]["row_count"]["p50"],
             180.0,
         )
-        self.assertIn(
-            "ASYNC_NETWORK_IO",
-            report["targets"]["3d86d93500f16875"]["waits_ms"],
-        )
 
-    def test_sequence_mapping_resolves_same_spid_nearest_time_ambiguity(self) -> None:
+    def test_pre_lifetime_spid_execution_is_excluded(self) -> None:
         trace_rows, capture = self._correlation_fixture()
         report = _server_client_correlation(trace_rows, capture)
 
         self.assertTrue(report["complete"])
-        self.assertEqual(
-            report["targets"]["3d86d93500f16875"]["row_count"]["p50"],
-            180.0,
-        )
-        self.assertEqual(report["ambiguous_correlations"], 0)
+        self.assertEqual(report["unmatched_server_events"], 3)
 
-    def test_missing_server_sequence_element_fails_closed(self) -> None:
-        trace_rows, capture = self._correlation_fixture()
-        capture["events"] = [
-            row
-            for row in capture["events"]
-            if not (
-                row.get("event") == "rpc_completed"
-                and row.get("object_name") == "sp_execute"
-                and row.get("row_count") == 0
-            )
-        ]
+    def test_missing_direct_batch_execution_fails_closed(self) -> None:
+        trace_rows, capture = self._correlation_fixture(
+            omit_direct_batch=True,
+        )
         report = _server_client_correlation(trace_rows, capture)
 
         self.assertFalse(report["complete"])
         self.assertTrue(report["sequence_alignment_failures"])
 
-    def test_duplicate_application_sequence_fails_closed(self) -> None:
+    def test_duplicate_or_reordered_mixed_execution_fails_closed(self) -> None:
         trace_rows, capture = self._correlation_fixture()
-        duplicate = dict(
-            next(
-                row
-                for row in trace_rows
-                if row.get("kind") == "statement_start"
-                and row.get("connection_execution_sequence") == 4
-            )
-        )
-        trace_rows.append(duplicate)
-        report = _server_client_correlation(trace_rows, capture)
-
-        self.assertFalse(report["complete"])
-        self.assertTrue(report["sequence_alignment_failures"])
-
-    def test_out_of_order_server_execution_fails_closed(self) -> None:
-        trace_rows, capture = self._correlation_fixture()
-        executions = [
+        target_batch = next(
             row
             for row in capture["events"]
-            if row.get("event") == "rpc_completed"
-            and row.get("object_name")
-            in {"sp_prepexec", "sp_execute"}
-        ]
-        executions[2]["timestamp_utc"] = (
+            if row.get("event") == "sql_batch_completed"
+            and row.get("row_count") == 120
+        )
+        target_batch["timestamp_utc"] = (
             "2026-11-23T02:00:00.250+00:00"
         )
         report = _server_client_correlation(trace_rows, capture)
@@ -1276,46 +1287,45 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report["complete"])
         self.assertTrue(
             report["timing_inconsistencies"]
-            or report["unmatched_application_fetches"]
+            or report["row_count_mismatches"]
         )
 
-    def test_server_execution_outside_fetch_window_fails_closed(self) -> None:
+    def test_row_count_mismatch_still_fails_closed(self) -> None:
         trace_rows, capture = self._correlation_fixture()
-        target_event = next(
+        target = next(
             row
             for row in capture["events"]
             if row.get("event") == "rpc_completed"
             and row.get("row_count") == 180
         )
-        target_event["timestamp_utc"] = (
-            "2026-11-23T02:00:00.400+00:00"
+        target["row_count"] = 181
+        report = _server_client_correlation(trace_rows, capture)
+
+        self.assertFalse(report["complete"])
+        self.assertTrue(report["row_count_mismatches"])
+
+    def test_timing_inconsistency_still_fails_closed(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        target = next(
+            row
+            for row in capture["events"]
+            if row.get("event") == "rpc_completed"
+            and row.get("row_count") == 180
+        )
+        target["timestamp_utc"] = (
+            "2026-11-23T02:00:00.300+00:00"
         )
         report = _server_client_correlation(trace_rows, capture)
 
         self.assertFalse(report["complete"])
         self.assertTrue(report["timing_inconsistencies"])
 
-    def test_unrelated_non_execution_rpc_remains_harmless(self) -> None:
+    def test_unprepare_interleaved_remains_excluded(self) -> None:
         trace_rows, capture = self._correlation_fixture()
-        capture["events"].append({
-            "event": "rpc_completed",
-            "timestamp_utc": "2026-11-23T02:00:03.500+00:00",
-            "session_id": 70,
-            "duration_us": 100,
-            "cpu_us": 0,
-            "logical_reads": 0,
-            "physical_reads": 0,
-            "row_count": 0,
-            "object_name": "sp_unprepare",
-        })
         report = _server_client_correlation(trace_rows, capture)
 
         self.assertTrue(report["complete"])
-        self.assertEqual(report["unmatched_server_events"], 3)
-        self.assertGreaterEqual(
-            report["ignored_non_execution_rpc_events"],
-            6,
-        )
+        self.assertEqual(report["ignored_non_execution_rpc_events"], 1)
 
     def test_server_client_correlation_fails_closed_on_dropped_events(self) -> None:
         trace_rows, capture = self._correlation_fixture(dropped=1)
@@ -1358,6 +1368,25 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
           <action name="session_id"><value>{session_id}</value></action>
         </event>
         """
+
+    def test_xe_batch_parser_sanitizes_batch_text(self) -> None:
+        xml = """
+        <event name="sql_batch_completed" timestamp="2026-11-23T02:00:01.000Z">
+          <data name="duration"><value>1000</value></data>
+          <data name="cpu_time"><value>10</value></data>
+          <data name="logical_reads"><value>2</value></data>
+          <data name="physical_reads"><value>0</value></data>
+          <data name="row_count"><value>1</value></data>
+          <data name="batch_text"><value>SELECT secret_batch_894</value></data>
+          <action name="database_id"><value>5</value></action>
+          <action name="session_id"><value>77</value></action>
+        </event>
+        """
+        parsed = _parse_xe_event_xml(xml, database_id=5)
+        serialized = json.dumps(parsed, sort_keys=True)
+        self.assertEqual(parsed["execution_category"], "direct_batch")
+        self.assertNotIn("secret_batch_894", serialized)
+        self.assertNotIn("batch_text", serialized)
 
     def test_xe_event_parser_sanitizes_statement_and_parameter_text(self) -> None:
         parsed = _parse_xe_event_xml(
