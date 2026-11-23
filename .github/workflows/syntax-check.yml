@@ -812,6 +812,10 @@ jobs:
           docker logs --tail=500 backend \
             > "$evidence/connection-trial-canonical-backend.txt" 2>&1 || true
 
+          docker exec "$RP894_SQL_SERVER" sh -c \
+            'rm -f /var/opt/mssql/log/rp894_short_correlation*.xel'
+          xe_preclean_status=$?
+
           docker run --rm \
             --network "$RP894_NETWORK" \
             -v "$GITHUB_WORKSPACE:/workspace:ro" \
@@ -857,9 +861,34 @@ jobs:
             xe_stop_status=1
           fi
 
+          if [ "$xe_stop_status" = "0" ]; then
+            docker exec "$RP894_SQL_SERVER" sh -c \
+              'rm -f /var/opt/mssql/log/rp894_short_correlation*.xel'
+            xe_file_cleanup_status=$?
+          else
+            xe_file_cleanup_status=1
+          fi
+
+          if [ "$xe_file_cleanup_status" = "0" ]; then
+            docker run --rm \
+              --network "$RP894_NETWORK" \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py xe-finalize-cleanup \
+                --database-url "$RP894_DATABASE_URL" \
+                --capture /evidence/sqlserver-xe-capture.json
+            xe_finalize_cleanup_status=$?
+          else
+            xe_finalize_cleanup_status=1
+          fi
+
           if [ "$instrumented_execution_status" = "0" ] \
             && [ "$xe_start_status" = "0" ] \
-            && [ "$xe_stop_status" = "0" ]; then
+            && [ "$xe_stop_status" = "0" ] \
+            && [ "$xe_finalize_cleanup_status" = "0" ]; then
             docker run --rm \
               -v "$GITHUB_WORKSPACE:/workspace:ro" \
               -v "$evidence:/evidence" \
@@ -875,8 +904,11 @@ jobs:
           else
             correlation_status=1
           fi
-          if [ "$xe_start_status" != "0" ] \
+          if [ "$xe_preclean_status" != "0" ] \
+            || [ "$xe_start_status" != "0" ] \
             || [ "$xe_stop_status" != "0" ] \
+            || [ "$xe_file_cleanup_status" != "0" ] \
+            || [ "$xe_finalize_cleanup_status" != "0" ] \
             || [ "$correlation_status" != "0" ]; then
             instrumented_execution_status=1
           fi
@@ -905,8 +937,11 @@ jobs:
             printf 'trial_outcome_source=connection-trial-*.json:diagnostic_acceptance_behavior_failed\n'
             printf 'canonical_execution_status=%s\n' "$canonical_execution_status"
             printf 'instrumented_execution_status=%s\n' "$instrumented_execution_status"
+            printf 'xe_preclean_status=%s\n' "$xe_preclean_status"
             printf 'xe_start_status=%s\n' "$xe_start_status"
             printf 'xe_stop_status=%s\n' "$xe_stop_status"
+            printf 'xe_file_cleanup_status=%s\n' "$xe_file_cleanup_status"
+            printf 'xe_finalize_cleanup_status=%s\n' "$xe_finalize_cleanup_status"
             printf 'correlation_status=%s\n' "$correlation_status"
             printf 'comparison_execution_status=%s\n' "$comparison_execution_status"
             printf 'full_mixed_load=NOT RUN\n'
@@ -1003,6 +1038,9 @@ jobs:
               >/dev/null 2>&1 || true
           fi
           if [ -n "${RP894_SQL_SERVER:-}" ]; then
+            docker exec "$RP894_SQL_SERVER" sh -c \
+              'rm -f /var/opt/mssql/log/rp894_short_correlation*.xel' \
+              >/dev/null 2>&1 || true
             docker rm -f "$RP894_SQL_SERVER" >/dev/null 2>&1 || true
           fi
           if [ -n "${RP894_NETWORK:-}" ]; then
