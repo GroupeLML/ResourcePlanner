@@ -930,16 +930,49 @@ jobs:
             --host-pid "$host_pid" \
             --output "$evidence/identity.json"
           tids="$(python -c 'import json,sys; print(",".join(str(v) for v in json.load(open(sys.argv[1]))["host_tids"]))' "$evidence/identity.json")"
+          perf_executable="$(command -v perf)"
           python tools/issue_894_perf_preflight.py command \
             --tids "$tids" \
+            --perf-executable "$perf_executable" \
             --raw "$raw_dir/perf.data" \
             --output "$evidence/perf-command.json" \
-            --argv-lines "$raw_dir/perf-argv.txt"
-          perf_version="$(perf version)"
-          perf_build_options="$(perf version --build-options | tr '\n' ';' | head -c 4000)"
+            --argv-lines "$raw_dir/perf-argv.txt" \
+            --parser-argv-lines "$raw_dir/perf-parser-argv.txt"
+          perf_version="$("$perf_executable" version)"
+          perf_build_options="$("$perf_executable" version --build-options | tr '\n' ';' | head -c 4000)"
+          mapfile -t parser_args < "$raw_dir/perf-parser-argv.txt"
+          test "${parser_args[0]}" = "$perf_executable"
+          set +e
+          sudo "${parser_args[@]}" >"$raw_dir/perf-parser-stdout.txt" 2>"$raw_dir/perf-parser-stderr.txt"
+          parser_status=$?
+          set -e
+          python - "$raw_dir/perf-parser-argv.txt" "$raw_dir/perf-parser-stdout.txt" "$raw_dir/perf-parser-stderr.txt" "$evidence/perf-parser-check.json" "$perf_executable" "$parser_status" <<'PY'
+          import json
+          import sys
+
+          argv = open(sys.argv[1], encoding="utf-8").read().splitlines()
+          stdout = open(sys.argv[2], encoding="utf-8", errors="replace").read()[-4000:]
+          stderr = open(sys.argv[3], encoding="utf-8", errors="replace").read()[-4000:]
+          status = int(sys.argv[6])
+          with open(sys.argv[4], "w", encoding="utf-8") as handle:
+              json.dump(
+                  {
+                      "schema": "issue-894-perf-parser-check-v1",
+                      "argv": argv,
+                      "perf_executable": sys.argv[5],
+                      "execution_context": "host-sudo",
+                      "returncode": status,
+                      "stdout": stdout,
+                      "stderr": stderr,
+                      "accepted": status == 0,
+                  },
+                  handle,
+                  sort_keys=True,
+              )
+          PY
+          test "$parser_status" = "0"
           mapfile -t perf_args < "$raw_dir/perf-argv.txt"
-          test "${perf_args[0]}" = "perf"
-          perf_args[0]="$(command -v perf)"
+          test "${perf_args[0]}" = "$perf_executable"
           set +e
           /usr/bin/time -v -o "$raw_dir/perf-time.txt" \
             sudo "${perf_args[@]}" \
