@@ -253,7 +253,7 @@ def _preflight(args: argparse.Namespace) -> dict[str, object]:
         and args.idle_requested
         and not args.locals_requested
         and version_ok
-        and tids
+        and len(tids) >= 2
         and native_samples > 0
         and waiting_samples > 0
         and not forbidden_keys
@@ -270,7 +270,7 @@ def _preflight(args: argparse.Namespace) -> dict[str, object]:
         "idle_requested": bool(args.idle_requested),
         "locals_requested": bool(args.locals_requested),
         "native_thread_ids": tids,
-        "thread_ids_distinguished": bool(tids),
+        "thread_ids_distinguished": len(tids) >= 2,
         "native_userspace_sample_count": native_samples,
         "waiting_native_sample_count": waiting_samples,
         "native_userspace_unwinding_available": native_samples > 0,
@@ -481,12 +481,25 @@ def _summarize(args: argparse.Namespace) -> dict[str, object]:
             "dominant_category": dominant,
         }
 
+    all_targets_sampled = all(
+        int(targets[target]["associated_external_samples"]) > 0
+        for target in (
+            "list_shifts_initial",
+            "demand_materialization",
+            "aggregate_children",
+        )
+    )
     report = {
         "schema": "issue-894-native-profile-summary-v1",
         "label": DIAGNOSTIC_LABEL,
         "observer": "py-spy",
         "observer_version": preflight.get("observer_version"),
-        "interpretation_allowed": True,
+        "interpretation_allowed": all_targets_sampled,
+        "reason": (
+            ""
+            if all_targets_sampled
+            else "one_or_more_target_spans_have_no_associated_samples"
+        ),
         "profile_start_uncertainty_ms": profile_uncertainty_ms,
         "total_external_samples": total_samples,
         "timing_ambiguous_samples": timing_unresolved,
