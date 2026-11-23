@@ -50,9 +50,13 @@ def _trial_report(
     mode: str,
     **overrides: object,
 ) -> dict[str, object]:
+    traced_mode = mode in {"instrumented", "profiled"}
     targeted = {
         fingerprint: {
-            "evidence_complete": mode == "instrumented",
+            "evidence_complete": traced_mode,
+            "fetch_profile": {
+                "evidence_complete": mode == "profiled",
+            },
         }
         for fingerprint in TARGET_RESULT_FINGERPRINTS
     }
@@ -69,18 +73,23 @@ def _trial_report(
         "latency": {"p95_ms": 10000.0},
         "trace_summary": {
             "event_counts": (
-                {"dbapi_fetch": 3, "result_consumer": 3}
-                if mode == "instrumented"
+                {
+                    "dbapi_fetch": 3,
+                    "result_consumer": 3,
+                    **({"fetch_profile": 3} if mode == "profiled" else {}),
+                }
+                if traced_mode
                 else {}
             ),
             "list_shifts_fingerprint": TARGET_RESULT_FINGERPRINTS[0],
             "target_fingerprints": TARGET_RESULT_FINGERPRINTS,
             "targeted_result_timing": targeted,
-            "targeted_timing_complete": mode == "instrumented",
+            "targeted_timing_complete": traced_mode,
+            "fetch_profile_complete": mode == "profiled",
         },
         "server_client_correlation": (
             {"complete": True}
-            if mode == "instrumented"
+            if traced_mode
             else None
         ),
     }
@@ -273,6 +282,22 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertNotIn("statement", row)
             self.assertNotIn("parameters", row)
+
+    async def test_fetch_profiler_rejects_non_target_span(self) -> None:
+        with TemporaryDirectory() as tmp:
+            recorder = ConnectionTraceRecorder(
+                Path(tmp) / "trace.jsonl",
+                fetch_profile_enabled=True,
+            )
+            profile_id = recorder.begin_fetch_profile(
+                fingerprint="not-target",
+                connection_id=1,
+                target_role="",
+                spid=70,
+                statement_sequence=1,
+                connection_execution_sequence=2,
+            )
+        self.assertIsNone(profile_id)
 
     async def test_executor_submission_worker_start_completion_and_resume_are_ordered(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -532,6 +557,178 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             ],
             7.27 * 0.90,
         )
+
+    def test_fetch_profile_summary_is_target_scoped_and_separates_wall_cpu(self) -> None:
+        rows = [
+            {
+                "kind": "dbapi_fetch",
+                "statement_fingerprint": TARGET_RESULT_FINGERPRINTS[0],
+                "target_role": "list_shifts_initial",
+                "connection_id": 11,
+                "request_id": "a" * 20,
+                "fetched_row_count": 10,
+                "fetch_elapsed_ms": 500.0,
+                "fetch_cpu_ms": 15.0,
+            },
+            {
+                "kind": "result_consumer",
+                "statement_fingerprint": TARGET_RESULT_FINGERPRINTS[0],
+                "connection_id": 11,
+                "request_id": "a" * 20,
+                "consumer_elapsed_ms": 510.0,
+                "nested_fetch_elapsed_ms": 500.0,
+                "non_nested_consumer_elapsed_ms": 10.0,
+                "immediate_projection_elapsed_ms": 5.0,
+                "worker_cpu_ms": 18.0,
+                "non_nested_worker_cpu_ms": 3.0,
+                "call_site": "app/infrastructure/sql/test.py:fn:1",
+            },
+            {
+                "kind": "fetch_profile",
+                "statement_fingerprint": TARGET_RESULT_FINGERPRINTS[0],
+                "target_role": "list_shifts_initial",
+                "connection_id": 11,
+                "request_id": "a" * 20,
+                "wall_elapsed_ms": 500.0,
+                "thread_cpu_ms": 20.0,
+                "sample_count": 10,
+                "running_samples": 2,
+                "waiting_samples": 7,
+                "unresolved_samples": 1,
+                "wait_channels": [
+                    {"category": "wait_woken", "samples": 7},
+                ],
+                "native_stack_symbols": [],
+                "python_stack_categories": [
+                    {
+                        "category": "python:cursor.py:fetchall",
+                        "samples": 10,
+                    },
+                ],
+                "native_stack_available": False,
+                "payload_capture": False,
+            },
+            {
+                "kind": "fetch_profile",
+                "statement_fingerprint": "non-target",
+                "target_role": "",
+                "connection_id": 99,
+                "wall_elapsed_ms": 9999.0,
+                "thread_cpu_ms": 9999.0,
+                "sample_count": 99,
+                "running_samples": 99,
+                "waiting_samples": 0,
+                "unresolved_samples": 0,
+            },
+        ]
+
+        summary = _summarize_trace(rows)
+        detail = summary["targeted_result_timing"][
+            TARGET_RESULT_FINGERPRINTS[0]
+        ]["fetch_profile"]
+
+        self.assertEqual(detail["profiled_fetch_spans"], 1)
+        self.assertEqual(detail["wall_elapsed_ms"]["p50_ms"], 500.0)
+        self.assertEqual(detail["thread_cpu_ms"]["p50_ms"], 20.0)
+        self.assertEqual(detail["sample_count"], 10)
+        self.assertAlmostEqual(detail["running_share"], 0.2)
+        self.assertAlmostEqual(detail["waiting_share"], 0.7)
+        self.assertAlmostEqual(detail["unresolved_share"], 0.1)
+        self.assertEqual(
+            detail["dominant_wait_channels"][0]["category"],
+            "wait_woken",
+        )
+        self.assertFalse(detail["payload_capture"])
+
+    def test_profiled_validation_requires_complete_target_profiles(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "profiled.json"
+            report = _trial_report("profiled")
+            report["trace_summary"]["fetch_profile_complete"] = False
+            path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                _validated_trial_report(
+                    path,
+                    expected_mode="profiled",
+                )
+
+    def test_profile_materiality_is_independent_of_sql_correlation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline_path = root / "instrumented.json"
+            profiled_path = root / "profiled.json"
+            output = root / "profile-comparison.json"
+            baseline = _trial_report(
+                "instrumented",
+                achieved_request_start_rps=4.0,
+                completed=100,
+                failed=1,
+                latency={"p95_ms": 1000.0},
+                server_client_correlation={"complete": False},
+            )
+            profiled = _trial_report(
+                "profiled",
+                achieved_request_start_rps=3.95,
+                completed=100,
+                failed=1,
+                latency={"p95_ms": 1010.0},
+                server_client_correlation={"complete": False},
+            )
+            baseline_path.write_text(
+                json.dumps(baseline),
+                encoding="utf-8",
+            )
+            profiled_path.write_text(
+                json.dumps(profiled),
+                encoding="utf-8",
+            )
+
+            report = connection_trial._compare_profiled(
+                SimpleNamespace(
+                    instrumented=baseline_path,
+                    profiled=profiled_path,
+                    output=output,
+                )
+            )
+
+        self.assertFalse(report["material_profiling_deterioration"])
+        self.assertTrue(report["interpretation_allowed"])
+
+    def test_profile_materiality_fails_on_start_rate_regression(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline_path = root / "instrumented.json"
+            profiled_path = root / "profiled.json"
+            output = root / "profile-comparison.json"
+            baseline_path.write_text(
+                json.dumps(
+                    _trial_report(
+                        "instrumented",
+                        achieved_request_start_rps=4.0,
+                    )
+                ),
+                encoding="utf-8",
+            )
+            profiled_path.write_text(
+                json.dumps(
+                    _trial_report(
+                        "profiled",
+                        achieved_request_start_rps=3.5,
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            report = connection_trial._compare_profiled(
+                SimpleNamespace(
+                    instrumented=baseline_path,
+                    profiled=profiled_path,
+                    output=output,
+                )
+            )
+
+        self.assertTrue(report["material_profiling_deterioration"])
+        self.assertFalse(report["interpretation_allowed"])
 
     def test_canonical_reproduced_failure_is_valid_diagnostic_execution(self) -> None:
         with TemporaryDirectory() as tmp:
