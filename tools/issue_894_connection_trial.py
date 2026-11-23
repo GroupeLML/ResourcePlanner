@@ -955,13 +955,18 @@ def _server_client_correlation(
             }),
         }
 
+    aligned_server_events = [
+        event
+        for events in server_by_connection.values()
+        for event in events
+    ]
     prepared_execution_observed = any(
-        match.get("execution_category") == "prepared_rpc"
-        for match in matches
+        event.get("execution_category") == "prepared_rpc"
+        for event in aligned_server_events
     )
     direct_batch_execution_observed = any(
-        match.get("execution_category") == "direct_batch"
-        for match in matches
+        event.get("execution_category") == "direct_batch"
+        for event in aligned_server_events
     )
     dropped = _safe_int(capture.get("dropped_event_count"))
     truncated = bool(capture.get("truncated"))
