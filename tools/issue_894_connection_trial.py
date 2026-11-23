@@ -403,14 +403,18 @@ def _server_execution_events(
 
 def _fetch_time_consistent(
     app_fetch: dict[str, object],
+    app_statement: dict[str, object],
     server_event: dict[str, object],
 ) -> bool:
-    app_end = _parse_utc(app_fetch.get("timestamp_utc"))
-    fetch_elapsed_ms = float(app_fetch.get("fetch_elapsed_ms") or 0.0)
-    app_start = app_end - timedelta(milliseconds=fetch_elapsed_ms)
+    statement_start = _parse_utc(app_statement.get("timestamp_utc"))
+    fetch_end = _parse_utc(app_fetch.get("timestamp_utc"))
     margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
     event_time = _parse_utc(server_event.get("timestamp_utc"))
-    return app_start - margin <= event_time <= app_end + margin
+    return (
+        statement_start - margin
+        <= event_time
+        <= fetch_end + margin
+    )
 
 
 def _server_client_correlation(
@@ -528,7 +532,7 @@ def _server_client_correlation(
             duplicate_mappings += 1
             unmatched_app.append(app)
             continue
-        if not _fetch_time_consistent(app, event):
+        if not _fetch_time_consistent(app, marker, event):
             timing_inconsistencies.append({
                 "spid": spid,
                 "connection_execution_sequence": sequence,
@@ -720,10 +724,11 @@ def _server_client_correlation(
         "clock_uncertainty_ms": XE_CLOCK_UNCERTAINTY_MS,
         "clock_correlation_basis": (
             "physical-connection/SPID execution order is the primary "
-            "identity rule; server completion must also fall within the "
-            "reconstructed DBAPI fetch interval plus the bounded UTC "
-            "clock-uncertainty margin; application monotonic clocks are "
-            "never subtracted directly from SQL Server timestamps"
+            "identity rule; server completion must also fall between the "
+            "application statement start and DBAPI fetch completion plus "
+            "the bounded UTC clock-uncertainty margin; application "
+            "monotonic clocks are never subtracted directly from SQL Server "
+            "timestamps"
         ),
         "complete": complete,
     }
