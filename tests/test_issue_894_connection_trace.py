@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -896,6 +897,8 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                     preflight=preflight,
                     trace=trace,
                     output=output,
+                    command_start_ns=1_000_000_000,
+                    command_end_ns=1_030_000_000,
                 )
             )
 
