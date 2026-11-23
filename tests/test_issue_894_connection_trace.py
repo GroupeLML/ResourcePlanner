@@ -235,6 +235,45 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(probes), 1)
         self.assertEqual(probes[0]["connection_execution_sequence"], 1)
 
+    async def test_driver_execute_lifecycle_records_execution_identity(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trace.jsonl"
+            recorder = ConnectionTraceRecorder(path)
+            context = SimpleNamespace(
+                _rp894_trace_connection_id=101,
+                _rp894_trace_spid=77,
+                _rp894_trace_statement_sequence=4,
+                _rp894_trace_connection_execution_sequence=9,
+                _rp894_trace_fingerprint="abcdef0123456789",
+            )
+            recorder.record_driver_execute(
+                context,
+                kind="driver_execute_entry",
+            )
+            recorder.record_driver_execute(
+                context,
+                kind="driver_execute_return",
+            )
+            rows = _rows(path)
+
+        self.assertEqual(
+            [row["kind"] for row in rows],
+            ["driver_execute_entry", "driver_execute_return"],
+        )
+        for row in rows:
+            self.assertEqual(row["connection_id"], 101)
+            self.assertEqual(row["spid"], 77)
+            self.assertEqual(
+                row["connection_execution_sequence"],
+                9,
+            )
+            self.assertEqual(
+                row["statement_fingerprint"],
+                "abcdef0123456789",
+            )
+            self.assertNotIn("statement", row)
+            self.assertNotIn("parameters", row)
+
     async def test_executor_submission_worker_start_completion_and_resume_are_ordered(self) -> None:
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "trace.jsonl"
@@ -464,6 +503,35 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(report["material_instrumentation_deterioration"])
+
+    def test_comparator_publishes_overhead_when_correlation_is_incomplete(self) -> None:
+        report = _comparison(
+            {
+                "achieved_request_start_rps": 7.27,
+                "latency": {"p95_ms": 1000.0},
+                "completed": 100,
+                "failed": 20,
+            },
+            {
+                "achieved_request_start_rps": 6.07,
+                "latency": {"p95_ms": 1000.0},
+                "completed": 100,
+                "failed": 20,
+                "server_client_correlation": {"complete": False},
+            },
+        )
+
+        self.assertFalse(report["correlation_complete"])
+        self.assertTrue(
+            report["material_instrumentation_deterioration"]
+        )
+        self.assertFalse(report["interpretation_allowed"])
+        self.assertAlmostEqual(
+            report["materiality_thresholds"][
+                "request_start_rate_floor"
+            ],
+            7.27 * 0.90,
+        )
 
     def test_canonical_reproduced_failure_is_valid_diagnostic_execution(self) -> None:
         with TemporaryDirectory() as tmp:
