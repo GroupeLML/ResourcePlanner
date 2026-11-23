@@ -812,6 +812,18 @@ jobs:
           docker logs --tail=500 backend \
             > "$evidence/connection-trial-canonical-backend.txt" 2>&1 || true
 
+          docker run --rm \
+            --network "$RP894_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$evidence:/evidence" \
+            -w /workspace \
+            -e PYTHONPATH=/app:/workspace \
+            resourceplanner-894-feature-backend \
+            python tools/issue_894_connection_trial.py xe-start \
+              --database-url "$RP894_DATABASE_URL" \
+              --output /evidence/sqlserver-xe-start.json
+          xe_start_status=$?
+
           start_backend instrumented
           instrumented_start_status=$?
           if [ "$instrumented_start_status" = "0" ]; then
@@ -828,6 +840,46 @@ jobs:
           fi
           docker logs --tail=700 backend \
             > "$evidence/connection-trial-instrumented-backend.txt" 2>&1 || true
+
+          if [ "$xe_start_status" = "0" ]; then
+            docker run --rm \
+              --network "$RP894_NETWORK" \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py xe-stop \
+                --database-url "$RP894_DATABASE_URL" \
+                --output /evidence/sqlserver-xe-capture.json
+            xe_stop_status=$?
+          else
+            xe_stop_status=1
+          fi
+
+          if [ "$instrumented_execution_status" = "0" ] \
+            && [ "$xe_start_status" = "0" ] \
+            && [ "$xe_stop_status" = "0" ]; then
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py correlate \
+                --trial /evidence/connection-trial-instrumented.json \
+                --trace /evidence/performance/issue894-connection-trace.jsonl \
+                --server /evidence/sqlserver-xe-capture.json \
+                --output /evidence/connection-trial-instrumented.json
+            correlation_status=$?
+          else
+            correlation_status=1
+          fi
+          if [ "$xe_start_status" != "0" ] \
+            || [ "$xe_stop_status" != "0" ] \
+            || [ "$correlation_status" != "0" ]; then
+            instrumented_execution_status=1
+          fi
 
           if [ -f "$evidence/connection-trial-canonical.json" ] \
             && [ -f "$evidence/connection-trial-instrumented.json" ]; then
@@ -853,6 +905,9 @@ jobs:
             printf 'trial_outcome_source=connection-trial-*.json:diagnostic_acceptance_behavior_failed\n'
             printf 'canonical_execution_status=%s\n' "$canonical_execution_status"
             printf 'instrumented_execution_status=%s\n' "$instrumented_execution_status"
+            printf 'xe_start_status=%s\n' "$xe_start_status"
+            printf 'xe_stop_status=%s\n' "$xe_stop_status"
+            printf 'correlation_status=%s\n' "$correlation_status"
             printf 'comparison_execution_status=%s\n' "$comparison_execution_status"
             printf 'full_mixed_load=NOT RUN\n'
             printf 'ack_campaign=NOT RUN\n'
@@ -935,6 +990,18 @@ jobs:
         shell: bash
         run: |
           docker rm -f frontend backend >/dev/null 2>&1 || true
+          if [ -n "${RP894_DATABASE_URL:-}" ] \
+            && [ -n "${RP894_NETWORK:-}" ]; then
+            docker run --rm \
+              --network "$RP894_NETWORK" \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py xe-cleanup \
+                --database-url "$RP894_DATABASE_URL" \
+              >/dev/null 2>&1 || true
+          fi
           if [ -n "${RP894_SQL_SERVER:-}" ]; then
             docker rm -f "$RP894_SQL_SERVER" >/dev/null 2>&1 || true
           fi
