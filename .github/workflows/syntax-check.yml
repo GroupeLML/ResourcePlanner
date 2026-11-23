@@ -619,7 +619,7 @@ jobs:
           printf 'container_name=%s\n' "$container_name" >> "$GITHUB_OUTPUT"
           printf 'host_pid=%s\n' "$host_pid" >> "$GITHUB_OUTPUT"
 
-      - name: Collect allowlisted read-only environment inventory
+      - name: Collect allowlisted read-only environment inventory in host sudo context
         shell: bash
         env:
           IMAGE_REF: ${{ steps.image.outputs.image_ref }}
@@ -628,16 +628,40 @@ jobs:
           RP894_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          python tools/issue_894_environment_inventory.py collect \
-            --target-pid "$TARGET_PID" \
-            --container-name "$CONTAINER_NAME" \
-            --image-ref "$IMAGE_REF" \
-            --expected-head "$RP894_HEAD_SHA" \
-            --historical-image-digest \
-              sha256:911273639c9186aecb45cafc30f32d42c1044ed31c84d8848b604815d3462c5a \
-            --output issue-894-environment-inventory.json
+          sudo --preserve-env=CI,GITHUB_ACTIONS,GITHUB_SHA,ImageOS,ImageVersion,RUNNER_ARCH,RUNNER_OS \
+            "$(command -v python)" tools/issue_894_environment_inventory.py collect \
+              --target-pid "$TARGET_PID" \
+              --container-name "$CONTAINER_NAME" \
+              --image-ref "$IMAGE_REF" \
+              --expected-head "$RP894_HEAD_SHA" \
+              --historical-ci-3221-digest \
+                sha256:911273639c9186aecb45cafc30f32d42c1044ed31c84d8848b604815d3462c5a \
+              --historical-ci-3222-digest \
+                sha256:1006b7f5be832aab83ce6618287ce475d1f60aa072371abf14494b07572eda01 \
+              --require-elevated \
+              --output issue-894-environment-inventory.json
           python tools/issue_894_environment_inventory.py validate \
             --input issue-894-environment-inventory.json
+
+      - name: Retain exact new diagnostic-reference image bytes
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+          RP894_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          reference_dir="$GITHUB_WORKSPACE/issue-894-diagnostic-reference"
+          mkdir -p "$reference_dir"
+          archive="$reference_dir/resourceplanner-894-inventory-backend.tar.gz"
+          docker image save "$IMAGE_REF" | gzip -n -1 > "$archive"
+          test -s "$archive"
+          python tools/issue_894_environment_inventory.py bind-image-archive \
+            --archive "$archive" \
+            --image-ref "$IMAGE_REF" \
+            --expected-head "$RP894_HEAD_SHA" \
+            --output "$reference_dir/manifest.json"
+          python tools/issue_894_environment_inventory.py validate-reference \
+            --input "$reference_dir/manifest.json"
 
       - name: Upload bounded environment inventory
         if: always()
@@ -646,6 +670,16 @@ jobs:
           name: issue-894-environment-inventory-${{ github.event.pull_request.head.sha }}
           path: issue-894-environment-inventory.json
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload immutable diagnostic-reference runtime
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-894-diagnostic-reference-runtime-${{ github.event.pull_request.head.sha }}
+          path: issue-894-diagnostic-reference/
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 30
 
       - name: Clean inventory target

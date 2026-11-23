@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 
 SCHEMA = "issue-894-environment-inventory-v1"
@@ -87,7 +88,18 @@ DENIED_COMMAND_TOKENS = (
     "setcap",
     "capsh --",
     "py-spy",
+    "pip install",
+    "apt install",
+    "apt-get install",
+    "os.kill",
+    "signal.",
+    "docker kill",
 )
+FIXED_EXECUTABLE_BASENAMES = {
+    "docker",
+    "getcap",
+    "readelf",
+}
 RELEVANT_LABELS = (
     "cpython",
     "pyodbc",
@@ -226,6 +238,12 @@ def _run_fixed(
     if not argv or not Path(argv[0]).is_absolute():
         raise ValueError(
             "fixed command requires absolute executable"
+        )
+    executable_name = Path(argv[0]).name
+    if executable_name not in FIXED_EXECUTABLE_BASENAMES:
+        raise ValueError(
+            "fixed command executable is not allowlisted: "
+            f"{executable_name}"
         )
     try:
         completed = subprocess.run(
@@ -580,6 +598,10 @@ def _elf_metadata(
         [readelf, "-W", "-n", str(resolved)],
         timeout=4.0,
     )
+    header_result = _run_fixed(
+        [readelf, "-W", "-h", str(resolved)],
+        timeout=4.0,
+    )
     if sections_result["state"] != "AVAILABLE":
         return sections_result
     output = str(
@@ -598,6 +620,36 @@ def _elf_metadata(
         )
     )
     build_id = ""
+    elf_class = ""
+    machine = ""
+    data_encoding = ""
+    if header_result["state"] == "AVAILABLE":
+        header = str(
+            (
+                header_result.get("value")
+                or {}
+            ).get("output")
+            or ""
+        )
+        for key, target in (
+            ("Class:", "elf_class"),
+            ("Data:", "data_encoding"),
+            ("Machine:", "machine"),
+        ):
+            match = re.search(
+                rf"^\s*{re.escape(key)}\s*(.+)$",
+                header,
+                re.MULTILINE,
+            )
+            if not match:
+                continue
+            value = match.group(1).strip()[:200]
+            if target == "elf_class":
+                elf_class = value
+            elif target == "data_encoding":
+                data_encoding = value
+            else:
+                machine = value
     if notes_result["state"] == "AVAILABLE":
         notes = str(
             (
@@ -616,6 +668,11 @@ def _elf_metadata(
         "AVAILABLE",
         {
             "build_id": build_id or None,
+            "architecture": {
+                "elf_class": elf_class or None,
+                "data_encoding": data_encoding or None,
+                "machine": machine or None,
+            },
             "sections": [
                 name
                 for name in section_names
@@ -765,11 +822,42 @@ def _docker_json(
         )
 
 
+def _historical_image_status(
+    digest: str,
+) -> dict[str, object]:
+    historical = _docker_json(
+        ["image", "inspect", digest]
+    )
+    if historical["state"] == "AVAILABLE":
+        return _status(
+            "AVAILABLE",
+            {
+                "digest": digest,
+                "availability_basis": (
+                    "exact_digest_present_in_current_"
+                    "runner_docker_store"
+                ),
+            },
+        )
+    return _status(
+        "EXACT_RUNTIME_UNAVAILABLE",
+        {
+            "known_image_identity": digest,
+            "availability_basis": (
+                "exact identity not present in current runner "
+                "docker store; no pull, rebuild, or historical-"
+                "image recreation attempted"
+            ),
+        },
+    )
+
+
 def _image_inventory(
     container_name: str,
     image_ref: str,
     expected_head: str,
-    historical_digest: str,
+    historical_ci_3221_digest: str,
+    historical_ci_3222_digest: str,
 ) -> dict[str, object]:
     container = _docker_json(
         ["inspect", container_name]
@@ -833,35 +921,14 @@ def _image_inventory(
             ),
         )
 
-    historical = _docker_json(
-        ["image", "inspect", historical_digest]
-    )
-    if historical["state"] == "AVAILABLE":
-        historical_status = _status(
-            "AVAILABLE",
-            {
-                "digest": historical_digest,
-                "availability_basis": (
-                    "exact_digest_present_in_current_"
-                    "runner_docker_store"
-                ),
-            },
-        )
-    else:
-        historical_status = _status(
-            "EXACT_RUNTIME_UNAVAILABLE",
-            {
-                "known_oci_index_digest": historical_digest,
-                "availability_basis": (
-                    "exact digest not present in current "
-                    "runner docker store; no pull, rebuild, "
-                    "or historical-image recreation attempted"
-                ),
-            },
-        )
     return {
         "current_inventory_runtime": current,
-        "historical_ci_3221": historical_status,
+        "historical_ci_3221": _historical_image_status(
+            historical_ci_3221_digest
+        ),
+        "historical_ci_3222": _historical_image_status(
+            historical_ci_3222_digest
+        ),
     }
 
 
@@ -981,6 +1048,35 @@ def _namespace_inventory(
     }
 
 
+def _observer_identity() -> dict[str, object]:
+    resuid = (
+        list(os.getresuid())
+        if hasattr(os, "getresuid")
+        else [os.getuid(), os.geteuid()]
+    )
+    resgid = (
+        list(os.getresgid())
+        if hasattr(os, "getresgid")
+        else [os.getgid(), os.getegid()]
+    )
+    return {
+        "uid": os.getuid(),
+        "effective_uid": os.geteuid(),
+        "gid": os.getgid(),
+        "effective_gid": os.getegid(),
+        "resuid": resuid,
+        "resgid": resgid,
+        "proc_status": _parse_status(
+            Path("/proc/self/status"),
+            SECURITY_STATUS_FIELDS,
+        ),
+        "security_context": _read_text(
+            Path("/proc/self/attr/current"),
+            limit=2000,
+        ),
+    }
+
+
 def _security_inventory() -> dict[str, object]:
     sysctls = {
         name: _read_text(
@@ -1070,6 +1166,10 @@ def _collect(
         raise ValueError(
             "target pid must be positive"
         )
+    if args.require_elevated and os.geteuid() != 0:
+        raise ValueError(
+            "elevated host inventory requires effective uid 0"
+        )
     boot_id = _read_text(
         Path(
             "/proc/sys/kernel/random/boot_id"
@@ -1082,6 +1182,7 @@ def _collect(
         "observer_preflight_performed": False,
         "profiling_or_tracing_performed": False,
         "mutation_performed": False,
+        "observer_identity": _observer_identity(),
         "runner": {
             "allowlisted_environment": _safe_env(),
             "platform": {
@@ -1132,7 +1233,8 @@ def _collect(
             args.container_name,
             args.image_ref,
             args.expected_head,
-            args.historical_image_digest,
+            args.historical_ci_3221_digest,
+            args.historical_ci_3222_digest,
         ),
         "clock_mapping": (
             _clock_mapping(
@@ -1273,6 +1375,7 @@ def _validate_report(
         "observer_preflight_performed",
         "profiling_or_tracing_performed",
         "mutation_performed",
+        "observer_identity",
         "runner",
         "host_kernel_security",
         "tools",
@@ -1376,16 +1479,19 @@ def _validate_report(
             "forbidden artifact fragments: "
             f"{present}"
         )
-    historical = (
-        (
-            report.get("images")
+    for historical_key in (
+        "historical_ci_3221",
+        "historical_ci_3222",
+    ):
+        historical = (
+            (
+                report.get("images")
+                or {}
+            ).get(historical_key)
             or {}
-        ).get(
-            "historical_ci_3221"
         )
-        or {}
-    )
-    if historical.get("state") == "AVAILABLE":
+        if historical.get("state") != "AVAILABLE":
+            continue
         basis = str(
             (
                 historical.get("value")
@@ -1403,6 +1509,279 @@ def _validate_report(
                 "historical runtime cannot "
                 "be reported available "
                 "from rebuild"
+            )
+
+
+def _reference_manifest(
+    archive: Path,
+    image_ref: str,
+    expected_head: str,
+) -> dict[str, object]:
+    archive_hash = _sha256(archive)
+    if archive_hash["state"] != "AVAILABLE":
+        raise ValueError(
+            "image archive is not readable"
+        )
+    image = _docker_json(
+        ["image", "inspect", image_ref]
+    )
+    if image["state"] != "AVAILABLE":
+        raise ValueError(
+            "exact inventory image is unavailable"
+        )
+    rows = image.get("value") or []
+    if len(rows) != 1:
+        raise ValueError(
+            "expected exactly one image inspection result"
+        )
+    inspected = rows[0]
+    image_id = str(
+        inspected.get("Id") or ""
+    )
+    labels = (
+        (
+            inspected.get("Config")
+            or {}
+        ).get("Labels")
+        or {}
+    )
+    revision = str(
+        labels.get(
+            "org.opencontainers.image.revision"
+        )
+        or ""
+    )
+    if revision != expected_head:
+        raise ValueError(
+            "inventory image revision does not match PR head"
+        )
+
+    with tarfile.open(
+        archive,
+        mode="r:*",
+    ) as handle:
+        manifest_member = handle.getmember(
+            "manifest.json"
+        )
+        manifest_bytes = handle.extractfile(
+            manifest_member
+        )
+        if manifest_bytes is None:
+            raise ValueError(
+                "docker archive manifest is unreadable"
+            )
+        raw_manifest = manifest_bytes.read()
+        manifest = json.loads(
+            raw_manifest.decode("utf-8")
+        )
+        if not isinstance(manifest, list):
+            raise ValueError(
+                "docker archive manifest is malformed"
+            )
+        matching = [
+            row
+            for row in manifest
+            if isinstance(row, dict)
+            and image_ref in (
+                row.get("RepoTags")
+                or []
+            )
+        ]
+        if not matching and len(manifest) == 1:
+            matching = [manifest[0]]
+        if len(matching) != 1:
+            raise ValueError(
+                "docker archive image entry is ambiguous"
+            )
+        entry = matching[0]
+        config_name = str(
+            entry.get("Config") or ""
+        )
+        if not config_name:
+            raise ValueError(
+                "docker archive config is missing"
+            )
+        config_member = handle.getmember(
+            config_name
+        )
+        config_file = handle.extractfile(
+            config_member
+        )
+        if config_file is None:
+            raise ValueError(
+                "docker archive config is unreadable"
+            )
+        config_bytes = config_file.read()
+        config_hash = hashlib.sha256(
+            config_bytes
+        ).hexdigest()
+        config = json.loads(
+            config_bytes.decode("utf-8")
+        )
+
+    expected_image_id = f"sha256:{config_hash}"
+    if image_id != expected_image_id:
+        raise ValueError(
+            "archive config digest does not match Docker image ID"
+        )
+    archived_labels = (
+        (
+            config.get("config")
+            or {}
+        ).get("Labels")
+        or {}
+    )
+    archived_revision = str(
+        archived_labels.get(
+            "org.opencontainers.image.revision"
+        )
+        or ""
+    )
+    if archived_revision != expected_head:
+        raise ValueError(
+            "archive OCI revision does not match PR head"
+        )
+
+    report = {
+        "schema": (
+            "issue-894-diagnostic-reference-runtime-v1"
+        ),
+        "diagnostic_reference": True,
+        "historical_recovery": False,
+        "source": (
+            "new_exact_head_inventory_build"
+        ),
+        "pr_head": expected_head,
+        "image_ref": image_ref,
+        "image_id": image_id,
+        "repo_digests": sorted(
+            inspected.get("RepoDigests")
+            or []
+        ),
+        "revision_label": revision,
+        "architecture": inspected.get(
+            "Architecture"
+        ),
+        "os": inspected.get("Os"),
+        "archive_file": archive.name,
+        "archive_size_bytes": archive.stat().st_size,
+        "archive_sha256": str(
+            archive_hash.get("value") or ""
+        ),
+        "docker_archive_manifest_sha256": (
+            hashlib.sha256(
+                raw_manifest
+            ).hexdigest()
+        ),
+        "archive_config_name": config_name,
+        "archive_config_sha256": config_hash,
+        "archive_config_matches_image_id": True,
+        "archive_revision_label": archived_revision,
+        "archive_architecture": config.get(
+            "architecture"
+        ),
+        "archive_os": config.get("os"),
+    }
+    _validate_reference_manifest(report)
+    return report
+
+
+def _validate_reference_manifest(
+    report: dict[str, object],
+) -> None:
+    expected = {
+        "schema",
+        "diagnostic_reference",
+        "historical_recovery",
+        "source",
+        "pr_head",
+        "image_ref",
+        "image_id",
+        "repo_digests",
+        "revision_label",
+        "architecture",
+        "os",
+        "archive_file",
+        "archive_size_bytes",
+        "archive_sha256",
+        "docker_archive_manifest_sha256",
+        "archive_config_name",
+        "archive_config_sha256",
+        "archive_config_matches_image_id",
+        "archive_revision_label",
+        "archive_architecture",
+        "archive_os",
+    }
+    if set(report) != expected:
+        raise ValueError(
+            "diagnostic reference manifest schema drift"
+        )
+    if report.get("schema") != (
+        "issue-894-diagnostic-reference-runtime-v1"
+    ):
+        raise ValueError(
+            "diagnostic reference manifest schema mismatch"
+        )
+    if report.get("historical_recovery") is not False:
+        raise ValueError(
+            "new diagnostic reference cannot claim historical recovery"
+        )
+    if report.get("source") != (
+        "new_exact_head_inventory_build"
+    ):
+        raise ValueError(
+            "diagnostic reference source is invalid"
+        )
+    if (
+        report.get(
+            "archive_config_matches_image_id"
+        )
+        is not True
+    ):
+        raise ValueError(
+            "archive is not bound to image ID"
+        )
+    head = str(report.get("pr_head") or "")
+    if not head or str(
+        report.get("revision_label") or ""
+    ) != head:
+        raise ValueError(
+            "revision label is not bound to PR head"
+        )
+    if str(
+        report.get(
+            "archive_revision_label"
+        )
+        or ""
+    ) != head:
+        raise ValueError(
+            "archive revision is not bound to PR head"
+        )
+    image_id = str(
+        report.get("image_id") or ""
+    )
+    config_hash = str(
+        report.get(
+            "archive_config_sha256"
+        )
+        or ""
+    )
+    if image_id != f"sha256:{config_hash}":
+        raise ValueError(
+            "archive config hash is not the Docker image ID"
+        )
+    for key in (
+        "archive_sha256",
+        "docker_archive_manifest_sha256",
+        "archive_config_sha256",
+    ):
+        value = str(report.get(key) or "")
+        if not re.fullmatch(
+            r"[0-9a-f]{64}",
+            value,
+        ):
+            raise ValueError(
+                f"invalid diagnostic reference digest: {key}"
             )
 
 
@@ -1449,6 +1828,11 @@ def _validate_workflow(
         "sysctl -w",
         "mount -t",
         "setcap",
+        "pip install",
+        "apt-get install",
+        "apt install",
+        "kill -",
+        "pkill",
     )
     hits = [
         token
@@ -1459,6 +1843,24 @@ def _validate_workflow(
         raise ValueError(
             "inventory workflow invokes "
             f"forbidden operations: {hits}"
+        )
+    required_inventory_fragments = (
+        "sudo --preserve-env=",
+        " --require-elevated",
+        "docker image save",
+        "bind-image-archive",
+        "validate-reference",
+        "issue-894-diagnostic-reference-runtime-",
+    )
+    missing_requirements = [
+        fragment
+        for fragment in required_inventory_fragments
+        if fragment not in job
+    ]
+    if missing_requirements:
+        raise ValueError(
+            "inventory workflow is missing elevated/reference "
+            f"requirements: {missing_requirements}"
         )
     if (
         "issue_894_inventory_only"
@@ -1537,6 +1939,9 @@ def _self_test() -> None:
         "observer_preflight_performed": False,
         "profiling_or_tracing_performed": False,
         "mutation_performed": False,
+        "observer_identity": {
+            "effective_uid": 0,
+        },
         "runner": {
             "allowlisted_environment": {}
         },
@@ -1554,6 +1959,14 @@ def _self_test() -> None:
                         "no_rebuild"
                     )
                 },
+            ),
+            "historical_ci_3222": _status(
+                "EXACT_RUNTIME_UNAVAILABLE",
+                {
+                    "availability_basis": (
+                        "no_rebuild"
+                    )
+                },
             )
         },
         "clock_mapping": _status(
@@ -1562,6 +1975,48 @@ def _self_test() -> None:
         "remaining_unknowns": [],
     }
     _validate_report(sample)
+    reference_sample = {
+        "schema": "issue-894-diagnostic-reference-runtime-v1",
+        "diagnostic_reference": True,
+        "historical_recovery": False,
+        "source": "new_exact_head_inventory_build",
+        "pr_head": "a" * 40,
+        "image_ref": "example:new",
+        "image_id": "sha256:" + "b" * 64,
+        "repo_digests": [],
+        "revision_label": "a" * 40,
+        "architecture": "amd64",
+        "os": "linux",
+        "archive_file": "image.tar.gz",
+        "archive_size_bytes": 1,
+        "archive_sha256": "c" * 64,
+        "docker_archive_manifest_sha256": "d" * 64,
+        "archive_config_name": "b" * 64 + ".json",
+        "archive_config_sha256": "b" * 64,
+        "archive_config_matches_image_id": True,
+        "archive_revision_label": "a" * 40,
+        "archive_architecture": "amd64",
+        "archive_os": "linux",
+    }
+    _validate_reference_manifest(
+        reference_sample
+    )
+    invalid_reference = dict(
+        reference_sample
+    )
+    invalid_reference[
+        "historical_recovery"
+    ] = True
+    try:
+        _validate_reference_manifest(
+            invalid_reference
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "historical recovery relabel was not rejected"
+        )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1598,11 +2053,50 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     collect.add_argument(
-        "--historical-image-digest",
+        "--historical-ci-3221-digest",
         required=True,
     )
     collect.add_argument(
+        "--historical-ci-3222-digest",
+        required=True,
+    )
+    collect.add_argument(
+        "--require-elevated",
+        action="store_true",
+    )
+    collect.add_argument(
         "--output",
+        type=Path,
+        required=True,
+    )
+
+    bind = sub.add_parser(
+        "bind-image-archive"
+    )
+    bind.add_argument(
+        "--archive",
+        type=Path,
+        required=True,
+    )
+    bind.add_argument(
+        "--image-ref",
+        required=True,
+    )
+    bind.add_argument(
+        "--expected-head",
+        required=True,
+    )
+    bind.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+    )
+
+    validate_reference = sub.add_parser(
+        "validate-reference"
+    )
+    validate_reference.add_argument(
+        "--input",
         type=Path,
         required=True,
     )
@@ -1664,6 +2158,61 @@ def main() -> int:
                     "output": str(
                         args.output
                     ),
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "bind-image-archive":
+        report = _reference_manifest(
+            args.archive,
+            args.image_ref,
+            args.expected_head,
+        )
+        args.output.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        args.output.write_text(
+            json.dumps(
+                report,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(
+            json.dumps(
+                {
+                    "schema": report["schema"],
+                    "archive_sha256": report[
+                        "archive_sha256"
+                    ],
+                    "image_id": report[
+                        "image_id"
+                    ],
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command == "validate-reference":
+        report = json.loads(
+            args.input.read_text(
+                encoding="utf-8"
+            )
+        )
+        if not isinstance(report, dict):
+            raise ValueError(
+                "diagnostic reference manifest must be a JSON object"
+            )
+        _validate_reference_manifest(report)
+        print(
+            json.dumps(
+                {
+                    "schema": report["schema"],
+                    "validation": "PASS",
                 },
                 sort_keys=True,
             )
