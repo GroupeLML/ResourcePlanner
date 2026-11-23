@@ -1428,6 +1428,8 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             str(call.args[0])
             for call in connection.exec_driver_sql.call_args_list
         )
+        self.assertIn("ADD EVENT sqlserver.rpc_completed", sql)
+        self.assertIn("ADD EVENT sqlserver.sql_batch_completed", sql)
         self.assertIn("ADD TARGET package0.event_file", sql)
         self.assertIn("max_file_size=(8)", sql)
         self.assertIn("max_rollover_files=(8)", sql)
