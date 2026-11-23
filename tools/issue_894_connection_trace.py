@@ -24,6 +24,7 @@ _ROUTE_FAMILY = ContextVar("rp894_diagnostic_route_family", default="unknown")
 _EXECUTOR_PHASE = ContextVar("rp894_diagnostic_executor_phase", default="other")
 _ID_RE = re.compile(r"^[a-f0-9]{16,32}$")
 _STALL_WAIT_SECONDS = 1.0
+_FETCH_PROFILE_INTERVAL_SECONDS = 0.01
 _LEGACY_LIST_SHIFTS_FINGERPRINT = "6361f6c1e9d43777"
 _UNCHANGED_TARGET_FINGERPRINTS = frozenset({
     "bb0e459d480f9470",
@@ -109,6 +110,11 @@ class ConnectionTraceRecorder:
     _holders: dict[int, dict[str, object]] = field(default_factory=dict)
     _requests: dict[str, _RequestAggregate] = field(default_factory=dict)
     _consumer_local: threading.local = field(default_factory=threading.local)
+    fetch_profile_enabled: bool = False
+    _profile_lock: threading.Lock = field(default_factory=threading.Lock)
+    _profile_active: dict[int, dict[str, object]] = field(default_factory=dict)
+    _profile_thread: threading.Thread | None = None
+    _profile_next_id: int = 0
 
     def _elapsed_ms(self) -> float:
         return max(0.0, (time.perf_counter() - self.started) * 1000.0)
@@ -587,6 +593,317 @@ class ConnectionTraceRecorder:
                 aggregate.first_materialization = now
             aggregate.last_materialization = now
 
+    @staticmethod
+    def _proc_thread_snapshot(
+        native_thread_id: int,
+    ) -> dict[str, object]:
+        root = Path(f"/proc/self/task/{int(native_thread_id)}")
+        state = ""
+        cpu_seconds = 0.0
+        wait_channel = ""
+        native_stack_symbol = ""
+        try:
+            text = (root / "stat").read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+            after = text[text.rfind(")") + 2 :].split()
+            state = str(after[0]) if after else ""
+            if len(after) > 12:
+                ticks = int(after[11]) + int(after[12])
+                clock_ticks = int(
+                    __import__("os").sysconf("SC_CLK_TCK")
+                )
+                cpu_seconds = (
+                    ticks / clock_ticks if clock_ticks > 0 else 0.0
+                )
+        except (OSError, ValueError, IndexError):
+            state = ""
+            cpu_seconds = 0.0
+        try:
+            wait_channel = (root / "wchan").read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).strip()
+        except OSError:
+            wait_channel = ""
+        try:
+            stack_lines = (root / "stack").read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()
+            if stack_lines:
+                native_stack_symbol = stack_lines[0].strip()[:160]
+        except OSError:
+            native_stack_symbol = ""
+        return {
+            "state": state,
+            "cpu_seconds": cpu_seconds,
+            "wait_channel": wait_channel,
+            "native_stack_symbol": native_stack_symbol,
+        }
+
+    @staticmethod
+    def _profile_state_category(state: str) -> str:
+        if state == "R":
+            return "running"
+        if state in {"S", "D"}:
+            return "waiting"
+        return "unresolved"
+
+    @staticmethod
+    def _python_frame_category(
+        frame: object | None,
+    ) -> str:
+        if frame is None:
+            return "unresolved"
+        try:
+            code = frame.f_code
+            filename = Path(str(code.co_filename)).name
+            function = str(code.co_name)
+        except Exception:
+            return "unresolved"
+        return f"python:{filename}:{function}"[:160]
+
+    def _ensure_profile_sampler(self) -> None:
+        if not self.fetch_profile_enabled:
+            return
+        with self._profile_lock:
+            if (
+                self._profile_thread is not None
+                and self._profile_thread.is_alive()
+            ):
+                return
+            thread = threading.Thread(
+                target=self._profile_sampler_loop,
+                name="rp894-fetch-profile",
+                daemon=True,
+            )
+            self._profile_thread = thread
+            thread.start()
+
+    def _profile_sampler_loop(self) -> None:
+        while True:
+            time.sleep(_FETCH_PROFILE_INTERVAL_SECONDS)
+            frames = sys._current_frames()
+            with self._profile_lock:
+                active = list(self._profile_active.values())
+            for profile in active:
+                native_thread_id = int(
+                    profile.get("native_thread_id") or 0
+                )
+                thread_id = int(profile.get("thread_id") or 0)
+                if native_thread_id <= 0:
+                    continue
+                snapshot = self._proc_thread_snapshot(
+                    native_thread_id
+                )
+                state_category = self._profile_state_category(
+                    str(snapshot.get("state") or "")
+                )
+                wait_channel = str(
+                    snapshot.get("wait_channel") or ""
+                )
+                native_symbol = str(
+                    snapshot.get("native_stack_symbol") or ""
+                )
+                python_category = self._python_frame_category(
+                    frames.get(thread_id)
+                )
+                with self._profile_lock:
+                    current = self._profile_active.get(
+                        int(profile["profile_id"])
+                    )
+                    if current is None:
+                        continue
+                    current["samples"] = (
+                        int(current.get("samples") or 0) + 1
+                    )
+                    current[state_category] = (
+                        int(current.get(state_category) or 0) + 1
+                    )
+                    current["last_cpu_seconds"] = float(
+                        snapshot.get("cpu_seconds") or 0.0
+                    )
+                    if wait_channel and wait_channel != "0":
+                        counts = current["wait_channels"]
+                        counts[wait_channel[:160]] = (
+                            int(counts.get(wait_channel[:160]) or 0) + 1
+                        )
+                    if native_symbol:
+                        counts = current["native_stack_symbols"]
+                        counts[native_symbol] = (
+                            int(counts.get(native_symbol) or 0) + 1
+                        )
+                    counts = current["python_categories"]
+                    counts[python_category] = (
+                        int(counts.get(python_category) or 0) + 1
+                    )
+
+    def begin_fetch_profile(
+        self,
+        *,
+        fingerprint: str,
+        connection_id: int,
+        target_role: str,
+        spid: int,
+        statement_sequence: int,
+        connection_execution_sequence: int,
+    ) -> int | None:
+        if (
+            not self.fetch_profile_enabled
+            or not _targeted_result_consumer(
+                fingerprint,
+                target_role,
+            )
+        ):
+            return None
+        self._ensure_profile_sampler()
+        thread_id = threading.get_ident()
+        native_thread_id = threading.get_native_id()
+        snapshot = self._proc_thread_snapshot(native_thread_id)
+        with self._profile_lock:
+            self._profile_next_id += 1
+            profile_id = self._profile_next_id
+            self._profile_active[profile_id] = {
+                "profile_id": profile_id,
+                "thread_id": thread_id,
+                "native_thread_id": native_thread_id,
+                "fingerprint": str(fingerprint),
+                "connection_id": int(connection_id),
+                "target_role": str(target_role),
+                "spid": int(spid),
+                "statement_sequence": int(statement_sequence),
+                "connection_execution_sequence": int(
+                    connection_execution_sequence
+                ),
+                "started_monotonic": time.perf_counter(),
+                "started_cpu_seconds": float(
+                    snapshot.get("cpu_seconds") or 0.0
+                ),
+                "last_cpu_seconds": float(
+                    snapshot.get("cpu_seconds") or 0.0
+                ),
+                "samples": 0,
+                "running": 0,
+                "waiting": 0,
+                "unresolved": 0,
+                "wait_channels": {},
+                "native_stack_symbols": {},
+                "python_categories": {},
+            }
+        return profile_id
+
+    @staticmethod
+    def _top_profile_counts(
+        values: dict[str, object],
+        *,
+        limit: int = 5,
+    ) -> list[dict[str, object]]:
+        return [
+            {"category": key, "samples": int(value)}
+            for key, value in sorted(
+                values.items(),
+                key=lambda item: (-int(item[1]), item[0]),
+            )[:limit]
+        ]
+
+    def end_fetch_profile(
+        self,
+        profile_id: int | None,
+    ) -> None:
+        if profile_id is None:
+            return
+        ended = time.perf_counter()
+        with self._profile_lock:
+            profile = self._profile_active.pop(
+                int(profile_id),
+                None,
+            )
+        if profile is None:
+            return
+        snapshot = self._proc_thread_snapshot(
+            int(profile.get("native_thread_id") or 0)
+        )
+        ending_cpu = float(
+            snapshot.get("cpu_seconds")
+            or profile.get("last_cpu_seconds")
+            or 0.0
+        )
+        started_cpu = float(
+            profile.get("started_cpu_seconds") or 0.0
+        )
+        samples = int(profile.get("samples") or 0)
+        running = int(profile.get("running") or 0)
+        waiting = int(profile.get("waiting") or 0)
+        unresolved = int(profile.get("unresolved") or 0)
+        self.record(
+            "fetch_profile",
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=int(profile.get("connection_id") or 0),
+            statement_fingerprint=str(
+                profile.get("fingerprint") or ""
+            ),
+            target_role=str(profile.get("target_role") or ""),
+            spid=int(profile.get("spid") or 0),
+            statement_sequence=int(
+                profile.get("statement_sequence") or 0
+            ),
+            connection_execution_sequence=int(
+                profile.get("connection_execution_sequence") or 0
+            ),
+            thread_id=int(profile.get("thread_id") or 0),
+            native_thread_id=int(
+                profile.get("native_thread_id") or 0
+            ),
+            wall_elapsed_ms=max(
+                0.0,
+                (
+                    ended
+                    - float(
+                        profile.get("started_monotonic")
+                        or ended
+                    )
+                )
+                * 1000.0,
+            ),
+            thread_cpu_ms=max(
+                0.0,
+                (ending_cpu - started_cpu) * 1000.0,
+            ),
+            sampling_interval_ms=(
+                _FETCH_PROFILE_INTERVAL_SECONDS * 1000.0
+            ),
+            sample_count=samples,
+            running_samples=running,
+            waiting_samples=waiting,
+            unresolved_samples=unresolved,
+            running_share=(
+                running / samples if samples else 0.0
+            ),
+            waiting_share=(
+                waiting / samples if samples else 0.0
+            ),
+            unresolved_share=(
+                unresolved / samples if samples else 1.0
+            ),
+            wait_channels=self._top_profile_counts(
+                profile["wait_channels"]
+            ),
+            native_stack_symbols=self._top_profile_counts(
+                profile["native_stack_symbols"]
+            ),
+            python_stack_categories=self._top_profile_counts(
+                profile["python_categories"]
+            ),
+            native_stack_available=bool(
+                profile["native_stack_symbols"]
+            ),
+            payload_capture=False,
+        )
+
     def begin_result_consumer(self) -> dict[str, object]:
         span: dict[str, object] = {
             "started": time.perf_counter(),
@@ -921,11 +1238,20 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             )
             or 0
         )
+        profile_id = recorder.begin_fetch_profile(
+            fingerprint=fingerprint,
+            connection_id=connection_id,
+            target_role=target_role,
+            spid=spid,
+            statement_sequence=statement_sequence,
+            connection_execution_sequence=connection_execution_sequence,
+        )
         started = time.perf_counter()
         cpu_started = time.thread_time()
         try:
             rows = original_fetchall(strategy, result, dbapi_cursor)
         except Exception:
+            recorder.end_fetch_profile(profile_id)
             ended = time.perf_counter()
             cpu_ended = time.thread_time()
             recorder.record_dbapi_fetch(
@@ -944,6 +1270,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
                 error=True,
             )
             raise
+        recorder.end_fetch_profile(profile_id)
         ended = time.perf_counter()
         cpu_ended = time.thread_time()
         recorder.record_dbapi_fetch(
