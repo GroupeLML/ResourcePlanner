@@ -636,6 +636,22 @@ EVENT_RE = re.compile(
 FIELD_RE = re.compile(
     r"([A-Za-z_]+)=([^ ]+)"
 )
+KEY_VALUE_SWITCH_RE = re.compile(
+    r"^prev_comm=(?P<prev_comm>.*?)\s+"
+    r"prev_pid=(?P<prev_pid>\d+)\s+"
+    r"prev_prio=(?P<prev_prio>-?\d+)\s+"
+    r"prev_state=(?P<prev_state>[A-Za-z+|]+)\s+==>\s+"
+    r"next_comm=(?P<next_comm>.*?)\s+"
+    r"next_pid=(?P<next_pid>\d+)\s+"
+    r"next_prio=(?P<next_prio>-?\d+)\s*$"
+)
+KEY_VALUE_WAKE_RE = re.compile(
+    r"^comm=(?P<comm>.*?)\s+"
+    r"pid=(?P<pid>\d+)\s+"
+    r"prio=(?P<prio>-?\d+)"
+    r"(?:\s+success=(?P<success>[01]))?"
+    r"(?:\s+target_cpu=(?P<target_cpu>\d+))?\s*$"
+)
 COMPACT_SWITCH_RE = re.compile(
     r"^(?P<prev_comm>.+):(?P<prev_pid>\d+)\s+"
     r"\[(?P<prev_prio>-?\d+)\]\s+"
@@ -776,20 +792,28 @@ def _decode_scheduler_payload_only(
     str | None,
     str | None,
 ]:
-    fields = dict(FIELD_RE.findall(text))
+    stripped = text.strip()
+    fields = dict(FIELD_RE.findall(stripped))
     if event == "sched_switch":
+        key_value = KEY_VALUE_SWITCH_RE.fullmatch(stripped)
+        if key_value is not None:
+            return {
+                "prev_pid": key_value.group("prev_pid"),
+                "next_pid": key_value.group("next_pid"),
+                "prev_state": key_value.group("prev_state"),
+            }, "key_value", None
         required = ("prev_pid", "next_pid", "prev_state")
         present = [name for name in required if fields.get(name)]
         if present:
             if len(present) != len(required):
                 return None, None, "missing_required_field"
-            try:
-                int(fields["prev_pid"])
-                int(fields["next_pid"])
-            except ValueError:
-                return None, None, "invalid_numeric_field"
-            return fields, "key_value", None
-        compact = COMPACT_SWITCH_RE.fullmatch(text.strip())
+            for name in ("prev_pid", "next_pid"):
+                try:
+                    int(fields[name])
+                except ValueError:
+                    return None, None, "invalid_numeric_field"
+            return None, None, "malformed_key_value_payload"
+        compact = COMPACT_SWITCH_RE.fullmatch(stripped)
         if compact is None:
             return None, None, "malformed_compact_payload"
         return {
@@ -798,6 +822,12 @@ def _decode_scheduler_payload_only(
             "prev_state": compact.group("prev_state"),
         }, "compact", None
     if event in {"sched_wakeup", "sched_wakeup_new"}:
+        key_value = KEY_VALUE_WAKE_RE.fullmatch(stripped)
+        if key_value is not None:
+            payload = {"pid": key_value.group("pid")}
+            if key_value.group("success") is not None:
+                payload["success"] = key_value.group("success")
+            return payload, "key_value", None
         if fields:
             if not fields.get("pid"):
                 return None, None, "missing_required_field"
@@ -805,8 +835,8 @@ def _decode_scheduler_payload_only(
                 int(fields["pid"])
             except ValueError:
                 return None, None, "invalid_numeric_field"
-            return fields, "key_value", None
-        compact = COMPACT_WAKE_RE.fullmatch(text.strip())
+            return None, None, "malformed_key_value_payload"
+        compact = COMPACT_WAKE_RE.fullmatch(stripped)
         if compact is None:
             return None, None, "malformed_compact_payload"
         payload = {"pid": compact.group("pid")}
@@ -825,30 +855,29 @@ def _decode_scheduler_payload(
     str | None,
     bool,
 ]:
+    stripped = text.strip()
+    suffix = PERF_EVENT_SUFFIX_RE.fullmatch(stripped)
+    if suffix is not None:
+        payload, payload_format, suffix_reason = (
+            _decode_scheduler_payload_only(
+                event,
+                suffix.group("payload").strip(),
+            )
+        )
+        if payload is None:
+            return None, None, suffix_reason, True
+        return payload, payload_format, None, True
     payload, payload_format, reason = (
         _decode_scheduler_payload_only(
             event,
-            text.strip(),
+            stripped,
         )
     )
     if payload is not None:
         return payload, payload_format, None, False
-    suffix = PERF_EVENT_SUFFIX_RE.fullmatch(
-        text.strip()
-    )
-    if suffix is None:
-        if "(" in text or ")" in text:
-            return None, None, "unsupported_perf_suffix", False
-        return None, None, reason, False
-    payload, payload_format, suffix_reason = (
-        _decode_scheduler_payload_only(
-            event,
-            suffix.group("payload").strip(),
-        )
-    )
-    if payload is None:
-        return None, None, suffix_reason, True
-    return payload, payload_format, None, True
+    if "(" in stripped or ")" in stripped:
+        return None, None, "unsupported_perf_suffix", False
+    return None, None, reason, False
 
 
 def _empty_decoder_accounting() -> dict[str, Any]:
@@ -861,6 +890,7 @@ def _empty_decoder_accounting() -> dict[str, Any]:
         "rejection_reasons": {
             "missing_required_field": 0,
             "malformed_compact_payload": 0,
+            "malformed_key_value_payload": 0,
             "unsupported_perf_suffix": 0,
             "invalid_numeric_field": 0,
             "unsupported_scheduler_event": 0,
@@ -1998,6 +2028,16 @@ idle 99 1.150000: sched:sched_switch: prev_comm=idle prev_pid=99 prev_prio=120 p
     )
     assert rejected_bad_annotation[0] is None
     assert rejected_bad_annotation[2] == "unsupported_perf_suffix"
+    canonical_arbitrary = _decode_scheduler_payload(
+        "sched_switch",
+        (
+            "prev_comm=worker prev_pid=11 prev_prio=120 "
+            "prev_state=S ==> next_comm=idle next_pid=99 "
+            "next_prio=120 arbitrary"
+        ),
+    )
+    assert canonical_arbitrary[0] is None
+    assert canonical_arbitrary[2] == "malformed_key_value_payload"
     compact_script = """
 worker 11 1.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
   7fff0000 blocked_call (/lib/libc.so.6)
