@@ -632,13 +632,57 @@ def _application_execution_markers(
     return markers
 
 
+def _resolve_probe_server_anchor(
+    executions: list[dict[str, object]],
+    probe: dict[str, object],
+) -> tuple[int | None, str]:
+    probe_value = probe.get("timestamp_utc")
+    if not probe_value:
+        return None, "probe_timestamp_missing"
+    try:
+        probe_utc = _parse_utc(probe_value)
+    except (TypeError, ValueError):
+        return None, "probe_timestamp_invalid"
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    candidates: list[tuple[int, datetime]] = []
+    for index, event in enumerate(executions):
+        if event.get("execution_category") != "direct_batch":
+            continue
+        if _safe_int(event.get("row_count")) != 1:
+            continue
+        try:
+            event_utc = _parse_utc(event.get("timestamp_utc"))
+        except (TypeError, ValueError):
+            continue
+        if probe_utc - margin <= event_utc <= probe_utc:
+            candidates.append((index, event_utc))
+    if not candidates:
+        return None, "probe_server_execution_missing"
+    latest_utc = max(event_utc for _, event_utc in candidates)
+    latest = [
+        index
+        for index, event_utc in candidates
+        if event_utc == latest_utc
+    ]
+    if len(latest) != 1:
+        return None, "probe_server_execution_ambiguous"
+    return latest[0], ""
+
+
 def _server_execution_events(
     capture: dict[str, object],
     *,
     spid: int,
-    start_utc: datetime,
+    probe: dict[str, object],
     end_utc: datetime,
-) -> tuple[list[dict[str, object]], int]:
+) -> tuple[list[dict[str, object]], int, str]:
+    probe_value = probe.get("timestamp_utc")
+    if not probe_value:
+        return [], 0, "probe_timestamp_missing"
+    try:
+        probe_utc = _parse_utc(probe_value)
+    except (TypeError, ValueError):
+        return [], 0, "probe_timestamp_invalid"
     margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
     executions: list[dict[str, object]] = []
     ignored = 0
@@ -648,9 +692,12 @@ def _server_execution_events(
             or _safe_int(row.get("session_id")) != spid
         ):
             continue
-        event_time = _parse_utc(row.get("timestamp_utc"))
+        try:
+            event_time = _parse_utc(row.get("timestamp_utc"))
+        except (TypeError, ValueError):
+            continue
         if not (
-            start_utc - margin
+            probe_utc - margin
             <= event_time
             <= end_utc + margin
         ):
@@ -671,9 +718,16 @@ def _server_execution_events(
         else:
             ignored += 1
     executions.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
-    for sequence, event in enumerate(executions, start=1):
+    anchor_index, anchor_error = _resolve_probe_server_anchor(
+        executions,
+        probe,
+    )
+    if anchor_index is None:
+        return [], ignored, anchor_error
+    anchored = executions[anchor_index:]
+    for sequence, event in enumerate(anchored, start=1):
         event["server_execution_sequence"] = sequence
-    return executions, ignored
+    return anchored, ignored, ""
 
 
 def _fetch_time_consistent(
@@ -742,15 +796,45 @@ def _server_client_correlation(
             connection_id=connection_id,
             spid=spid,
         )
-        server_events, ignored = _server_execution_events(
-            capture,
-            spid=spid,
-            start_utc=lifetime["start_utc"],
-            end_utc=lifetime["end_utc"],
+        probe = next(
+            (
+                marker
+                for marker in markers
+                if marker.get("kind") == "spid_probe"
+                and _safe_int(
+                    marker.get("connection_execution_sequence")
+                )
+                == 1
+            ),
+            None,
         )
+        if probe is None:
+            server_events, ignored, anchor_error = (
+                [],
+                0,
+                "probe_marker_missing",
+            )
+        else:
+            server_events, ignored, anchor_error = (
+                _server_execution_events(
+                    capture,
+                    spid=spid,
+                    probe=probe,
+                    end_utc=lifetime["end_utc"],
+                )
+            )
         marker_by_connection[connection_id] = markers
         server_by_connection[connection_id] = server_events
         ignored_rpc_events += ignored
+        if anchor_error:
+            sequence_alignment_failures.append({
+                "connection_id": connection_id,
+                "spid": spid,
+                "reason": anchor_error,
+                "application_execution_count": len(markers),
+                "server_execution_count": len(server_events),
+            })
+            continue
         if not markers:
             sequence_alignment_failures.append({
                 "connection_id": connection_id,
