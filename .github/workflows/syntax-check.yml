@@ -677,6 +677,7 @@ jobs:
           docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets"             -w /workspace             -e PYTHONPATH=/app:/workspace             -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py seed               --database-url "$RP894_DATABASE_URL"               --users 500               --output /secrets/sessions.json
 
           sh -n tools/build_issue_894_rollback_bundle.sh
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_project_task_sync_api.ProjectTaskSyncApiTests.test_legacy_targeted_task_sync_runs_on_managed_worker_and_renews_lease
           docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_issue_894_phase4_capacity               tests.test_issue_894_phase4_tooling               tests.test_issue_894_connection_trace
 
       - name: Run short canonical versus instrumented connection-residence diagnostics
@@ -689,6 +690,12 @@ jobs:
           mkdir -p "$evidence/performance"
           chmod 0777 "$evidence/performance"
           trace="$evidence/performance/issue894-connection-trace.jsonl"
+          pyspy_venv="$RUNNER_TEMP/rp894-pyspy-0.4.4"
+          python -m venv "$pyspy_venv"
+          "$pyspy_venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir "py-spy==0.4.4"
+          pyspy="$pyspy_venv/bin/py-spy"
+          pyspy_version="$("$pyspy" --version)"
+          test "$pyspy_version" = "py-spy 0.4.4"
 
           wait_backend_ready() {
             mode="$1"
@@ -741,6 +748,12 @@ jobs:
                 profile_args=(
                   -e RESOURCEPLANNER_PHASE4_FETCH_PROFILE=true
                 )
+              elif [ "$mode" = "external-profile-preflight" ]; then
+                trace_name="issue894-native-preflight-trace.jsonl"
+              elif [ "$mode" = "external-profile-baseline" ]; then
+                trace_name="issue894-native-baseline-trace.jsonl"
+              elif [ "$mode" = "external-profiled" ]; then
+                trace_name="issue894-native-profiled-trace.jsonl"
               fi
               : > "$evidence/performance/$trace_name"
               chmod 0666 "$evidence/performance/$trace_name"
@@ -999,6 +1012,131 @@ jobs:
             profile_comparison_status=1
           fi
 
+          start_backend external-profile-preflight
+          native_preflight_backend_status=$?
+          native_preflight_attach_status=1
+          native_preflight_status=1
+          if [ "$native_preflight_backend_status" = "0" ]; then
+            backend_pid="$(docker inspect --format '{{.State.Pid}}' backend)"
+            native_preflight_start_ns="$(date +%s%N)"
+            sudo "$pyspy" record \
+              --pid "$backend_pid" \
+              --native \
+              --idle \
+              --rate 100 \
+              --duration 2 \
+              --format speedscope \
+              -o "$evidence/native-profile-preflight.speedscope.json"
+            native_preflight_attach_status=$?
+            native_preflight_end_ns="$(date +%s%N)"
+            if [ -f "$evidence/native-profile-preflight.speedscope.json" ]; then
+              docker run --rm \
+                -v "$GITHUB_WORKSPACE:/workspace:ro" \
+                -v "$evidence:/evidence" \
+                -w /workspace \
+                -e PYTHONPATH=/app:/workspace \
+                resourceplanner-894-feature-backend \
+                python tools/issue_894_native_profile.py preflight \
+                  --profile /evidence/native-profile-preflight.speedscope.json \
+                  --output /evidence/native-profile-preflight.json \
+                  --observer-version "$pyspy_version" \
+                  --attach-status "$native_preflight_attach_status" \
+                  --command-start-ns "$native_preflight_start_ns" \
+                  --command-end-ns "$native_preflight_end_ns" \
+                  --native-requested \
+                  --idle-requested
+              native_preflight_status=$?
+            fi
+          fi
+
+          native_baseline_execution_status=1
+          native_profiled_execution_status=1
+          native_observer_status=1
+          native_summary_status=1
+          native_comparison_status=1
+          if [ "$native_preflight_status" = "0" ]; then
+            start_backend external-profile-baseline
+            native_baseline_start_status=$?
+            if [ "$native_baseline_start_status" = "0" ]; then
+              ensure_frontend
+              native_baseline_frontend_status=$?
+            else
+              native_baseline_frontend_status=1
+            fi
+            if [ "$native_baseline_start_status" = "0" ] \
+              && [ "$native_baseline_frontend_status" = "0" ]; then
+              run_trial instrumented \
+                /evidence/connection-trial-native-baseline.json \
+                /evidence/performance/issue894-native-baseline-trace.jsonl
+              native_baseline_execution_status=$?
+            fi
+
+            start_backend external-profiled
+            native_profiled_start_status=$?
+            if [ "$native_profiled_start_status" = "0" ]; then
+              ensure_frontend
+              native_profiled_frontend_status=$?
+            else
+              native_profiled_frontend_status=1
+            fi
+            if [ "$native_profiled_start_status" = "0" ] \
+              && [ "$native_profiled_frontend_status" = "0" ]; then
+              backend_pid="$(docker inspect --format '{{.State.Pid}}' backend)"
+              native_profile_start_ns="$(date +%s%N)"
+              sudo "$pyspy" record \
+                --pid "$backend_pid" \
+                --native \
+                --idle \
+                --rate 100 \
+                --duration 35 \
+                --format speedscope \
+                -o "$evidence/native-profile.speedscope.json" &
+              native_observer_pid=$!
+              sleep 1
+              run_trial instrumented \
+                /evidence/connection-trial-native-profiled.json \
+                /evidence/performance/issue894-native-profiled-trace.jsonl
+              native_profiled_execution_status=$?
+              wait "$native_observer_pid"
+              native_observer_status=$?
+              native_profile_end_ns="$(date +%s%N)"
+            fi
+
+            if [ "$native_profiled_execution_status" = "0" ] \
+              && [ "$native_observer_status" = "0" ] \
+              && [ -f "$evidence/native-profile.speedscope.json" ]; then
+              docker run --rm \
+                -v "$GITHUB_WORKSPACE:/workspace:ro" \
+                -v "$evidence:/evidence" \
+                -w /workspace \
+                -e PYTHONPATH=/app:/workspace \
+                resourceplanner-894-feature-backend \
+                python tools/issue_894_native_profile.py summarize \
+                  --profile /evidence/native-profile.speedscope.json \
+                  --preflight /evidence/native-profile-preflight.json \
+                  --trace /evidence/performance/issue894-native-profiled-trace.jsonl \
+                  --command-start-ns "$native_profile_start_ns" \
+                  --command-end-ns "$native_profile_end_ns" \
+                  --output /evidence/native-profile-summary.json
+              native_summary_status=$?
+            fi
+
+            if [ "$native_baseline_execution_status" = "0" ] \
+              && [ "$native_profiled_execution_status" = "0" ]; then
+              docker run --rm \
+                -v "$GITHUB_WORKSPACE:/workspace:ro" \
+                -v "$evidence:/evidence" \
+                -w /workspace \
+                -e PYTHONPATH=/app:/workspace \
+                resourceplanner-894-feature-backend \
+                python tools/issue_894_native_profile.py compare \
+                  --baseline /evidence/connection-trial-native-baseline.json \
+                  --profiled /evidence/connection-trial-native-profiled.json \
+                  --output /evidence/native-profile-comparison.json
+              native_comparison_status=$?
+            fi
+          fi
+
           set -e
 
           {
@@ -1016,6 +1154,13 @@ jobs:
             printf 'profile_baseline_execution_status=%s\n' "$profile_baseline_execution_status"
             printf 'profiled_execution_status=%s\n' "$profiled_execution_status"
             printf 'profile_comparison_status=%s\n' "$profile_comparison_status"
+            printf 'native_preflight_attach_status=%s\n' "$native_preflight_attach_status"
+            printf 'native_preflight_status=%s\n' "$native_preflight_status"
+            printf 'native_baseline_execution_status=%s\n' "$native_baseline_execution_status"
+            printf 'native_profiled_execution_status=%s\n' "$native_profiled_execution_status"
+            printf 'native_observer_status=%s\n' "$native_observer_status"
+            printf 'native_summary_status=%s\n' "$native_summary_status"
+            printf 'native_comparison_status=%s\n' "$native_comparison_status"
             printf 'full_mixed_load=NOT RUN\n'
             printf 'ack_campaign=NOT RUN\n'
             printf 'v2_campaign=NOT RUN\n'
@@ -1028,6 +1173,13 @@ jobs:
           test "$profile_baseline_execution_status" = "0"
           test "$profiled_execution_status" = "0"
           test "$profile_comparison_status" = "0"
+          test "$native_preflight_attach_status" = "0"
+          test "$native_preflight_status" = "0"
+          test "$native_baseline_execution_status" = "0"
+          test "$native_profiled_execution_status" = "0"
+          test "$native_observer_status" = "0"
+          test "$native_summary_status" = "0"
+          test "$native_comparison_status" = "0"
 
       - name: Run existing V2 API performance budget
         id: benchmark
