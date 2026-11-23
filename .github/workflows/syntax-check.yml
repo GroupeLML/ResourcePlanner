@@ -677,8 +677,26 @@ jobs:
           docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets"             -w /workspace             -e PYTHONPATH=/app:/workspace             -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py seed               --database-url "$RP894_DATABASE_URL"               --users 500               --output /secrets/sessions.json
 
           sh -n tools/build_issue_894_rollback_bundle.sh
-          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_project_task_sync_api.ProjectTaskSyncApiTests.test_legacy_targeted_task_sync_runs_on_managed_worker_and_renews_lease
           docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_issue_894_phase4_capacity               tests.test_issue_894_phase4_tooling               tests.test_issue_894_connection_trace
+
+      - name: Re-run exact ERP lease-renewal verification
+        id: erp_lease_rerun
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$GITHUB_WORKSPACE/phase4-evidence"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -w /workspace \
+            -e PYTHONPATH=/app:/workspace \
+            resourceplanner-894-feature-backend \
+            python -m unittest -v \
+              tests.test_project_task_sync_api.ProjectTaskSyncApiTests.test_legacy_targeted_task_sync_runs_on_managed_worker_and_renews_lease
+          status=$?
+          printf 'named_test_status=%s\n' "$status" \
+            > "$GITHUB_WORKSPACE/phase4-evidence/erp-lease-rerun-status.txt"
+          exit "$status"
 
       - name: Run short canonical versus instrumented connection-residence diagnostics
         id: load
