@@ -346,6 +346,9 @@ class ConnectionTraceRecorder:
         request_id = _DIAGNOSTIC_ID.get()
         info = getattr(connection_record, "info", {})
         spid = int(info.get("rp894_spid") or 0)
+        connection_sequence = int(
+            info.get("rp894_connection_execution_sequence") or 0
+        )
         if not spid:
             cursor = dbapi_connection.cursor()
             try:
@@ -355,12 +358,17 @@ class ConnectionTraceRecorder:
             finally:
                 cursor.close()
             info["rp894_spid"] = spid
+            connection_sequence += 1
+            info["rp894_connection_execution_sequence"] = connection_sequence
             self.record(
                 "spid_probe",
                 connection_id=id(connection_record),
                 spid=spid,
+                connection_execution_sequence=connection_sequence,
                 thread_id=threading.get_ident(),
             )
+        checkout_sequence = int(info.get("rp894_checkout_sequence") or 0) + 1
+        info["rp894_checkout_sequence"] = checkout_sequence
         holder = {
             "request_id": request_id,
             "route_family": _ROUTE_FAMILY.get(),
@@ -372,6 +380,8 @@ class ConnectionTraceRecorder:
             "current_statement_fingerprint": "",
             "statement_count": 0,
             "statement_sequence": 0,
+            "connection_execution_sequence": connection_sequence,
+            "checkout_sequence": checkout_sequence,
             "spid": spid,
         }
         with self._state_lock:
@@ -383,6 +393,8 @@ class ConnectionTraceRecorder:
             phase=holder["phase"],
             connection_id=id(connection_record),
             spid=spid,
+            checkout_sequence=checkout_sequence,
+            connection_execution_sequence=connection_sequence,
             thread_id=holder["thread_id"],
         )
 
@@ -390,11 +402,12 @@ class ConnectionTraceRecorder:
         self,
         connection: object,
         statement: object,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         request_id = _DIAGNOSTIC_ID.get()
         fingerprint = _statement_fingerprint(statement)
         connection_id = _connection_record_id(connection)
         sequence = 0
+        connection_sequence = 0
         spid = 0
         with self._state_lock:
             holder = self._holders.get(connection_id)
@@ -402,7 +415,18 @@ class ConnectionTraceRecorder:
                 holder["current_statement_fingerprint"] = fingerprint
                 sequence = int(holder.get("statement_sequence") or 0) + 1
                 holder["statement_sequence"] = sequence
+                connection_sequence = int(
+                    holder.get("connection_execution_sequence") or 0
+                ) + 1
+                holder["connection_execution_sequence"] = connection_sequence
                 spid = int(holder.get("spid") or 0)
+                record = getattr(connection, "connection", None)
+                connection_record = getattr(record, "_connection_record", None)
+                info = getattr(connection_record, "info", None)
+                if isinstance(info, dict):
+                    info["rp894_connection_execution_sequence"] = (
+                        connection_sequence
+                    )
         self.record(
             "statement_start",
             request_id=request_id,
@@ -411,10 +435,11 @@ class ConnectionTraceRecorder:
             connection_id=connection_id,
             spid=spid,
             statement_sequence=sequence,
+            connection_execution_sequence=connection_sequence,
             statement_fingerprint=fingerprint,
             thread_id=threading.get_ident(),
         )
-        return sequence, spid
+        return sequence, spid, connection_sequence
 
     def on_statement_end(
         self,
@@ -540,6 +565,7 @@ class ConnectionTraceRecorder:
         target_role: str = "",
         spid: int = 0,
         statement_sequence: int = 0,
+        connection_execution_sequence: int = 0,
         error: bool = False,
     ) -> None:
         fetch_ms = max(0.0, (ended - started) * 1000.0)
@@ -572,6 +598,9 @@ class ConnectionTraceRecorder:
             "target_role": str(target_role),
             "spid": int(spid),
             "statement_sequence": int(statement_sequence),
+            "connection_execution_sequence": int(
+                connection_execution_sequence
+            ),
             "error": bool(error),
         }
         for span in stack:
@@ -587,6 +616,9 @@ class ConnectionTraceRecorder:
             target_role=str(target_role),
             spid=int(spid),
             statement_sequence=int(statement_sequence),
+            connection_execution_sequence=int(
+                connection_execution_sequence
+            ),
             fetch_started_monotonic=float(started),
             fetch_ended_monotonic=float(ended),
             fetch_elapsed_ms=fetch_ms,
@@ -626,6 +658,7 @@ class ConnectionTraceRecorder:
                 str(fetch["call_site"]),
                 int(fetch.get("spid") or 0),
                 int(fetch.get("statement_sequence") or 0),
+                int(fetch.get("connection_execution_sequence") or 0),
             )
             grouped.setdefault(key, []).append(fetch)
 
@@ -635,6 +668,7 @@ class ConnectionTraceRecorder:
             call_site,
             spid,
             statement_sequence,
+            connection_execution_sequence,
         ), fetches in grouped.items():
             last_fetch_end = max(
                 float(fetch["fetch_ended_monotonic"])
@@ -654,6 +688,7 @@ class ConnectionTraceRecorder:
                 connection_id=connection_id,
                 spid=spid,
                 statement_sequence=statement_sequence,
+                connection_execution_sequence=connection_execution_sequence,
                 statement_fingerprint=fingerprint,
                 call_site=call_site,
                 target_role=str(fetches[0].get("target_role") or ""),
@@ -826,6 +861,14 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         statement_sequence = int(
             getattr(context, "_rp894_trace_statement_sequence", 0) or 0
         )
+        connection_execution_sequence = int(
+            getattr(
+                context,
+                "_rp894_trace_connection_execution_sequence",
+                0,
+            )
+            or 0
+        )
         started = time.perf_counter()
         cpu_started = time.thread_time()
         try:
@@ -845,6 +888,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
                 target_role=target_role,
                 spid=spid,
                 statement_sequence=statement_sequence,
+                connection_execution_sequence=connection_execution_sequence,
                 error=True,
             )
             raise
@@ -862,6 +906,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             target_role=target_role,
             spid=spid,
             statement_sequence=statement_sequence,
+            connection_execution_sequence=connection_execution_sequence,
             error=False,
         )
         return rows
@@ -894,9 +939,15 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         execution_context._rp894_trace_target_role = _statement_target_role(
             statement
         )
-        sequence, spid = recorder.on_statement_start(conn, statement)
+        sequence, spid, connection_sequence = recorder.on_statement_start(
+            conn,
+            statement,
+        )
         execution_context._rp894_trace_statement_sequence = sequence
         execution_context._rp894_trace_spid = spid
+        execution_context._rp894_trace_connection_execution_sequence = (
+            connection_sequence
+        )
 
     @event.listens_for(engine, "after_cursor_execute")
     def _after_cursor_execute(
