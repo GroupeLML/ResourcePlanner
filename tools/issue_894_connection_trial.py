@@ -108,25 +108,24 @@ def _xe_event_file_base() -> str:
 def _xe_list_event_files(connection: object) -> list[str]:
     rows = connection.exec_driver_sql(
         f"""
-        CREATE TABLE #rp894_files (
-            subdirectory nvarchar(512),
-            depth int,
-            isfile bit
-        );
-        INSERT INTO #rp894_files
         EXEC master.sys.xp_dirtree
             N'{XE_EVENT_FILE_DIRECTORY}',
             1,
-            1;
-        SELECT subdirectory
-        FROM #rp894_files
-        WHERE isfile = 1
-          AND subdirectory LIKE N'{XE_EVENT_FILE_BASENAME}%.xel'
-        ORDER BY subdirectory;
-        DROP TABLE #rp894_files;
+            1
         """
     ).all()
-    return [str(row[0]) for row in rows if row and row[0]]
+    prefix = XE_EVENT_FILE_BASENAME.casefold()
+    files = [
+        str(row[0])
+        for row in rows
+        if row
+        and row[0]
+        and len(row) > 2
+        and bool(row[2])
+        and str(row[0]).casefold().startswith(prefix)
+        and str(row[0]).casefold().endswith(".xel")
+    ]
+    return sorted(files, key=str.casefold)
 
 
 def _xe_cleanup(database_url: str) -> None:
