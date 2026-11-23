@@ -22,6 +22,131 @@ SLEEP_SECONDS = 0.75
 ODBC_WAIT = "00:00:00.750"
 RAW_STACK_BYTES = 8192
 OBSERVED_SECONDS = 8
+PREFLIGHT_EXECUTION_BEGIN = "# RP894_PREFLIGHT_EXECUTION_BEGIN"
+PREFLIGHT_EXECUTION_END = "# RP894_PREFLIGHT_EXECUTION_END"
+FORBIDDEN_EXECUTABLE_TOKENS = (
+    "py-spy",
+    "gdb -p",
+    "gdb --pid",
+    "strace -p",
+    "bpftrace",
+    "bcc",
+    "uprobe",
+    "uretprobe",
+    "--duration-seconds 30",
+    "--duration-seconds 600",
+    "issue_894_connection_trial.py trial",
+    "docker build",
+    "apt-get install",
+    "apt install",
+    "pip install",
+)
+
+
+def _preflight_execution_region(text: str) -> str:
+    if text.count(PREFLIGHT_EXECUTION_BEGIN) != 1:
+        raise ValueError("preflight execution begin marker must appear exactly once")
+    if text.count(PREFLIGHT_EXECUTION_END) != 1:
+        raise ValueError("preflight execution end marker must appear exactly once")
+    start = text.index(PREFLIGHT_EXECUTION_BEGIN) + len(PREFLIGHT_EXECUTION_BEGIN)
+    end = text.index(PREFLIGHT_EXECUTION_END, start)
+    if end <= start:
+        raise ValueError("preflight execution markers are misordered")
+    return text[start:end]
+
+
+def _validate_workflow_text(text: str) -> None:
+    region = _preflight_execution_region(text).casefold()
+    hits = [
+        token
+        for token in FORBIDDEN_EXECUTABLE_TOKENS
+        if token in region
+    ]
+    if hits:
+        raise ValueError(
+            "forbidden preflight executable operation(s): "
+            f"{hits}"
+        )
+    required = (
+        "issue_894_perf_preflight.py command",
+        "raw_dir=",
+        "trap cleanup exit",
+        'rm -rf "$raw_dir"',
+        "issue-894-perf-preflight-evidence/",
+        "docker load",
+    )
+    missing = [
+        token
+        for token in required
+        if token not in region
+    ]
+    if missing:
+        raise ValueError(
+            "preflight executable surface is missing required guardrail(s): "
+            f"{missing}"
+        )
+    generated = " ".join(
+        perf_argv(
+            [11, 22],
+            Path("/tmp/perf.data"),
+        )
+    ).casefold()
+    generated_hits = [
+        token
+        for token in FORBIDDEN_EXECUTABLE_TOKENS
+        if token in generated
+    ]
+    if generated_hits:
+        raise ValueError(
+            "forbidden generated perf operation(s): "
+            f"{generated_hits}"
+        )
+    generated_required = (
+        "perf record",
+        "sched:sched_switch/call-graph=dwarf,8192/",
+        "sched:sched_wakeup",
+        "sched:sched_wakeup_new",
+        "--clockid mono",
+    )
+    if any(token not in generated for token in generated_required):
+        raise ValueError("generated perf command drifted from the authorized event model")
+    if generated.count("call-graph=dwarf") != 1:
+        raise ValueError("DWARF call graph must be enabled on exactly one event channel")
+    if "actions/upload-artifact@v4" not in region:
+        raise ValueError("bounded derived evidence upload is missing")
+    upload_start = region.index("actions/upload-artifact@v4")
+    upload_region = region[upload_start:upload_start + 1200]
+    if "issue-894-perf-preflight-evidence/" not in upload_region:
+        raise ValueError("upload path is not the bounded evidence directory")
+    if "perf.data" in upload_region or "runner_temp" in upload_region or "raw_dir" in upload_region:
+        raise ValueError("raw perf capture path is reachable from artifact upload")
+    lower = text.casefold()
+    if "rp894_perf_preflight_only" not in lower:
+        raise ValueError("preflight-only routing marker is missing")
+    phase4_start = lower.index("  issue-894-phase4:")
+    phase4 = lower[phase4_start:phase4_start + 900]
+    if "issue_894_perf_preflight_only != 'true'" not in phase4:
+        raise ValueError("legacy phase 4 job is not gated off")
+    inventory_start = lower.index("  issue-894-environment-inventory:")
+    inventory = lower[inventory_start:inventory_start + 700]
+    if "issue_894_inventory_only == 'true'" not in inventory:
+        raise ValueError("inventory-only routing changed unexpectedly")
+
+
+def validate_workflow(args: argparse.Namespace) -> int:
+    _validate_workflow_text(
+        args.workflow.read_text(encoding="utf-8")
+    )
+    print(
+        json.dumps(
+            {
+                "schema": SCHEMA,
+                "workflow_validation": "PASS",
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -91,7 +216,7 @@ def _cpu_control() -> tuple[int, int]:
 
 def _connect_odbc(
     server: str,
-    password: str,
+    credential_value: str,
 ):
     import pyodbc
 
@@ -99,7 +224,7 @@ def _connect_odbc(
     return pyodbc.connect(
         "DRIVER={ODBC Driver 18 for SQL Server};"
         f"SERVER={server},1433;UID=sa;"
-        f"{key}={password};"
+        f"{key}={credential_value};"
         "Encrypt=yes;TrustServerCertificate=yes",
         autocommit=True,
         timeout=3,
@@ -1507,6 +1632,40 @@ def _self_test() -> None:
     assert _essential_chain([], [])["complete"] is False
     assert RAW_STACK_BYTES == 8192
     assert REFERENCE_HEAD == "1cb01861ddba17babb0b6b3b09d062bd15107f20"
+    sample_workflow = """
+jobs:
+  issue-894-environment-inventory:
+    if: issue_894_inventory_only == 'true'
+  issue-894-perf-preflight:
+    # RP894_PREFLIGHT_EXECUTION_BEGIN
+    run: |
+      docker load
+      python tools/issue_894_perf_preflight.py command --tids 11,22 --raw "$raw_dir/perf.data" --output out.json
+      raw_dir="$RUNNER_TEMP/raw"
+      trap cleanup EXIT
+      rm -rf "$raw_dir"
+    uses: actions/upload-artifact@v4
+    with:
+      path: issue-894-perf-preflight-evidence/
+    # RP894_PREFLIGHT_EXECUTION_END
+  issue-894-phase4:
+    if: issue_894_perf_preflight_only != 'true'
+outputs:
+  rp894_perf_preflight_only: true
+"""
+    _validate_workflow_text(sample_workflow)
+    rejected = sample_workflow.replace(
+        "docker load",
+        "docker load\n      py-spy record",
+    )
+    try:
+        _validate_workflow_text(rejected)
+    except ValueError as exc:
+        assert "py-spy" in str(exc)
+    else:
+        raise AssertionError(
+            "synthetic prohibited executable operation was accepted"
+        )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1516,6 +1675,15 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
     sub.add_parser("self-test")
+
+    workflow_p = sub.add_parser(
+        "validate-workflow"
+    )
+    workflow_p.add_argument(
+        "--workflow",
+        type=Path,
+        required=True,
+    )
 
     probe_p = sub.add_parser(
         "probe"
@@ -1620,6 +1788,8 @@ def main() -> int:
             )
         )
         return 0
+    if args.command == "validate-workflow":
+        return validate_workflow(args)
     if args.command == "probe":
         return probe(args)
     if args.command == "command":

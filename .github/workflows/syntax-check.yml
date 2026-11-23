@@ -733,38 +733,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
           python -m py_compile tools/issue_894_perf_preflight.py
           python tools/issue_894_perf_preflight.py self-test
-          python - <<'PY'
-          from pathlib import Path
+          python tools/issue_894_perf_preflight.py validate-workflow \
+            --workflow .github/workflows/syntax-check.yml
 
-          text = Path(".github/workflows/syntax-check.yml").read_text(encoding="utf-8")
-          start = text.index("  issue-894-perf-preflight:")
-          end = text.index("\n  issue-894-phase4:", start)
-          job = text[start:end].casefold()
-          forbidden = (
-              "py-spy",
-              "gdb -p",
-              "gdb --pid",
-              "strace -p",
-              "bpftrace",
-              "uprobe",
-              "uretprobe",
-              "--duration-seconds 30",
-              "--duration-seconds 600",
-              "issue_894_connection_trial.py trial",
-              "docker build",
-              "apt-get install",
-              "pip install",
-          )
-          hits = [value for value in forbidden if value in job]
-          if hits:
-              raise SystemExit(f"forbidden preflight workflow operation(s): {hits}")
-          if "rp894_perf_preflight_only" not in text.casefold():
-              raise SystemExit("preflight-only routing marker is missing")
-          phase4 = text[text.index("  issue-894-phase4:"):][:700]
-          if "issue_894_perf_preflight_only != 'true'" not in phase4:
-              raise SystemExit("legacy Phase 4 job is not gated off")
-          PY
-
+      # RP894_PREFLIGHT_EXECUTION_BEGIN
       - name: Restore and verify immutable CI #3224 reference
         id: reference
         shell: bash
@@ -1067,6 +1039,7 @@ jobs:
             rm -f "$RP894_PREFLIGHT_SQL_ENV_FILE"
           fi
 
+      # RP894_PREFLIGHT_EXECUTION_END
 
   issue-894-phase4:
     name: Issue #894 Phase 4 load / rollback
