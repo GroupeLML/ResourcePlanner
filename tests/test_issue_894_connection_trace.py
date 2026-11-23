@@ -1522,21 +1522,21 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(evidence["spid"], 70)
         self.assertEqual(
             evidence["diagnostic_window_anchor_sequence"],
-            6,
+            5,
         )
         self.assertEqual(
             [
                 row["connection_execution_sequence"]
                 for row in evidence["application_window"]
             ],
-            [4, 5, 6],
+            [3, 4, 5, 6],
         )
         self.assertEqual(
             [
                 row["server_execution_sequence"]
                 for row in evidence["server_window"]
             ],
-            [4, 5],
+            [3, 4, 5],
         )
         self.assertTrue(
             any(
