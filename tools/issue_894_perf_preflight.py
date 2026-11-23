@@ -646,7 +646,14 @@ COMPACT_SWITCH_RE = re.compile(
 COMPACT_WAKE_RE = re.compile(
     r"^(?P<comm>.+):(?P<pid>\d+)\s+"
     r"\[(?P<prio>-?\d+)\]"
+    r"(?:\s+success=(?P<success>[01]))?"
     r"(?:\s+CPU:\s*\d+)?\s*$"
+)
+PERF_EVENT_SUFFIX_RE = re.compile(
+    r"^(?P<payload>.+?)\s+"
+    r"(?P<ip>(?:0x)?[0-9a-fA-F]+)\s+"
+    r"(?P<symbol>[^()\r\n]+?)\s+"
+    r"\((?P<module>[^()\r\n]+)\)\s*$"
 )
 FRAME_RE = re.compile(
     r"^\s*([0-9a-fA-F]+)\s+"
@@ -761,40 +768,87 @@ def _phase_metrics(
     return output
 
 
-def _decode_scheduler_payload(
+def _decode_scheduler_payload_only(
     event: str,
     text: str,
-) -> tuple[dict[str, str] | None, str]:
+) -> tuple[
+    dict[str, str] | None,
+    str | None,
+    str | None,
+]:
     fields = dict(FIELD_RE.findall(text))
     if event == "sched_switch":
         required = ("prev_pid", "next_pid", "prev_state")
-        if all(fields.get(name) for name in required):
+        present = [name for name in required if fields.get(name)]
+        if present:
+            if len(present) != len(required):
+                return None, None, "missing_required_field"
             try:
                 int(fields["prev_pid"])
                 int(fields["next_pid"])
             except ValueError:
-                return None, "rejected"
-            return fields, "key_value"
+                return None, None, "invalid_numeric_field"
+            return fields, "key_value", None
         compact = COMPACT_SWITCH_RE.fullmatch(text.strip())
         if compact is None:
-            return None, "rejected"
+            return None, None, "malformed_compact_payload"
         return {
             "prev_pid": compact.group("prev_pid"),
             "next_pid": compact.group("next_pid"),
             "prev_state": compact.group("prev_state"),
-        }, "compact"
+        }, "compact", None
     if event in {"sched_wakeup", "sched_wakeup_new"}:
-        if fields.get("pid"):
+        if fields:
+            if not fields.get("pid"):
+                return None, None, "missing_required_field"
             try:
                 int(fields["pid"])
             except ValueError:
-                return None, "rejected"
-            return fields, "key_value"
+                return None, None, "invalid_numeric_field"
+            return fields, "key_value", None
         compact = COMPACT_WAKE_RE.fullmatch(text.strip())
         if compact is None:
-            return None, "rejected"
-        return {"pid": compact.group("pid")}, "compact"
-    return None, "rejected"
+            return None, None, "malformed_compact_payload"
+        payload = {"pid": compact.group("pid")}
+        if compact.group("success") is not None:
+            payload["success"] = compact.group("success")
+        return payload, "compact", None
+    return None, None, "unsupported_scheduler_event"
+
+
+def _decode_scheduler_payload(
+    event: str,
+    text: str,
+) -> tuple[
+    dict[str, str] | None,
+    str | None,
+    str | None,
+    bool,
+]:
+    payload, payload_format, reason = (
+        _decode_scheduler_payload_only(
+            event,
+            text.strip(),
+        )
+    )
+    if payload is not None:
+        return payload, payload_format, None, False
+    suffix = PERF_EVENT_SUFFIX_RE.fullmatch(
+        text.strip()
+    )
+    if suffix is None:
+        if "(" in text or ")" in text:
+            return None, None, "unsupported_perf_suffix", False
+        return None, None, reason, False
+    payload, payload_format, suffix_reason = (
+        _decode_scheduler_payload_only(
+            event,
+            suffix.group("payload").strip(),
+        )
+    )
+    if payload is None:
+        return None, None, suffix_reason, True
+    return payload, payload_format, None, True
 
 
 def _empty_decoder_accounting() -> dict[str, Any]:
@@ -803,6 +857,14 @@ def _empty_decoder_accounting() -> dict[str, Any]:
         "decoded_scheduler_event_lines": 0,
         "rejected_scheduler_event_lines": 0,
         "target_associated_decoded_events": 0,
+        "decoded_with_perf_suffix": 0,
+        "rejection_reasons": {
+            "missing_required_field": 0,
+            "malformed_compact_payload": 0,
+            "unsupported_perf_suffix": 0,
+            "invalid_numeric_field": 0,
+            "unsupported_scheduler_event": 0,
+        },
         "by_event": {
             event: {
                 "recognized": 0,
@@ -811,6 +873,7 @@ def _empty_decoder_accounting() -> dict[str, Any]:
                 "target_associated": 0,
                 "key_value": 0,
                 "compact": 0,
+                "with_perf_suffix": 0,
             }
             for event in (
                 "sched_switch",
@@ -841,13 +904,20 @@ def _parse_perf_script_text(
             accounting["recognized_scheduler_event_lines"] += 1
             counters["recognized"] += 1
             current_stack = None
-            payload, payload_format = _decode_scheduler_payload(
+            (
+                payload,
+                payload_format,
+                rejection_reason,
+                had_perf_suffix,
+            ) = _decode_scheduler_payload(
                 event,
                 match.group("payload"),
             )
             if payload is None:
                 accounting["rejected_scheduler_event_lines"] += 1
                 counters["rejected"] += 1
+                reason = rejection_reason or "malformed_compact_payload"
+                accounting["rejection_reasons"][reason] += 1
                 continue
             target_associated = False
             if event == "sched_switch":
@@ -866,6 +936,9 @@ def _parse_perf_script_text(
             accounting["decoded_scheduler_event_lines"] += 1
             counters["decoded"] += 1
             counters[payload_format] += 1
+            if had_perf_suffix:
+                accounting["decoded_with_perf_suffix"] += 1
+                counters["with_perf_suffix"] += 1
             if target_associated:
                 accounting["target_associated_decoded_events"] += 1
                 counters["target_associated"] += 1
@@ -875,7 +948,15 @@ def _parse_perf_script_text(
                     current_stack = {
                         "time_seconds": row["time_seconds"],
                         "tid": prev_pid,
+                        "switch_key": (
+                            match.group("time"),
+                            payload["prev_pid"],
+                            payload["next_pid"],
+                            payload["prev_state"],
+                        ),
                         "frames": [],
+                        "dwarf_expected": True,
+                        "timeline_only_overlap": False,
                     }
                     stacks.append(current_stack)
             continue
@@ -889,6 +970,43 @@ def _parse_perf_script_text(
                         "module": frame.group(3).strip()[:400],
                     }
                 )
+    grouped_stacks: dict[
+        tuple[str, str, str, str],
+        list[dict[str, Any]],
+    ] = {}
+    for stack in stacks:
+        grouped_stacks.setdefault(
+            stack["switch_key"],
+            [],
+        ).append(stack)
+    timeline_only_overlap_count = 0
+    dwarf_expected_stack_count = 0
+    dwarf_expected_empty_stack_count = 0
+    for group in grouped_stacks.values():
+        expected = next(
+            (
+                stack
+                for stack in group
+                if stack.get("frames")
+            ),
+            group[0],
+        )
+        for stack in group:
+            stack["dwarf_expected"] = stack is expected
+            stack["timeline_only_overlap"] = stack is not expected
+            if stack is not expected:
+                timeline_only_overlap_count += 1
+        dwarf_expected_stack_count += 1
+        if not expected.get("frames"):
+            dwarf_expected_empty_stack_count += 1
+    accounting["switch_stack_accounting"] = {
+        "target_switch_stack_records": len(stacks),
+        "dwarf_expected_stack_records": dwarf_expected_stack_count,
+        "timeline_only_overlap_records": timeline_only_overlap_count,
+        "dwarf_expected_empty_stack_records": (
+            dwarf_expected_empty_stack_count
+        ),
+    }
     return events, stacks, accounting
 
 
@@ -1411,7 +1529,8 @@ def summarize(
     odbc_stacks = [
         stack
         for stack in stacks
-        if odbc_start_ns
+        if stack.get("dwarf_expected") is True
+        and odbc_start_ns
         <= int(float(stack["time_seconds"]) * 1_000_000_000)
         <= odbc_end_ns
     ]
@@ -1505,7 +1624,8 @@ def summarize(
     truncated = sum(
         1
         for stack in stacks
-        if not stack.get("frames")
+        if stack.get("dwarf_expected") is True
+        and not stack.get("frames")
     )
 
     blocked = [
@@ -1639,6 +1759,9 @@ def summarize(
         "native_unwind": {
             **chain,
             "odbc_switch_out_stack_count": len(odbc_stacks),
+            "switch_stack_accounting": decoder_accounting[
+                "switch_stack_accounting"
+            ],
         },
         "capture_quality": {
             "lost_event_count": lost,
@@ -1808,6 +1931,73 @@ worker 11 1.000000: sched:sched_switch: prev_comm=worker prev_pid=11 prev_prio=1
 worker 11 1.100000: sched:sched_wakeup: comm=worker pid=11 prio=120 target_cpu=001
 idle 99 1.150000: sched:sched_switch: prev_comm=idle prev_pid=99 prev_prio=120 prev_state=R ==> next_comm=worker next_pid=11 next_prio=120
 """
+    compact_switch_payload = "worker:11 [120] S ==> idle:99 [120]"
+    compact_switch_annotated = (
+        compact_switch_payload
+        + " 7fff0000 schedule+0x10 (/lib/libc.so.6)"
+    )
+    plain_switch, plain_switch_format, plain_switch_reason, plain_switch_suffix = (
+        _decode_scheduler_payload(
+            "sched_switch",
+            compact_switch_payload,
+        )
+    )
+    annotated_switch, annotated_switch_format, annotated_switch_reason, annotated_switch_suffix = (
+        _decode_scheduler_payload(
+            "sched_switch",
+            compact_switch_annotated,
+        )
+    )
+    assert plain_switch == annotated_switch == {
+        "prev_pid": "11",
+        "next_pid": "99",
+        "prev_state": "S",
+    }
+    assert plain_switch_format == annotated_switch_format == "compact"
+    assert plain_switch_reason is annotated_switch_reason is None
+    assert plain_switch_suffix is False
+    assert annotated_switch_suffix is True
+
+    for event in ("sched_wakeup", "sched_wakeup_new"):
+        wake_payload = "worker:11 [120] CPU:001"
+        wake_success = "worker:11 [120] success=1 CPU:001"
+        wake_annotated = (
+            wake_success
+            + " 7fff0000 wake_up+0x20 (/lib/libc.so.6)"
+        )
+        plain_wake, plain_format, plain_reason, plain_suffix = (
+            _decode_scheduler_payload(event, wake_payload)
+        )
+        success_wake, success_format, success_reason, success_suffix = (
+            _decode_scheduler_payload(event, wake_success)
+        )
+        annotated_wake, annotated_format, annotated_reason, annotated_suffix = (
+            _decode_scheduler_payload(event, wake_annotated)
+        )
+        assert plain_wake is not None
+        assert success_wake is not None
+        assert annotated_wake is not None
+        assert plain_wake["pid"] == "11"
+        assert success_wake["pid"] == annotated_wake["pid"] == "11"
+        assert success_wake["success"] == annotated_wake["success"] == "1"
+        assert plain_format == success_format == annotated_format == "compact"
+        assert plain_reason is success_reason is annotated_reason is None
+        assert plain_suffix is False
+        assert success_suffix is False
+        assert annotated_suffix is True
+
+    rejected_suffix = _decode_scheduler_payload(
+        "sched_switch",
+        compact_switch_payload + " arbitrary trailing text",
+    )
+    assert rejected_suffix[0] is None
+    assert rejected_suffix[2] == "malformed_compact_payload"
+    rejected_bad_annotation = _decode_scheduler_payload(
+        "sched_switch",
+        compact_switch_payload + " symbol (unterminated",
+    )
+    assert rejected_bad_annotation[0] is None
+    assert rejected_bad_annotation[2] == "unsupported_perf_suffix"
     compact_script = """
 worker 11 1.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
   7fff0000 blocked_call (/lib/libc.so.6)
@@ -1843,24 +2033,92 @@ idle 99 1.150000: sched:sched_switch: idle:99 [120] R ==> worker:11 [120]
     assert key_events[1]["payload"]["pid"] == "11"
     assert compact_events[1]["payload"]["pid"] == "11"
     for event in ("sched_wakeup", "sched_wakeup_new"):
-        key_wakeup, key_format = _decode_scheduler_payload(
+        key_wakeup = _decode_scheduler_payload(
             event,
-            "comm=worker pid=11 prio=120 target_cpu=001",
+            "comm=worker pid=11 prio=120 target_cpu=001 success=1",
         )
-        compact_wakeup, compact_format = _decode_scheduler_payload(
+        compact_wakeup = _decode_scheduler_payload(
             event,
-            "worker:11 [120] CPU:001",
+            "worker:11 [120] success=1 CPU:001",
         )
-        assert key_wakeup is not None
-        assert compact_wakeup is not None
-        assert key_wakeup["pid"] == compact_wakeup["pid"] == "11"
-        assert key_format == "key_value"
-        assert compact_format == "compact"
+        assert key_wakeup[0] is not None
+        assert compact_wakeup[0] is not None
+        assert key_wakeup[0]["pid"] == compact_wakeup[0]["pid"] == "11"
+        assert key_wakeup[0]["success"] == compact_wakeup[0]["success"] == "1"
+        assert key_wakeup[1] == "key_value"
+        assert compact_wakeup[1] == "compact"
     assert len(key_stacks) == len(compact_stacks) == 1
     assert key_stacks[0]["tid"] == compact_stacks[0]["tid"] == 11
     assert len(key_stacks[0]["frames"]) == len(compact_stacks[0]["frames"]) == 1
     assert key_accounting["rejected_scheduler_event_lines"] == 0
     assert compact_accounting["rejected_scheduler_event_lines"] == 0
+    annotated_compact_script = """
+worker 11 1.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120] 7fff0000 schedule+0x10 (/lib/libc.so.6)
+  7fff0001 blocked_call (/lib/libc.so.6)
+worker 11 1.100000: sched:sched_wakeup: worker:11 [120] success=1 CPU:001 7fff0002 wake_up+0x20 (/lib/libc.so.6)
+idle 99 1.150000: sched:sched_switch: idle:99 [120] R ==> worker:11 [120] 7fff0003 finish_task_switch+0x30 (/lib/libc.so.6)
+"""
+    annotated_events, annotated_stacks, annotated_accounting = (
+        _parse_perf_script_text(
+            annotated_compact_script,
+            {11},
+        )
+    )
+    assert [
+        row["kind"]
+        for row in _transitions(
+            annotated_events,
+            {11},
+        )[0]
+    ] == [
+        "BLOCKED_SWITCH_OUT",
+        "WAKEUP",
+        "SWITCH_IN",
+    ]
+    assert annotated_accounting["decoded_with_perf_suffix"] == 3
+    assert annotated_accounting["rejected_scheduler_event_lines"] == 0
+    assert len(annotated_stacks) == 1
+    assert annotated_stacks[0]["dwarf_expected"] is True
+    assert len(annotated_stacks[0]["frames"]) == 1
+
+    overlap_script = """
+worker 11 2.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
+worker 11 2.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
+  7fff0010 blocked_call (/lib/libc.so.6)
+"""
+    _, overlap_stacks, overlap_accounting = _parse_perf_script_text(
+        overlap_script,
+        {11},
+    )
+    assert len(overlap_stacks) == 2
+    assert sum(
+        stack["dwarf_expected"] is True
+        for stack in overlap_stacks
+    ) == 1
+    assert sum(
+        stack["timeline_only_overlap"] is True
+        for stack in overlap_stacks
+    ) == 1
+    assert overlap_accounting["switch_stack_accounting"] == {
+        "target_switch_stack_records": 2,
+        "dwarf_expected_stack_records": 1,
+        "timeline_only_overlap_records": 1,
+        "dwarf_expected_empty_stack_records": 0,
+    }
+
+    empty_expected_script = """
+worker 11 3.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
+"""
+    _, empty_stacks, empty_accounting = _parse_perf_script_text(
+        empty_expected_script,
+        {11},
+    )
+    assert len(empty_stacks) == 1
+    assert empty_stacks[0]["dwarf_expected"] is True
+    assert empty_stacks[0]["frames"] == []
+    assert empty_accounting["switch_stack_accounting"][
+        "dwarf_expected_empty_stack_records"
+    ] == 1
     malformed_script = """
 worker 11 1.000000: sched:sched_switch: prev_comm=worker prev_state=S ==> next_comm=idle next_pid=99
 worker 11 1.100000: sched:sched_wakeup: worker [120] CPU:001
@@ -1876,8 +2134,16 @@ worker 11 1.100000: sched:sched_wakeup: worker [120] CPU:001
     assert malformed_accounting["recognized_scheduler_event_lines"] == 2
     assert malformed_accounting["decoded_scheduler_event_lines"] == 0
     assert malformed_accounting["rejected_scheduler_event_lines"] == 2
+    assert malformed_accounting["rejection_reasons"][
+        "missing_required_field"
+    ] == 1
+    assert malformed_accounting["rejection_reasons"][
+        "malformed_compact_payload"
+    ] == 1
     assert "payload" not in malformed_accounting
     assert "raw" not in malformed_accounting
+    assert "symbol" not in malformed_accounting
+    assert "module" not in malformed_accounting
     synthetic_markers = []
     for index, phase in enumerate(
         (
