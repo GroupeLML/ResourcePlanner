@@ -476,6 +476,58 @@ class ConnectionTraceRecorder:
             thread_id=threading.get_ident(),
         )
 
+    def record_driver_execute(
+        self,
+        execution_context: object,
+        *,
+        kind: str,
+        error_type: str = "",
+    ) -> None:
+        self.record(
+            kind,
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=int(
+                getattr(
+                    execution_context,
+                    "_rp894_trace_connection_id",
+                    0,
+                )
+                or 0
+            ),
+            spid=int(
+                getattr(execution_context, "_rp894_trace_spid", 0)
+                or 0
+            ),
+            statement_sequence=int(
+                getattr(
+                    execution_context,
+                    "_rp894_trace_statement_sequence",
+                    0,
+                )
+                or 0
+            ),
+            connection_execution_sequence=int(
+                getattr(
+                    execution_context,
+                    "_rp894_trace_connection_execution_sequence",
+                    0,
+                )
+                or 0
+            ),
+            statement_fingerprint=str(
+                getattr(
+                    execution_context,
+                    "_rp894_trace_fingerprint",
+                    "",
+                )
+                or ""
+            ),
+            error_type=str(error_type or ""),
+            thread_id=threading.get_ident(),
+        )
+
     def on_transaction_end(self, connection: object, kind: str) -> None:
         self.record(
             "transaction_end",
@@ -949,6 +1001,83 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             connection_sequence
         )
 
+    @event.listens_for(engine, "do_execute", retval=True)
+    def _do_execute(
+        cursor,
+        statement,
+        parameters,
+        execution_context,
+    ) -> bool:
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_entry",
+        )
+        try:
+            cursor.execute(statement, parameters)
+        except Exception as exc:
+            recorder.record_driver_execute(
+                execution_context,
+                kind="driver_execute_error",
+                error_type=type(exc).__name__,
+            )
+            raise
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_return",
+        )
+        return True
+
+    @event.listens_for(engine, "do_execute_no_params", retval=True)
+    def _do_execute_no_params(
+        cursor,
+        statement,
+        execution_context,
+    ) -> bool:
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_entry",
+        )
+        try:
+            cursor.execute(statement)
+        except Exception as exc:
+            recorder.record_driver_execute(
+                execution_context,
+                kind="driver_execute_error",
+                error_type=type(exc).__name__,
+            )
+            raise
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_return",
+        )
+        return True
+
+    @event.listens_for(engine, "do_executemany", retval=True)
+    def _do_executemany(
+        cursor,
+        statement,
+        parameters,
+        execution_context,
+    ) -> bool:
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_entry",
+        )
+        try:
+            cursor.executemany(statement, parameters)
+        except Exception as exc:
+            recorder.record_driver_execute(
+                execution_context,
+                kind="driver_execute_error",
+                error_type=type(exc).__name__,
+            )
+            raise
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_return",
+        )
+        return True
+
     @event.listens_for(engine, "after_cursor_execute")
     def _after_cursor_execute(
         conn,
@@ -997,6 +1126,9 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         event.remove(engine.pool, "checkout", _checkout)
         event.remove(engine.pool, "checkin", _checkin)
         event.remove(engine, "before_cursor_execute", _before_cursor_execute)
+        event.remove(engine, "do_execute", _do_execute)
+        event.remove(engine, "do_execute_no_params", _do_execute_no_params)
+        event.remove(engine, "do_executemany", _do_executemany)
         event.remove(engine, "after_cursor_execute", _after_cursor_execute)
         event.remove(engine, "handle_error", _handle_error)
         event.remove(engine, "commit", _commit)
