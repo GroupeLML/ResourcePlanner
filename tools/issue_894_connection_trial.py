@@ -344,8 +344,13 @@ def _parse_xe_event_xml(
     session_id = _safe_int(_xe_value(node, "session_id"))
     if not session_id:
         return None
-    if event_name in {"rpc_completed", "sql_batch_completed"}:
-        is_rpc = event_name == "rpc_completed"
+    if event_name in {
+        "rpc_starting",
+        "rpc_completed",
+        "sql_batch_completed",
+    }:
+        is_rpc = event_name.startswith("rpc_")
+        completed = event_name != "rpc_starting"
         return {
             "event": event_name,
             "execution_category": (
@@ -354,11 +359,37 @@ def _parse_xe_event_xml(
             "timestamp_utc": timestamp,
             "session_id": session_id,
             "database_id": event_database_id,
-            "duration_us": _safe_int(_xe_value(node, "duration")),
-            "cpu_us": _safe_int(_xe_value(node, "cpu_time")),
-            "logical_reads": _safe_int(_xe_value(node, "logical_reads")),
-            "physical_reads": _safe_int(_xe_value(node, "physical_reads")),
-            "row_count": _safe_int(_xe_value(node, "row_count")),
+            "event_sequence": _safe_int(
+                _xe_value(node, "event_sequence")
+            ),
+            "client_connection_id": str(
+                _xe_value(node, "client_connection_id") or ""
+            ),
+            "duration_us": (
+                _safe_int(_xe_value(node, "duration"))
+                if completed
+                else 0
+            ),
+            "cpu_us": (
+                _safe_int(_xe_value(node, "cpu_time"))
+                if completed
+                else 0
+            ),
+            "logical_reads": (
+                _safe_int(_xe_value(node, "logical_reads"))
+                if completed
+                else 0
+            ),
+            "physical_reads": (
+                _safe_int(_xe_value(node, "physical_reads"))
+                if completed
+                else 0
+            ),
+            "row_count": (
+                _safe_int(_xe_value(node, "row_count"))
+                if completed
+                else 0
+            ),
             "object_name": (
                 str(_xe_value(node, "object_name") or "")
                 if is_rpc
@@ -506,6 +537,12 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
             "unexpected_read_files": unexpected_read_files,
             "truncated": False,
             "raw_sql_captured_in_evidence": False,
+            "capture_source_privacy": {
+                "rpc_starting_collect_statement": False,
+                "rpc_completed_collect_statement": False,
+                "sql_batch_completed_collect_batch_text": False,
+                "sql_text_action_enabled": False,
+            },
             "events": events,
         }
     finally:
