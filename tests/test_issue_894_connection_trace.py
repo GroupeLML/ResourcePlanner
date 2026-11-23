@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 import tools.issue_894_connection_trial as connection_trial
+import tools.issue_894_native_profile as native_profile
 
 from tools.issue_894_connection_trace import (
     ConnectionTraceRecorder,
@@ -729,6 +730,232 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(report["material_profiling_deterioration"])
         self.assertFalse(report["interpretation_allowed"])
+
+    def test_native_profile_categories_require_observed_frames(self) -> None:
+        self.assertEqual(
+            native_profile._stack_category([
+                {
+                    "name": "take_gil",
+                    "file": "/usr/local/lib/libpython3.12.so",
+                },
+                {
+                    "name": "futex_wait",
+                    "file": "/usr/lib/libc.so.6",
+                },
+            ]),
+            "cpython_gil_wait",
+        )
+        self.assertEqual(
+            native_profile._stack_category([
+                {
+                    "name": "SQLFetch",
+                    "file": "/opt/microsoft/msodbcsql18/lib64/libmsodbcsql.so",
+                },
+                {
+                    "name": "pthread_cond_wait",
+                    "file": "/usr/lib/libc.so.6",
+                },
+            ]),
+            "pyodbc_odbc_synchronization",
+        )
+        self.assertEqual(
+            native_profile._stack_category([
+                {
+                    "name": "SQLFetch",
+                    "file": "/opt/microsoft/msodbcsql18/lib64/libmsodbcsql.so",
+                },
+                {
+                    "name": "recv",
+                    "file": "/usr/lib/libc.so.6",
+                },
+            ]),
+            "socket_or_result_delivery_path",
+        )
+        self.assertEqual(
+            native_profile._stack_category([
+                {
+                    "name": "futex_wait",
+                    "file": "/usr/lib/libc.so.6",
+                },
+            ]),
+            "other_native_synchronization",
+        )
+        self.assertEqual(
+            native_profile._stack_category([
+                {
+                    "name": "fetchall",
+                    "file": "/app/site-packages/sqlalchemy/cursor.py",
+                },
+            ]),
+            "unresolved",
+        )
+
+    def test_native_profile_preflight_rejects_missing_native_unwinding(self) -> None:
+        payload = {
+            "profiles": [{
+                "type": "sampled",
+                "name": 'Thread 123 "worker"',
+                "unit": "seconds",
+                "startValue": 0.0,
+                "endValue": 0.02,
+                "samples": [[0], [0]],
+                "weights": [0.01, 0.01],
+            }],
+            "shared": {
+                "frames": [{
+                    "name": "fetchall",
+                    "file": "/app/sqlalchemy/cursor.py",
+                }],
+            },
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile.json"
+            output = root / "preflight.json"
+            profile.write_text(json.dumps(payload), encoding="utf-8")
+            report = native_profile._preflight(
+                SimpleNamespace(
+                    profile=profile,
+                    output=output,
+                    observer_version="py-spy 0.4.4",
+                    attach_status=0,
+                    command_start_ns=1_000_000_000,
+                    command_end_ns=1_020_000_000,
+                    native_requested=True,
+                    idle_requested=True,
+                    locals_requested=False,
+                )
+            )
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["native_userspace_unwinding_available"]
+        )
+
+    def test_native_profile_correlates_by_native_tid_and_bounded_time(self) -> None:
+        payload = {
+            "profiles": [{
+                "type": "sampled",
+                "name": 'Thread 321 "worker"',
+                "unit": "seconds",
+                "startValue": 0.0,
+                "endValue": 0.03,
+                "samples": [[0, 1], [0, 1], [0, 1]],
+                "weights": [0.01, 0.01, 0.01],
+            }],
+            "shared": {
+                "frames": [
+                    {
+                        "name": "SQLFetch",
+                        "file": "/opt/microsoft/msodbcsql18/lib64/libmsodbcsql.so",
+                    },
+                    {
+                        "name": "recv",
+                        "file": "/usr/lib/libc.so.6",
+                    },
+                ],
+            },
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile.json"
+            preflight = root / "preflight.json"
+            trace = root / "trace.jsonl"
+            output = root / "summary.json"
+            profile.write_text(json.dumps(payload), encoding="utf-8")
+            preflight.write_text(
+                json.dumps({
+                    "passed": True,
+                    "observer_version": "py-spy 0.4.4",
+                    "profile_start_lower_epoch_ns": 1_000_000_000,
+                    "profile_start_upper_epoch_ns": 1_000_000_000,
+                    "profile_start_uncertainty_ms": 0.0,
+                }),
+                encoding="utf-8",
+            )
+            end = datetime.fromtimestamp(
+                1.04,
+                tz=timezone.utc,
+            ).isoformat()
+            trace.write_text(
+                json.dumps({
+                    "kind": "dbapi_fetch",
+                    "timestamp_utc": end,
+                    "native_thread_id": 321,
+                    "fetch_elapsed_ms": 40.0,
+                    "target_role": "list_shifts_initial",
+                    "statement_fingerprint": "dynamic-list-shifts",
+                    "connection_id": 10,
+                    "connection_execution_sequence": 20,
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            report = native_profile._summarize(
+                SimpleNamespace(
+                    profile=profile,
+                    preflight=preflight,
+                    trace=trace,
+                    output=output,
+                )
+            )
+
+        target = report["targets"]["list_shifts_initial"]
+        self.assertEqual(target["profiled_fetch_spans"], 1)
+        self.assertEqual(target["associated_external_samples"], 3)
+        self.assertEqual(
+            target["native_categories"][
+                "socket_or_result_delivery_path"
+            ],
+            3,
+        )
+        self.assertEqual(target["unresolved_fraction"], 0.0)
+
+    def test_native_profile_unclassifiable_stack_stays_unresolved(self) -> None:
+        self.assertEqual(
+            native_profile._stack_category([
+                {
+                    "name": "mystery_wait",
+                    "file": "/usr/lib/libmystery.so",
+                },
+            ]),
+            "unresolved",
+        )
+
+    def test_native_profile_materiality_is_independent(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline.json"
+            profiled = root / "profiled.json"
+            output = root / "comparison.json"
+            baseline.write_text(
+                json.dumps({
+                    "achieved_request_start_rps": 4.0,
+                    "latency": {"p95_ms": 1000.0},
+                    "completed": 100,
+                    "failed": 1,
+                }),
+                encoding="utf-8",
+            )
+            profiled.write_text(
+                json.dumps({
+                    "achieved_request_start_rps": 3.95,
+                    "latency": {"p95_ms": 1010.0},
+                    "completed": 100,
+                    "failed": 1,
+                }),
+                encoding="utf-8",
+            )
+            report = native_profile._compare(
+                SimpleNamespace(
+                    baseline=baseline,
+                    profiled=profiled,
+                    output=output,
+                )
+            )
+        self.assertFalse(
+            report["material_native_profiling_deterioration"]
+        )
+        self.assertTrue(report["interpretation_allowed"])
 
     def test_canonical_reproduced_failure_is_valid_diagnostic_execution(self) -> None:
         with TemporaryDirectory() as tmp:
