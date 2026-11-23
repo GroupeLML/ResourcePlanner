@@ -1001,7 +1001,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             connection_sequence
         )
 
-    @event.listens_for(engine, "do_execute", retval=True)
+    @event.listens_for(engine, "do_execute")
     def _do_execute(
         cursor,
         statement,
@@ -1027,7 +1027,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         )
         return True
 
-    @event.listens_for(engine, "do_execute_no_params", retval=True)
+    @event.listens_for(engine, "do_execute_no_params")
     def _do_execute_no_params(
         cursor,
         statement,
@@ -1052,7 +1052,7 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
         )
         return True
 
-    @event.listens_for(engine, "do_executemany", retval=True)
+    @event.listens_for(engine, "do_executemany")
     def _do_executemany(
         cursor,
         statement,
