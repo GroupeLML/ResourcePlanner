@@ -657,13 +657,17 @@ def _server_execution_events(
             continue
         event_kind = str(row.get("event") or "")
         if event_kind == "sql_batch_completed":
-            executions.append(dict(row))
+            execution = dict(row)
+            execution["execution_category"] = "direct_batch"
+            executions.append(execution)
             continue
         if event_kind != "rpc_completed":
             continue
         name = _normalized_rpc_name(row.get("object_name"))
         if name in _PREPARED_EXECUTION_RPC_NAMES:
-            executions.append(dict(row))
+            execution = dict(row)
+            execution["execution_category"] = "prepared_rpc"
+            executions.append(execution)
         else:
             ignored += 1
     executions.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
