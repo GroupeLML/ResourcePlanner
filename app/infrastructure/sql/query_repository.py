@@ -2269,12 +2269,27 @@ class SqlPlannerQueryRepository(PlannerQueryPort):
             )
             .options(
                 load_only(
+                    Resource.id,
+                    Resource.name,
+                    raiseload=True,
+                ),
+                load_only(
+                    ResourceRequirement.id,
+                    ResourceRequirement.legacy_segment_id,
+                    ResourceRequirement.project_id,
+                    ResourceRequirement.workforce_request_id,
+                    ResourceRequirement.confirmation,
+                    ResourceRequirement.created_by_name,
+                    ResourceRequirement.status,
+                    raiseload=True,
+                ),
+                load_only(
                     WorkforceRequest.id,
                     WorkforceRequest.legacy_demand_number,
                     WorkforceRequest.requester_name,
                     WorkforceRequest.emergency_override_active,
                     raiseload=True,
-                )
+                ),
             )
         )
         if start is not None:
