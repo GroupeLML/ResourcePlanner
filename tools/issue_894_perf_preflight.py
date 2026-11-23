@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 from typing import Any
 
@@ -103,7 +104,7 @@ def _validate_workflow_text(text: str) -> None:
         )
     generated_required = (
         "perf record",
-        "sched:sched_switch/call-graph=dwarf,8192/",
+        "sched:sched_switch/call-graph=dwarf,stack-size=8192/",
         "sched:sched_wakeup",
         "sched:sched_wakeup_new",
         "--clockid mono",
@@ -351,6 +352,25 @@ def _tid_filter(
     )
 
 
+def switch_out_event() -> str:
+    return (
+        "sched:sched_switch/"
+        f"call-graph=dwarf,stack-size={RAW_STACK_BYTES}/"
+    )
+
+
+def perf_parser_argv() -> list[str]:
+    return [
+        "perf",
+        "record",
+        "--dry-run",
+        "-e",
+        switch_out_event(),
+        "--",
+        "true",
+    ]
+
+
 def perf_argv(
     tids: list[int],
     raw_path: Path,
@@ -382,10 +402,7 @@ def perf_argv(
         "--clockid",
         "mono",
         "-e",
-        (
-            "sched:sched_switch/"
-            f"call-graph=dwarf,{RAW_STACK_BYTES}/"
-        ),
+        switch_out_event(),
         "--filter",
         switch_out,
         "-e",
@@ -416,6 +433,13 @@ def command(args: argparse.Namespace) -> int:
         tids,
         args.raw,
     )
+    parser_argv = perf_parser_argv()
+    parser_result = subprocess.run(
+        parser_argv,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
     report = {
         "schema": "issue-894-perf-command-v1",
         "clock": "CLOCK_MONOTONIC",
@@ -423,6 +447,13 @@ def command(args: argparse.Namespace) -> int:
         "observed_seconds": OBSERVED_SECONDS,
         "tids": sorted(set(tids)),
         "argv": argv,
+        "parser_check": {
+            "argv": parser_argv,
+            "returncode": parser_result.returncode,
+            "stdout": parser_result.stdout,
+            "stderr": parser_result.stderr,
+            "accepted": parser_result.returncode == 0,
+        },
         "channels": {
             "switch_out": {
                 "event": "sched:sched_switch",
@@ -472,7 +503,7 @@ def command(args: argparse.Namespace) -> int:
             "\n".join(argv) + "\n",
             encoding="utf-8",
         )
-    return 0
+    return 0 if parser_result.returncode == 0 else 1
 
 
 def identity(args: argparse.Namespace) -> int:
@@ -1529,9 +1560,13 @@ def _self_test() -> None:
     text = " ".join(argv)
     assert (
         "sched:sched_switch/"
-        "call-graph=dwarf,8192/"
+        "call-graph=dwarf,stack-size=8192/"
         in text
     )
+    assert "call-graph=dwarf,8192" not in text
+    parser_text = " ".join(perf_parser_argv())
+    assert "perf record --dry-run" in parser_text
+    assert switch_out_event() in parser_text
     assert (
         text.count(
             "call-graph=dwarf"
