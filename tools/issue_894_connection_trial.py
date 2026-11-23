@@ -41,8 +41,11 @@ TARGET_RESULT_FINGERPRINTS = (
 )
 XE_SESSION_NAME = "rp894_short_correlation"
 XE_CLOCK_UNCERTAINTY_MS = 250.0
-_PREPARED_RPC_NAMES = frozenset(
-    {"sp_prepexec", "sp_execute", "sp_executesql", "sp_prepare"}
+_PREPARED_EXECUTION_RPC_NAMES = frozenset(
+    {"sp_prepexec", "sp_execute", "sp_executesql"}
+)
+_PREPARED_NON_EXECUTION_RPC_NAMES = frozenset(
+    {"sp_prepare", "sp_unprepare"}
 )
 
 
@@ -138,10 +141,10 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
                 WHERE ([duration] > (1000))
             )
             ADD TARGET package0.ring_buffer(
-                SET max_memory=(1024), max_events_limit=(10000)
+                SET max_memory=(4096), max_events_limit=(30000)
             )
             WITH (
-                MAX_MEMORY=4096 KB,
+                MAX_MEMORY=8192 KB,
                 EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,
                 MAX_DISPATCH_LATENCY=1 SECONDS,
                 TRACK_CAUSALITY=OFF,
@@ -346,81 +349,202 @@ def _count_distribution(values: list[float]) -> dict[str, float | int]:
     }
 
 
+def _application_execution_markers(
+    trace_rows: list[dict[str, object]],
+    *,
+    spid: int,
+) -> list[dict[str, object]]:
+    markers = [
+        dict(row)
+        for row in trace_rows
+        if _safe_int(row.get("spid")) == spid
+        and row.get("kind") in {"spid_probe", "statement_start"}
+        and _safe_int(row.get("connection_execution_sequence")) > 0
+    ]
+    markers.sort(
+        key=lambda row: _safe_int(
+            row.get("connection_execution_sequence")
+        )
+    )
+    expected = list(range(1, len(markers) + 1))
+    observed = [
+        _safe_int(row.get("connection_execution_sequence"))
+        for row in markers
+    ]
+    if observed != expected:
+        return []
+    return markers
+
+
+def _server_execution_events(
+    capture: dict[str, object],
+    *,
+    spid: int,
+) -> tuple[list[dict[str, object]], int]:
+    executions: list[dict[str, object]] = []
+    ignored = 0
+    for row in capture.get("events", []):
+        if (
+            not isinstance(row, dict)
+            or row.get("event") != "rpc_completed"
+            or _safe_int(row.get("session_id")) != spid
+        ):
+            continue
+        name = _normalized_rpc_name(row.get("object_name"))
+        if name in _PREPARED_EXECUTION_RPC_NAMES:
+            executions.append(dict(row))
+        else:
+            ignored += 1
+    executions.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
+    for sequence, event in enumerate(executions, start=1):
+        event["server_execution_sequence"] = sequence
+    return executions, ignored
+
+
+def _fetch_time_consistent(
+    app_fetch: dict[str, object],
+    server_event: dict[str, object],
+) -> bool:
+    app_end = _parse_utc(app_fetch.get("timestamp_utc"))
+    fetch_elapsed_ms = float(app_fetch.get("fetch_elapsed_ms") or 0.0)
+    app_start = app_end - timedelta(milliseconds=fetch_elapsed_ms)
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    event_time = _parse_utc(server_event.get("timestamp_utc"))
+    return app_start - margin <= event_time <= app_end + margin
+
+
 def _server_client_correlation(
     trace_rows: list[dict[str, object]],
     capture: dict[str, object],
 ) -> dict[str, object]:
     target_fingerprints = _current_result_fingerprints(trace_rows)
     app_fetches = [
-        row
+        dict(row)
         for row in trace_rows
         if row.get("kind") == "dbapi_fetch"
-        and str(row.get("statement_fingerprint") or "") in target_fingerprints
+        and str(row.get("statement_fingerprint") or "")
+        in target_fingerprints
         and _safe_int(row.get("spid")) > 0
-        and _safe_int(row.get("statement_sequence")) > 0
-    ]
-    rpc_events = [
-        dict(row)
-        for row in capture.get("events", [])
-        if isinstance(row, dict) and row.get("event") == "rpc_completed"
+        and _safe_int(row.get("connection_execution_sequence")) > 0
     ]
     wait_events = [
         dict(row)
         for row in capture.get("events", [])
         if isinstance(row, dict) and row.get("event") == "wait_info"
     ]
-    observed_spids = {_safe_int(row.get("spid")) for row in app_fetches}
-    server_by_spid: dict[int, list[dict[str, object]]] = {}
-    for event in rpc_events:
-        spid = _safe_int(event.get("session_id"))
-        if spid in observed_spids:
-            server_by_spid.setdefault(spid, []).append(event)
-    for spid, events in server_by_spid.items():
-        events.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
-        for sequence, event in enumerate(events, start=1):
-            event["server_sequence"] = sequence
+    observed_spids = sorted(
+        {_safe_int(row.get("spid")) for row in app_fetches}
+    )
 
-    used_server_ids: set[int] = set()
-    ambiguous = 0
+    marker_by_spid: dict[int, list[dict[str, object]]] = {}
+    server_by_spid: dict[int, list[dict[str, object]]] = {}
+    ignored_rpc_events = 0
+    sequence_alignment_failures: list[dict[str, object]] = []
+    for spid in observed_spids:
+        markers = _application_execution_markers(trace_rows, spid=spid)
+        server_events, ignored = _server_execution_events(
+            capture,
+            spid=spid,
+        )
+        marker_by_spid[spid] = markers
+        server_by_spid[spid] = server_events
+        ignored_rpc_events += ignored
+        if not markers:
+            sequence_alignment_failures.append({
+                "spid": spid,
+                "reason": "application_sequence_missing_or_non_contiguous",
+                "application_execution_count": 0,
+                "server_execution_count": len(server_events),
+            })
+            continue
+        if len(markers) != len(server_events):
+            sequence_alignment_failures.append({
+                "spid": spid,
+                "reason": "execution_count_mismatch",
+                "application_execution_count": len(markers),
+                "server_execution_count": len(server_events),
+            })
+
+    server_lookup: dict[tuple[int, int], dict[str, object]] = {}
+    for spid, events in server_by_spid.items():
+        for event in events:
+            key = (
+                spid,
+                _safe_int(event.get("server_execution_sequence")),
+            )
+            if key in server_lookup:
+                sequence_alignment_failures.append({
+                    "spid": spid,
+                    "reason": "duplicate_server_execution_sequence",
+                    "server_execution_sequence": key[1],
+                })
+            server_lookup[key] = event
+
+    app_statement_lookup: dict[tuple[int, int], dict[str, object]] = {}
+    for spid, markers in marker_by_spid.items():
+        for marker in markers:
+            sequence = _safe_int(
+                marker.get("connection_execution_sequence")
+            )
+            key = (spid, sequence)
+            if marker.get("kind") == "statement_start":
+                if key in app_statement_lookup:
+                    sequence_alignment_failures.append({
+                        "spid": spid,
+                        "reason": "duplicate_application_execution_sequence",
+                        "connection_execution_sequence": sequence,
+                    })
+                app_statement_lookup[key] = marker
+
+    used_server_keys: set[tuple[int, int]] = set()
     matches: list[dict[str, object]] = []
     unmatched_app: list[dict[str, object]] = []
+    timing_inconsistencies: list[dict[str, object]] = []
+    duplicate_mappings = 0
     for app in sorted(
         app_fetches,
         key=lambda row: (
             _safe_int(row.get("spid")),
-            _safe_int(row.get("statement_sequence")),
+            _safe_int(row.get("connection_execution_sequence")),
         ),
     ):
         spid = _safe_int(app.get("spid"))
-        app_end = _parse_utc(app.get("timestamp_utc"))
-        fetch_elapsed_ms = float(app.get("fetch_elapsed_ms") or 0.0)
-        app_start = app_end - timedelta(milliseconds=fetch_elapsed_ms)
-        lower_bound = app_start - timedelta(
-            milliseconds=XE_CLOCK_UNCERTAINTY_MS
+        sequence = _safe_int(
+            app.get("connection_execution_sequence")
         )
-        upper_bound = app_end + timedelta(
-            milliseconds=XE_CLOCK_UNCERTAINTY_MS
-        )
-        candidates: list[tuple[float, int, dict[str, object]]] = []
-        for event in server_by_spid.get(spid, []):
-            identity = id(event)
-            if identity in used_server_ids:
-                continue
-            event_time = _parse_utc(event.get("timestamp_utc"))
-            if not (lower_bound <= event_time <= upper_bound):
-                continue
-            delta_ms = abs((event_time - app_end).total_seconds() * 1000.0)
-            candidates.append((delta_ms, identity, event))
-        candidates.sort(key=lambda item: item[0])
-        if not candidates:
+        key = (spid, sequence)
+        marker = app_statement_lookup.get(key)
+        event = server_lookup.get(key)
+        if (
+            marker is None
+            or event is None
+            or str(marker.get("statement_fingerprint") or "")
+            != str(app.get("statement_fingerprint") or "")
+        ):
             unmatched_app.append(app)
             continue
-        if len(candidates) > 1 and abs(candidates[1][0] - candidates[0][0]) <= 25.0:
-            ambiguous += 1
+        if key in used_server_keys:
+            duplicate_mappings += 1
             unmatched_app.append(app)
             continue
-        delta_ms, identity, event = candidates[0]
-        used_server_ids.add(identity)
+        if not _fetch_time_consistent(app, event):
+            timing_inconsistencies.append({
+                "spid": spid,
+                "connection_execution_sequence": sequence,
+                "statement_fingerprint": str(
+                    app.get("statement_fingerprint") or ""
+                ),
+                "application_fetch_end_utc": str(
+                    app.get("timestamp_utc") or ""
+                ),
+                "server_completion_utc": str(
+                    event.get("timestamp_utc") or ""
+                ),
+            })
+            unmatched_app.append(app)
+            continue
+
+        used_server_keys.add(key)
         event_end = _parse_utc(event.get("timestamp_utc"))
         event_start = event_end - timedelta(
             microseconds=_safe_int(event.get("duration_us"))
@@ -435,21 +559,36 @@ def _server_client_correlation(
                     str(wait.get("wait_type") or "UNKNOWN"),
                     [],
                 ).append(float(wait.get("duration_ms") or 0.0))
+
         matches.append({
-            "statement_fingerprint": str(app.get("statement_fingerprint") or ""),
+            "statement_fingerprint": str(
+                app.get("statement_fingerprint") or ""
+            ),
             "request_id": str(app.get("request_id") or ""),
             "connection_id": _safe_int(app.get("connection_id")),
             "spid": spid,
-            "statement_sequence": _safe_int(app.get("statement_sequence")),
-            "fetch_elapsed_ms": float(app.get("fetch_elapsed_ms") or 0.0),
-            "completion_clock_delta_ms": delta_ms,
-            "server_duration_ms": _safe_int(event.get("duration_us")) / 1000.0,
-            "server_cpu_ms": _safe_int(event.get("cpu_us")) / 1000.0,
+            "statement_sequence": _safe_int(
+                app.get("statement_sequence")
+            ),
+            "connection_execution_sequence": sequence,
+            "server_execution_sequence": _safe_int(
+                event.get("server_execution_sequence")
+            ),
+            "fetch_elapsed_ms": float(
+                app.get("fetch_elapsed_ms") or 0.0
+            ),
+            "server_duration_ms": (
+                _safe_int(event.get("duration_us")) / 1000.0
+            ),
+            "server_cpu_ms": (
+                _safe_int(event.get("cpu_us")) / 1000.0
+            ),
             "logical_reads": _safe_int(event.get("logical_reads")),
             "physical_reads": _safe_int(event.get("physical_reads")),
             "row_count": _safe_int(event.get("row_count")),
-            "rpc_object_name": str(event.get("object_name") or ""),
-            "server_sequence": _safe_int(event.get("server_sequence")),
+            "rpc_object_name": str(
+                event.get("object_name") or ""
+            ),
             "waits_ms": {
                 wait_type: _latencies(values)
                 for wait_type, values in sorted(waits.items())
@@ -458,11 +597,16 @@ def _server_client_correlation(
         })
 
     unmatched_server = [
-        row
-        for row in rpc_events
-        if _safe_int(row.get("session_id")) in observed_spids
-        and id(row) not in used_server_ids
+        event
+        for spid, events in server_by_spid.items()
+        for event in events
+        if (
+            spid,
+            _safe_int(event.get("server_execution_sequence")),
+        )
+        not in used_server_keys
     ]
+
     by_fingerprint: dict[str, dict[str, object]] = {}
     for fingerprint in target_fingerprints:
         values = [
@@ -472,14 +616,19 @@ def _server_client_correlation(
         ]
         waits: dict[str, list[float]] = {}
         for match in values:
-            for wait_type, durations in match["_wait_durations_ms"].items():
+            for wait_type, durations in match[
+                "_wait_durations_ms"
+            ].items():
                 waits.setdefault(wait_type, []).extend(
                     float(value) for value in durations
                 )
         by_fingerprint[fingerprint] = {
             "correlated_execution_count": len(values),
             "server_duration_ms": _latencies(
-                [float(row["server_duration_ms"]) for row in values]
+                [
+                    float(row["server_duration_ms"])
+                    for row in values
+                ]
             ),
             "server_cpu_ms": _latencies(
                 [float(row["server_cpu_ms"]) for row in values]
@@ -497,7 +646,9 @@ def _server_client_correlation(
                 wait_type: _latencies(durations)
                 for wait_type, durations in sorted(waits.items())
             },
-            "spids": sorted({int(row["spid"]) for row in values}),
+            "spids": sorted(
+                {int(row["spid"]) for row in values}
+            ),
             "prepared_rpc_names": sorted({
                 str(row["rpc_object_name"])
                 for row in values
@@ -507,7 +658,7 @@ def _server_client_correlation(
 
     prepared_execution_observed = any(
         _normalized_rpc_name(match.get("rpc_object_name"))
-        in _PREPARED_RPC_NAMES
+        in _PREPARED_EXECUTION_RPC_NAMES
         for match in matches
     )
     dropped = _safe_int(capture.get("dropped_event_count"))
@@ -516,34 +667,45 @@ def _server_client_correlation(
     complete = (
         len(target_fingerprints) == 3
         and all(
-            int(by_fingerprint[fingerprint]["correlated_execution_count"]) > 0
+            int(
+                by_fingerprint[fingerprint][
+                    "correlated_execution_count"
+                ]
+            )
+            > 0
             for fingerprint in target_fingerprints
         )
         and not unmatched_app
-        and ambiguous == 0
+        and not sequence_alignment_failures
+        and not timing_inconsistencies
+        and duplicate_mappings == 0
         and dropped == 0
         and not truncated
         and cleanup_succeeded
         and prepared_execution_observed
     )
     return {
-        "schema": "issue-894-server-client-correlation-v1",
+        "schema": "issue-894-server-client-correlation-v2",
         "label": DIAGNOSTIC_LABEL,
         "target_fingerprints": target_fingerprints,
         "targets": by_fingerprint,
         "correlated_execution_count": len(matches),
         "unmatched_server_events": len(unmatched_server),
         "unmatched_application_fetches": len(unmatched_app),
-        "ambiguous_correlations": ambiguous,
+        "ambiguous_correlations": duplicate_mappings,
+        "sequence_alignment_failures": sequence_alignment_failures,
+        "timing_inconsistencies": timing_inconsistencies,
+        "ignored_non_execution_rpc_events": ignored_rpc_events,
         "dropped_event_count": dropped,
         "capture_truncated": truncated,
         "cleanup_succeeded": cleanup_succeeded,
         "prepared_execution_observed": prepared_execution_observed,
         "clock_uncertainty_ms": XE_CLOCK_UNCERTAINTY_MS,
         "clock_correlation_basis": (
-            "same-SPID matching within the reconstructed DBAPI fetch interval "
-            "plus a bounded UTC clock-uncertainty margin; application "
-            "monotonic durations reconstruct the local fetch window but are "
+            "physical-connection/SPID execution order is the primary "
+            "identity rule; server completion must also fall within the "
+            "reconstructed DBAPI fetch interval plus the bounded UTC "
+            "clock-uncertainty margin; application monotonic clocks are "
             "never subtracted directly from SQL Server timestamps"
         ),
         "complete": complete,
