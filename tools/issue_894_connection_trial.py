@@ -6,10 +6,13 @@ import json
 from pathlib import Path
 import statistics
 import time
+from datetime import datetime, timedelta, timezone
+import xml.etree.ElementTree as ET
 from typing import Any
 from uuid import uuid4
 
 import httpx
+from sqlalchemy import create_engine
 
 from tools.issue_894_phase4_load import (
     ORDINARY_RPS,
@@ -35,6 +38,11 @@ UNCHANGED_RESULT_FINGERPRINTS = (
 TARGET_RESULT_FINGERPRINTS = (
     LEGACY_LIST_SHIFTS_FINGERPRINT,
     *UNCHANGED_RESULT_FINGERPRINTS,
+)
+XE_SESSION_NAME = "rp894_short_correlation"
+XE_CLOCK_UNCERTAINTY_MS = 750.0
+_PREPARED_RPC_NAMES = frozenset(
+    {"sp_prepexec", "sp_execute", "sp_executesql", "sp_prepare"}
 )
 
 
