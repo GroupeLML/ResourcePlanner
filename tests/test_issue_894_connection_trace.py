@@ -22,12 +22,16 @@ from tools.issue_894_connection_trial import (
     TARGET_RESULT_FINGERPRINTS,
     _compare,
     _correlate_timeouts,
-    _parse_xe_ring_buffer,
+    _ordered_xe_file_rows,
+    _parse_xe_event_xml,
     _server_client_correlation,
     _summarize_trace,
     _validated_trial_report,
     _xe_cleanup,
+    _xe_finalize_capture_cleanup,
+    _xe_start,
     _xe_stop_collect,
+    _xe_verify_files_removed,
 )
 
 
@@ -1325,29 +1329,306 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report["complete"])
         self.assertTrue(report["capture_truncated"])
 
-    def test_xe_parser_sanitizes_statement_and_parameter_text(self) -> None:
-        xml = """
-        <RingBufferTarget eventCount="1" droppedCount="0" truncated="0">
-          <event name="rpc_completed" timestamp="2026-11-23T02:00:01.000Z">
-            <data name="duration"><value>1000</value></data>
-            <data name="cpu_time"><value>10</value></data>
-            <data name="logical_reads"><value>2</value></data>
-            <data name="physical_reads"><value>0</value></data>
-            <data name="row_count"><value>1</value></data>
-            <data name="object_name"><value>sp_execute</value></data>
-            <data name="statement"><value>SELECT secret_parameter_894</value></data>
-            <action name="database_id"><value>5</value></action>
-            <action name="session_id"><value>77</value></action>
-          </event>
-        </RingBufferTarget>
+    @staticmethod
+    def _xe_event_xml(
+        *,
+        timestamp: str = "2026-11-23T02:00:01.000Z",
+        session_id: int = 77,
+        row_count: int = 1,
+        object_name: str = "sp_execute",
+        include_secret: bool = False,
+    ) -> str:
+        statement = (
+            "<data name=\"statement\"><value>"
+            "SELECT secret_parameter_894"
+            "</value></data>"
+            if include_secret
+            else ""
+        )
+        return f"""
+        <event name="rpc_completed" timestamp="{timestamp}">
+          <data name="duration"><value>1000</value></data>
+          <data name="cpu_time"><value>10</value></data>
+          <data name="logical_reads"><value>2</value></data>
+          <data name="physical_reads"><value>0</value></data>
+          <data name="row_count"><value>{row_count}</value></data>
+          <data name="object_name"><value>{object_name}</value></data>
+          {statement}
+          <action name="database_id"><value>5</value></action>
+          <action name="session_id"><value>{session_id}</value></action>
+        </event>
         """
-        parsed = _parse_xe_ring_buffer(xml, database_id=5)
+
+    def test_xe_event_parser_sanitizes_statement_and_parameter_text(self) -> None:
+        parsed = _parse_xe_event_xml(
+            self._xe_event_xml(include_secret=True),
+            database_id=5,
+        )
         serialized = json.dumps(parsed, sort_keys=True)
         self.assertNotIn("secret_parameter_894", serialized)
         self.assertNotIn("statement", serialized)
-        self.assertEqual(parsed["events"][0]["object_name"], "sp_execute")
+        self.assertEqual(parsed["object_name"], "sp_execute")
 
-    def test_xe_cleanup_executes_drop_on_success(self) -> None:
+    def test_xe_start_creates_bounded_event_file_target(self) -> None:
+        scalar = mock.MagicMock()
+        scalar.scalar_one.return_value = 5
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.return_value = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            scalar,
+            mock.MagicMock(),
+            mock.MagicMock(),
+            mock.MagicMock(),
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        with TemporaryDirectory() as tmp, mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=[],
+        ):
+            report = _xe_start(
+                "database-url",
+                Path(tmp) / "xe-start.json",
+            )
+        sql = "\n".join(
+            str(call.args[0])
+            for call in connection.exec_driver_sql.call_args_list
+        )
+        self.assertIn("ADD TARGET package0.event_file", sql)
+        self.assertIn("max_file_size=(8)", sql)
+        self.assertIn("max_rollover_files=(8)", sql)
+        self.assertEqual(report["target"], "event_file")
+        self.assertEqual(report["max_file_size_mb"], 8)
+        self.assertEqual(report["max_rollover_files"], 8)
+
+    def test_xe_file_rows_are_ordered_by_rollover_then_offset(self) -> None:
+        rows = [
+            ("/var/opt/mssql/log/rp894_short_correlation_1.xel", 30, "<event/>"),
+            ("/var/opt/mssql/log/rp894_short_correlation_0.xel", 50, "<event/>"),
+            ("/var/opt/mssql/log/rp894_short_correlation_0.xel", 10, "<event/>"),
+        ]
+        ordered = _ordered_xe_file_rows(rows)
+        self.assertEqual(
+            [(Path(row[0]).name, row[1]) for row in ordered],
+            [
+                ("rp894_short_correlation_0.xel", 10),
+                ("rp894_short_correlation_0.xel", 50),
+                ("rp894_short_correlation_1.xel", 30),
+            ],
+        )
+
+    def test_xe_stop_collect_reads_complete_multi_file_capture(self) -> None:
+        dbid = mock.MagicMock()
+        dbid.scalar_one.return_value = 5
+        dropped = mock.MagicMock()
+        dropped.scalar_one.return_value = 0
+        read = mock.MagicMock()
+        read.all.return_value = [
+            (
+                "/var/opt/mssql/log/rp894_short_correlation_1.xel",
+                20,
+                self._xe_event_xml(
+                    timestamp="2026-11-23T02:00:02.000Z",
+                    row_count=2,
+                ),
+            ),
+            (
+                "/var/opt/mssql/log/rp894_short_correlation_0.xel",
+                10,
+                self._xe_event_xml(
+                    timestamp="2026-11-23T02:00:01.000Z",
+                    row_count=1,
+                ),
+            ),
+        ]
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            dbid,
+            dropped,
+            mock.MagicMock(),
+            read,
+            mock.MagicMock(),
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        with TemporaryDirectory() as tmp, mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=[
+                "rp894_short_correlation_0.xel",
+                "rp894_short_correlation_1.xel",
+            ],
+        ), mock.patch.object(connection_trial.time, "sleep"):
+            report = _xe_stop_collect(
+                "database-url",
+                Path(tmp) / "capture.json",
+            )
+        self.assertEqual(report["event_file_count"], 2)
+        self.assertEqual(report["event_count"], 2)
+        self.assertEqual(
+            [row["row_count"] for row in report["events"]],
+            [1, 2],
+        )
+        self.assertTrue(report["session_cleanup_succeeded"])
+        self.assertFalse(report["cleanup_succeeded"])
+
+    def test_xe_stop_collect_missing_rollover_file_fails_closed(self) -> None:
+        dbid = mock.MagicMock()
+        dbid.scalar_one.return_value = 5
+        dropped = mock.MagicMock()
+        dropped.scalar_one.return_value = 0
+        read = mock.MagicMock()
+        read.all.return_value = [
+            (
+                "/var/opt/mssql/log/rp894_short_correlation_0.xel",
+                10,
+                self._xe_event_xml(),
+            ),
+        ]
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            dbid,
+            dropped,
+            mock.MagicMock(),
+            read,
+            mock.MagicMock(),
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        with TemporaryDirectory() as tmp, mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=[
+                "rp894_short_correlation_0.xel",
+                "rp894_short_correlation_1.xel",
+            ],
+        ), mock.patch.object(connection_trial.time, "sleep"):
+            with self.assertRaises(ValueError):
+                _xe_stop_collect(
+                    "database-url",
+                    Path(tmp) / "capture.json",
+                )
+
+    def test_xe_stop_collect_unreadable_event_file_fails_closed(self) -> None:
+        dbid = mock.MagicMock()
+        dbid.scalar_one.return_value = 5
+        dropped = mock.MagicMock()
+        dropped.scalar_one.return_value = 0
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            dbid,
+            dropped,
+            mock.MagicMock(),
+            RuntimeError("event file unreadable"),
+            mock.MagicMock(),
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        with TemporaryDirectory() as tmp, mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=["rp894_short_correlation_0.xel"],
+        ), mock.patch.object(connection_trial.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                _xe_stop_collect(
+                    "database-url",
+                    Path(tmp) / "capture.json",
+                )
+
+    def test_xe_stop_collect_parse_failure_fails_closed(self) -> None:
+        dbid = mock.MagicMock()
+        dbid.scalar_one.return_value = 5
+        dropped = mock.MagicMock()
+        dropped.scalar_one.return_value = 0
+        read = mock.MagicMock()
+        read.all.return_value = [
+            (
+                "/var/opt/mssql/log/rp894_short_correlation_0.xel",
+                10,
+                "<event",
+            ),
+        ]
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            dbid,
+            dropped,
+            mock.MagicMock(),
+            read,
+            mock.MagicMock(),
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        with TemporaryDirectory() as tmp, mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=["rp894_short_correlation_0.xel"],
+        ), mock.patch.object(connection_trial.time, "sleep"):
+            with self.assertRaises(ValueError):
+                _xe_stop_collect(
+                    "database-url",
+                    Path(tmp) / "capture.json",
+                )
+
+    def test_xe_stop_collect_dropped_events_fails_closed(self) -> None:
+        dbid = mock.MagicMock()
+        dbid.scalar_one.return_value = 5
+        dropped = mock.MagicMock()
+        dropped.scalar_one.return_value = 1
+        read = mock.MagicMock()
+        read.all.return_value = [
+            (
+                "/var/opt/mssql/log/rp894_short_correlation_0.xel",
+                10,
+                self._xe_event_xml(),
+            ),
+        ]
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            dbid,
+            dropped,
+            mock.MagicMock(),
+            read,
+            mock.MagicMock(),
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        with TemporaryDirectory() as tmp, mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=["rp894_short_correlation_0.xel"],
+        ), mock.patch.object(connection_trial.time, "sleep"):
+            with self.assertRaises(ValueError):
+                _xe_stop_collect(
+                    "database-url",
+                    Path(tmp) / "capture.json",
+                )
+
+    def test_xe_cleanup_stops_and_drops_session(self) -> None:
         connection = mock.MagicMock()
         engine = mock.MagicMock()
         with mock.patch.object(
@@ -1360,43 +1641,100 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             " ".join(str(call.args[0]).split())
             for call in connection.exec_driver_sql.call_args_list
         ]
-        self.assertTrue(
-            any("STATE=STOP" in sql for sql in sql_calls)
-        )
+        self.assertTrue(any("STATE=STOP" in sql for sql in sql_calls))
         self.assertTrue(
             any("DROP EVENT SESSION" in sql for sql in sql_calls)
         )
         connection.close.assert_called_once()
         engine.dispose.assert_called_once()
 
-    def test_xe_stop_cleanup_runs_after_capture_failure(self) -> None:
-        scalar_result = mock.MagicMock()
-        scalar_result.scalar_one.return_value = 5
-        missing_target = mock.MagicMock()
-        missing_target.first.return_value = None
+    def test_xe_verify_files_removed_fails_when_prefix_remains(self) -> None:
         connection = mock.MagicMock()
-        connection.exec_driver_sql.side_effect = [
-            scalar_result,
-            missing_target,
-            mock.MagicMock(),
-            mock.MagicMock(),
-        ]
         engine = mock.MagicMock()
         with mock.patch.object(
             connection_trial,
             "_xe_connection",
             return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=["rp894_short_correlation_0.xel"],
         ):
             with self.assertRaises(ValueError):
-                _xe_stop_collect("database-url", Path("unused.json"))
-        drop_calls = [
+                _xe_verify_files_removed("database-url")
+
+    def test_xe_finalize_cleanup_marks_capture_only_after_file_removal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            capture = Path(tmp) / "capture.json"
+            capture.write_text(
+                json.dumps({
+                    "session_cleanup_succeeded": True,
+                    "cleanup_succeeded": False,
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                connection_trial,
+                "_xe_verify_files_removed",
+            ) as verify:
+                report = _xe_finalize_capture_cleanup(
+                    "database-url",
+                    capture,
+                )
+        verify.assert_called_once_with("database-url")
+        self.assertTrue(report["cleanup_succeeded"])
+        self.assertTrue(report["event_files_removed"])
+
+    def test_xe_cleanup_after_capture_failure_still_stops_and_drops(self) -> None:
+        dbid = mock.MagicMock()
+        dbid.scalar_one.return_value = 5
+        dropped = mock.MagicMock()
+        dropped.scalar_one.return_value = 0
+        read = mock.MagicMock()
+        read.all.side_effect = RuntimeError("read failed")
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            dbid,
+            dropped,
+            mock.MagicMock(),
+            read,
+            mock.MagicMock(),
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        with TemporaryDirectory() as tmp, mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ), mock.patch.object(
+            connection_trial,
+            "_xe_list_event_files",
+            return_value=["rp894_short_correlation_0.xel"],
+        ), mock.patch.object(connection_trial.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                _xe_stop_collect(
+                    "database-url",
+                    Path(tmp) / "capture.json",
+                )
+        sql_calls = [
             str(call.args[0])
             for call in connection.exec_driver_sql.call_args_list
-            if "DROP EVENT SESSION" in str(call.args[0])
         ]
-        self.assertEqual(len(drop_calls), 1)
-        connection.close.assert_called_once()
-        engine.dispose.assert_called_once()
+        self.assertTrue(
+            any("DROP EVENT SESSION" in sql for sql in sql_calls)
+        )
+
+    def test_workflow_removes_only_diagnostic_xe_file_prefix(self) -> None:
+        workflow = Path(".github/workflows/syntax-check.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "rm -f /var/opt/mssql/log/"
+            "rp894_short_correlation*.xel",
+            workflow,
+        )
+        self.assertIn("xe-finalize-cleanup", workflow)
+        self.assertNotIn("xp_delete_file", workflow)
 
     async def test_first_stall_snapshot_is_bounded_to_one_capture(self) -> None:
         with TemporaryDirectory() as tmp:
