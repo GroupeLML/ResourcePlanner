@@ -1501,50 +1501,199 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             180.0,
         )
 
-    def test_execution_count_mismatch_emits_bounded_divergence_evidence(self) -> None:
-        trace_rows, capture = self._correlation_fixture()
-        capture["events"] = [
-            row
-            for row in capture["events"]
-            if not (
-                row.get("event") == "sql_batch_completed"
-                and row.get("timestamp_utc")
-                == "2026-11-23T02:00:01.300+00:00"
-            )
+    def test_execution_count_mismatch_finds_earliest_non_target_divergence(self) -> None:
+        aligned_markers = [
+            {
+                "kind": "spid_probe",
+                "connection_execution_sequence": 1,
+                "statement_fingerprint": "",
+                "timestamp_utc": "2026-11-23T02:00:00.000+00:00",
+            },
+            {
+                "kind": "statement_start",
+                "connection_execution_sequence": 2,
+                "statement_fingerprint": "fingerprint-a",
+                "timestamp_utc": "2026-11-23T02:00:00.100+00:00",
+            },
+            {
+                "kind": "statement_start",
+                "connection_execution_sequence": 3,
+                "statement_fingerprint": "fingerprint-b",
+                "timestamp_utc": "2026-11-23T02:00:00.200+00:00",
+            },
+            {
+                "kind": "statement_start",
+                "connection_execution_sequence": 4,
+                "statement_fingerprint": "fingerprint-target",
+                "timestamp_utc": "2026-11-23T02:00:00.300+00:00",
+            },
         ]
+        aligned_events = [
+            {
+                "server_execution_sequence": 1,
+                "execution_category": "direct_batch",
+                "event": "sql_batch_completed",
+                "object_name": "",
+                "row_count": 1,
+                "timestamp_utc": "2026-11-23T02:00:00.000Z",
+            },
+            {
+                "server_execution_sequence": 2,
+                "execution_category": "prepared_rpc",
+                "event": "rpc_completed",
+                "object_name": "sp_prepexec",
+                "row_count": 1,
+                "timestamp_utc": "2026-11-23T02:00:00.101Z",
+            },
+            {
+                "server_execution_sequence": 3,
+                "execution_category": "prepared_rpc",
+                "event": "rpc_completed",
+                "object_name": "sp_prepexec",
+                "row_count": 1,
+                "timestamp_utc": "2026-11-23T02:00:00.201Z",
+            },
+            {
+                "server_execution_sequence": 4,
+                "execution_category": "direct_batch",
+                "event": "sql_batch_completed",
+                "object_name": "",
+                "row_count": 120,
+                "timestamp_utc": "2026-11-23T02:00:00.301Z",
+            },
+        ]
+        mismatched_markers = [
+            dict(row, connection_id=100, spid=70)
+            for row in aligned_markers
+        ]
+        marker_by_connection = {
+            100: mismatched_markers,
+            200: [
+                dict(row, connection_id=200, spid=80)
+                for row in aligned_markers
+            ],
+            201: [
+                dict(row, connection_id=201, spid=81)
+                for row in aligned_markers
+            ],
+        }
+        server_by_connection = {
+            100: [
+                dict(aligned_events[0], session_id=70),
+                dict(aligned_events[1], session_id=70),
+                dict(
+                    aligned_events[3],
+                    session_id=70,
+                    server_execution_sequence=3,
+                ),
+            ],
+            200: [
+                dict(row, session_id=80)
+                for row in aligned_events
+            ],
+            201: [
+                dict(row, session_id=81)
+                for row in aligned_events
+            ],
+        }
+        trace_rows = []
+        for marker in mismatched_markers[1:]:
+            trace_rows.append(marker)
+            trace_rows.append({
+                "kind": "statement_end",
+                "connection_id": 100,
+                "statement_fingerprint": marker[
+                    "statement_fingerprint"
+                ],
+                "timestamp_utc": marker["timestamp_utc"],
+            })
+        capture = {
+            "events": [
+                {
+                    "event": "rpc_completed",
+                    "session_id": 70,
+                    "object_name": "sp_unprepare",
+                    "row_count": 0,
+                    "timestamp_utc": "2026-11-23T01:59:59.000Z",
+                },
+                {
+                    "event": "rpc_completed",
+                    "session_id": 70,
+                    "object_name": "sp_unprepare",
+                    "row_count": 0,
+                    "timestamp_utc": "2026-11-23T02:00:00.205Z",
+                },
+                {
+                    "event": "rpc_completed",
+                    "session_id": 70,
+                    "object_name": "sp_unprepare",
+                    "row_count": 0,
+                    "timestamp_utc": "2026-11-23T02:00:00.500Z",
+                },
+            ],
+        }
+        failures = [{
+            "connection_id": 100,
+            "spid": 70,
+            "reason": "execution_count_mismatch",
+            "application_execution_count": 4,
+            "server_execution_count": 3,
+        }]
 
-        report = _server_client_correlation(trace_rows, capture)
+        evidence = connection_trial._bounded_execution_divergence_evidence(
+            trace_rows=trace_rows,
+            capture=capture,
+            app_fetches=[{
+                "connection_id": 100,
+                "connection_execution_sequence": 4,
+                "timestamp_utc": "2026-11-23T02:00:00.350+00:00",
+                "fetched_row_count": 120,
+                "target_role": "synthetic-target",
+            }],
+            marker_by_connection=marker_by_connection,
+            server_by_connection=server_by_connection,
+            sequence_alignment_failures=failures,
+            row_count_mismatches=[],
+            timing_inconsistencies=[],
+            unmatched_app=[],
+        )
 
-        self.assertFalse(report["complete"])
-        self.assertEqual(len(report["execution_divergence_evidence"]), 1)
-        evidence = report["execution_divergence_evidence"][0]
-        self.assertEqual(evidence["connection_id"], 100)
-        self.assertEqual(evidence["spid"], 70)
+        self.assertEqual(len(evidence), 1)
+        detail = evidence[0]
+        self.assertEqual(detail["diagnostic_window_anchor_sequence"], 3)
         self.assertEqual(
-            evidence["diagnostic_window_anchor_sequence"],
-            5,
+            detail["classification"],
+            "participating_server_execution_mismatch",
+        )
+        self.assertEqual(
+            detail["preceding_reference_aligned_through_sequence"],
+            2,
+        )
+        self.assertEqual(
+            detail["candidate_aligned_reference"]["observation_count"],
+            2,
+        )
+        self.assertTrue(
+            detail["candidate_server_matches_next_reference"]
         )
         self.assertEqual(
             [
                 row["connection_execution_sequence"]
-                for row in evidence["application_window"]
+                for row in detail["application_window"]
             ],
-            [3, 4, 5, 6],
+            [1, 2, 3, 4],
+        )
+        self.assertIn(
+            "statement_completion_utc",
+            detail["application_window"][2],
         )
         self.assertEqual(
-            [
-                row["server_execution_sequence"]
-                for row in evidence["server_window"]
+            detail["excluded_rpc_window"][0][
+                "timestamp_utc"
             ],
-            [3, 4, 5],
+            "2026-11-23T02:00:00.205Z",
         )
-        self.assertTrue(
-            any(
-                row["normalized_rpc_name"] == "sp_unprepare"
-                for row in evidence["excluded_rpc_window"]
-            )
-        )
-        serialized = json.dumps(evidence, sort_keys=True)
+        serialized = json.dumps(detail, sort_keys=True)
         self.assertNotIn("SELECT ", serialized)
         self.assertNotIn("parameters", serialized)
         self.assertNotIn("batch_text", serialized)
