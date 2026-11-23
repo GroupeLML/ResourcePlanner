@@ -190,6 +190,44 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         ended = next(row for row in rows if row["kind"] == "request_end")
         self.assertEqual(ended["orm_materialization_count"], 1)
 
+    async def test_connection_execution_sequence_persists_across_checkouts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "trace.jsonl"
+            recorder = ConnectionTraceRecorder(path)
+            spid_cursor = mock.MagicMock()
+            spid_cursor.fetchone.return_value = (77,)
+            dbapi_connection = mock.MagicMock()
+            dbapi_connection.cursor.return_value = spid_cursor
+            connection_record = SimpleNamespace(info={})
+            connection = SimpleNamespace(
+                connection=SimpleNamespace(
+                    _connection_record=connection_record,
+                )
+            )
+
+            recorder.on_checkout(dbapi_connection, connection_record)
+            first_sequence, first_spid, first_connection_sequence = (
+                recorder.on_statement_start(connection, "SELECT first")
+            )
+            recorder.on_checkin(connection_record)
+
+            recorder.on_checkout(dbapi_connection, connection_record)
+            second_sequence, second_spid, second_connection_sequence = (
+                recorder.on_statement_start(connection, "SELECT second")
+            )
+            recorder.on_checkin(connection_record)
+            rows = _rows(path)
+
+        self.assertEqual(first_spid, 77)
+        self.assertEqual(second_spid, 77)
+        self.assertEqual(first_sequence, 1)
+        self.assertEqual(second_sequence, 1)
+        self.assertEqual(first_connection_sequence, 2)
+        self.assertEqual(second_connection_sequence, 3)
+        probes = [row for row in rows if row["kind"] == "spid_probe"]
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0]["connection_execution_sequence"], 1)
+
     async def test_executor_submission_worker_start_completion_and_resume_are_ordered(self) -> None:
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "trace.jsonl"
@@ -1246,7 +1284,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             and row.get("row_count") == 180
         )
         target_event["timestamp_utc"] = (
-            "2026-11-23T02:00:05.000+00:00"
+            "2026-11-23T02:00:00.400+00:00"
         )
         report = _server_client_correlation(trace_rows, capture)
 
