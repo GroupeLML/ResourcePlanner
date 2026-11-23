@@ -1963,6 +1963,47 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["complete"])
         self.assertEqual(report["unmatched_server_events"], 3)
 
+    def test_failed_lifetime_is_quarantined_from_target_aggregates(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        capture["events"] = [
+            row
+            for row in capture["events"]
+            if not (
+                row.get("event") == "sql_batch_completed"
+                and row.get("timestamp_utc")
+                == "2026-11-23T02:00:01.300+00:00"
+            )
+        ]
+
+        report = _server_client_correlation(trace_rows, capture)
+
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["quarantined_connection_count"], 1)
+        self.assertEqual(
+            report["quarantined_lifetimes"][0]["connection_id"],
+            100,
+        )
+        self.assertEqual(
+            report["quarantined_lifetimes"][0]["reason"],
+            "execution_count_mismatch",
+        )
+        self.assertTrue(
+            report[
+                "interpretable_target_aggregates_exclude_quarantined"
+            ]
+        )
+        for fingerprint in report["target_fingerprints"]:
+            self.assertEqual(
+                report["targets"][fingerprint][
+                    "correlated_execution_count"
+                ],
+                0,
+            )
+        self.assertGreater(
+            report["unmatched_application_fetches"],
+            0,
+        )
+
     def test_missing_direct_batch_execution_fails_closed(self) -> None:
         trace_rows, capture = self._correlation_fixture(
             omit_direct_batch=True,
@@ -2070,6 +2111,30 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         </event>
         """
 
+    def test_xe_rpc_starting_parser_keeps_only_lifecycle_fields(self) -> None:
+        xml = """
+        <event name="rpc_starting" timestamp="2026-11-23T02:00:01.000Z">
+          <data name="object_name"><value>sp_prepexec</value></data>
+          <data name="statement"><value>SELECT secret_rpc_start</value></data>
+          <action name="database_id"><value>5</value></action>
+          <action name="session_id"><value>77</value></action>
+          <action name="event_sequence"><value>42</value></action>
+          <action name="client_connection_id"><value>client-guid</value></action>
+        </event>
+        """
+        parsed = _parse_xe_event_xml(xml, database_id=5)
+        serialized = json.dumps(parsed, sort_keys=True)
+
+        self.assertEqual(parsed["event"], "rpc_starting")
+        self.assertEqual(parsed["event_sequence"], 42)
+        self.assertEqual(
+            parsed["client_connection_id"],
+            "client-guid",
+        )
+        self.assertEqual(parsed["object_name"], "sp_prepexec")
+        self.assertNotIn("secret_rpc_start", serialized)
+        self.assertNotIn("statement", serialized)
+
     def test_xe_batch_parser_sanitizes_batch_text(self) -> None:
         xml = """
         <event name="sql_batch_completed" timestamp="2026-11-23T02:00:01.000Z">
@@ -2129,8 +2194,14 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             str(call.args[0])
             for call in connection.exec_driver_sql.call_args_list
         )
+        self.assertIn("ADD EVENT sqlserver.rpc_starting", sql)
         self.assertIn("ADD EVENT sqlserver.rpc_completed", sql)
         self.assertIn("ADD EVENT sqlserver.sql_batch_completed", sql)
+        self.assertIn("collect_statement=(0)", sql)
+        self.assertIn("collect_batch_text=(0)", sql)
+        self.assertIn("package0.event_sequence", sql)
+        self.assertIn("sqlserver.client_connection_id", sql)
+        self.assertNotIn("sqlserver.sql_text", sql)
         self.assertIn("ADD TARGET package0.event_file", sql)
         self.assertIn("max_file_size=(8)", sql)
         self.assertIn("max_rollover_files=(8)", sql)
