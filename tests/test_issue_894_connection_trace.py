@@ -1767,6 +1767,172 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("batch_text", serialized)
 
     @staticmethod
+    def _assignment_driver(
+        entry: str,
+        terminal: str,
+        rpc: str = "sp_prepexec",
+    ) -> dict[str, object]:
+        return {
+            "entry_timestamp_utc": entry,
+            "terminal_timestamp_utc": terminal,
+            "expected_rpc": rpc,
+        }
+
+    @staticmethod
+    def _assignment_pair(
+        start: str,
+        completion: str,
+        start_sequence: int,
+        completion_sequence: int,
+        rpc: str = "sp_prepexec",
+    ) -> dict[str, object]:
+        return {
+            "normalized_rpc_name": rpc,
+            "start_timestamp_utc": start,
+            "completion_timestamp_utc": completion,
+            "start_event_sequence": start_sequence,
+            "completion_event_sequence": completion_sequence,
+        }
+
+    def test_monotonic_pairing_does_not_reuse_earlier_rpc_pair(self) -> None:
+        drivers = [
+            self._assignment_driver(
+                "2026-11-23T02:00:00.300Z",
+                "2026-11-23T02:00:00.310Z",
+            ),
+            self._assignment_driver(
+                "2026-11-23T02:00:00.400Z",
+                "2026-11-23T02:00:00.410Z",
+            ),
+        ]
+        pairs = [
+            self._assignment_pair(
+                "2026-11-23T02:00:00.190Z",
+                "2026-11-23T02:00:00.200Z",
+                10,
+                11,
+            ),
+            self._assignment_pair(
+                "2026-11-23T02:00:00.390Z",
+                "2026-11-23T02:00:00.400Z",
+                12,
+                13,
+            ),
+        ]
+
+        cardinality, count, mapping = (
+            connection_trial._monotonic_rpc_assignments(
+                drivers,
+                pairs,
+            )
+        )
+
+        self.assertEqual(cardinality, 2)
+        self.assertEqual(count, 1)
+        self.assertEqual(mapping, [0, 1])
+
+    def test_monotonic_pairing_rejects_crossing_assignment(self) -> None:
+        drivers = [
+            self._assignment_driver(
+                "2026-11-23T02:00:00.500Z",
+                "2026-11-23T02:00:00.510Z",
+                rpc="sp_execute",
+            ),
+            self._assignment_driver(
+                "2026-11-23T02:00:00.600Z",
+                "2026-11-23T02:00:00.610Z",
+                rpc="sp_prepexec",
+            ),
+        ]
+        pairs = [
+            self._assignment_pair(
+                "2026-11-23T02:00:00.590Z",
+                "2026-11-23T02:00:00.600Z",
+                10,
+                11,
+                rpc="sp_prepexec",
+            ),
+            self._assignment_pair(
+                "2026-11-23T02:00:00.490Z",
+                "2026-11-23T02:00:00.500Z",
+                12,
+                13,
+                rpc="sp_execute",
+            ),
+        ]
+
+        cardinality, _count, mapping = (
+            connection_trial._monotonic_rpc_assignments(
+                drivers,
+                pairs,
+            )
+        )
+
+        self.assertEqual(cardinality, 1)
+        self.assertIsNone(mapping)
+
+    def test_monotonic_pairing_multiple_optimal_mappings_stay_ambiguous(self) -> None:
+        drivers = [
+            self._assignment_driver(
+                "2026-11-23T02:00:00.300Z",
+                "2026-11-23T02:00:00.310Z",
+            ),
+            self._assignment_driver(
+                "2026-11-23T02:00:00.320Z",
+                "2026-11-23T02:00:00.330Z",
+            ),
+        ]
+        pairs = [
+            self._assignment_pair(
+                "2026-11-23T02:00:00.290Z",
+                "2026-11-23T02:00:00.300Z",
+                10,
+                11,
+            ),
+        ]
+
+        cardinality, count, mapping = (
+            connection_trial._monotonic_rpc_assignments(
+                drivers,
+                pairs,
+            )
+        )
+
+        self.assertEqual(cardinality, 1)
+        self.assertGreater(count, 1)
+        self.assertIsNone(mapping)
+
+    def test_monotonic_pairing_preserves_250ms_compatibility_bound(self) -> None:
+        driver = self._assignment_driver(
+            "2026-11-23T02:00:00.500Z",
+            "2026-11-23T02:00:00.510Z",
+        )
+        inside = self._assignment_pair(
+            "2026-11-23T02:00:00.250Z",
+            "2026-11-23T02:00:00.260Z",
+            10,
+            11,
+        )
+        outside = self._assignment_pair(
+            "2026-11-23T02:00:00.249Z",
+            "2026-11-23T02:00:00.259Z",
+            12,
+            13,
+        )
+
+        inside_result = connection_trial._monotonic_rpc_assignments(
+            [driver],
+            [inside],
+        )
+        outside_result = connection_trial._monotonic_rpc_assignments(
+            [driver],
+            [outside],
+        )
+
+        self.assertEqual(inside_result, (1, 1, [0]))
+        self.assertEqual(outside_result, (0, 1, [None]))
+
+    @staticmethod
     def _lifecycle_fixture(
         *,
         driver: bool = True,
