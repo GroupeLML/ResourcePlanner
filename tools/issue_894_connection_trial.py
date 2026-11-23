@@ -1341,7 +1341,7 @@ def _server_rpc_lifecycle(
 def _monotonic_rpc_assignments(
     drivers: list[dict[str, object]],
     pairs: list[dict[str, object]],
-) -> tuple[int, list[int] | None]:
+) -> tuple[int, int, list[int | None] | None]:
     candidates: list[list[int]] = []
     margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
     for driver in drivers:
@@ -1368,20 +1368,37 @@ def _monotonic_rpc_assignments(
                 valid.append(index)
         candidates.append(valid)
 
-    solution_count = 0
-    unique_solution: list[int] | None = None
+    best_cardinality = -1
+    best_count = 0
+    unique_solution: list[int | None] | None = None
 
-    def visit(driver_index: int, previous_pair: int, chosen: list[int]) -> None:
-        nonlocal solution_count, unique_solution
-        if solution_count > 1:
+    def visit(
+        driver_index: int,
+        previous_pair: int,
+        chosen: list[int | None],
+        matched: int,
+    ) -> None:
+        nonlocal best_cardinality, best_count, unique_solution
+        remaining = len(drivers) - driver_index
+        if matched + remaining < best_cardinality:
             return
         if driver_index == len(drivers):
-            solution_count += 1
-            if solution_count == 1:
+            if matched > best_cardinality:
+                best_cardinality = matched
+                best_count = 1
                 unique_solution = list(chosen)
-            else:
-                unique_solution = None
+            elif matched == best_cardinality:
+                best_count += 1
+                if best_count > 1:
+                    unique_solution = None
             return
+
+        visit(
+            driver_index + 1,
+            previous_pair,
+            [*chosen, None],
+            matched,
+        )
         for pair_index in candidates[driver_index]:
             if pair_index <= previous_pair:
                 continue
@@ -1389,12 +1406,11 @@ def _monotonic_rpc_assignments(
                 driver_index + 1,
                 pair_index,
                 [*chosen, pair_index],
+                matched + 1,
             )
-            if solution_count > 1:
-                return
 
-    visit(0, -1, [])
-    return solution_count, unique_solution
+    visit(0, -1, [], 0)
+    return best_cardinality, best_count, unique_solution
 
 
 def _execution_lifecycle_evidence(
@@ -1576,43 +1592,39 @@ def _execution_lifecycle_evidence(
         prepared_drivers.sort(
             key=lambda row: _safe_int(row.get("sequence"))
         )
-        mapping_count, unique_mapping = _monotonic_rpc_assignments(
+        (
+            mapping_cardinality,
+            mapping_count,
+            unique_mapping,
+        ) = _monotonic_rpc_assignments(
             prepared_drivers,
             complete_pairs,
         )
 
         if mapping_count == 1 and unique_mapping is not None:
+            margin = timedelta(
+                milliseconds=XE_CLOCK_UNCERTAINTY_MS
+            )
             for driver, pair_index in zip(
                 prepared_drivers,
                 unique_mapping,
             ):
                 sequence = _safe_int(driver.get("sequence"))
-                pair = complete_pairs[pair_index]
                 row = execution_rows[sequence]
-                row["server_rpc_pair_candidates"] = [pair]
-                completion_sequence = _safe_int(
-                    pair.get("completion_event_sequence")
-                )
-                row["classification"] = (
-                    "server_start_completion_observed"
-                    if completion_sequence
-                    in participating_completion_sequences
-                    else "server_start_completion_reconstruction_omission"
-                )
-        elif mapping_count > 1:
-            for driver in prepared_drivers:
-                execution_rows[
-                    _safe_int(driver.get("sequence"))
-                ]["classification"] = (
-                    "execution_lifecycle_ambiguous"
-                )
-        else:
-            margin = timedelta(
-                milliseconds=XE_CLOCK_UNCERTAINTY_MS
-            )
-            for driver in prepared_drivers:
-                sequence = _safe_int(driver.get("sequence"))
-                row = execution_rows[sequence]
+                if pair_index is not None:
+                    pair = complete_pairs[pair_index]
+                    row["server_rpc_pair_candidates"] = [pair]
+                    completion_sequence = _safe_int(
+                        pair.get("completion_event_sequence")
+                    )
+                    row["classification"] = (
+                        "server_start_completion_observed"
+                        if completion_sequence
+                        in participating_completion_sequences
+                        else "server_start_completion_reconstruction_omission"
+                    )
+                    continue
+
                 entry = _parse_utc(
                     driver.get("entry_timestamp_utc")
                 )
@@ -1656,6 +1668,13 @@ def _execution_lifecycle_evidence(
                     row["classification"] = (
                         "execution_lifecycle_ambiguous"
                     )
+        else:
+            for driver in prepared_drivers:
+                execution_rows[
+                    _safe_int(driver.get("sequence"))
+                ]["classification"] = (
+                    "execution_lifecycle_ambiguous"
+                )
 
         executions = [
             execution_rows[sequence]
@@ -1684,6 +1703,9 @@ def _execution_lifecycle_evidence(
             ),
             "prepared_driver_count": len(prepared_drivers),
             "server_rpc_pair_count": len(complete_pairs),
+            "maximum_monotonic_mapping_cardinality": (
+                mapping_cardinality
+            ),
             "complete_monotonic_mapping_count": mapping_count,
             "pairing_semantics": {
                 "application_driver_identity": (
