@@ -94,6 +94,15 @@ def _xe_cleanup(database_url: str) -> None:
         connection.exec_driver_sql(
             f"""
             IF EXISTS (
+                SELECT 1 FROM sys.dm_xe_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+            )
+            ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP
+            """
+        )
+        connection.exec_driver_sql(
+            f"""
+            IF EXISTS (
                 SELECT 1 FROM sys.server_event_sessions
                 WHERE name = N'{XE_SESSION_NAME}'
             )
