@@ -756,6 +756,146 @@ def _fetch_time_consistent(
     )
 
 
+def _execution_signature(
+    event: dict[str, object],
+) -> tuple[str, str, int]:
+    return (
+        str(event.get("execution_category") or ""),
+        _normalized_rpc_name(event.get("object_name")),
+        _safe_int(event.get("row_count")),
+    )
+
+
+def _statement_completion_lookup(
+    trace_rows: list[dict[str, object]],
+) -> dict[tuple[int, int], str]:
+    current: dict[int, tuple[int, str]] = {}
+    completed: dict[tuple[int, int], str] = {}
+    for row in trace_rows:
+        connection_id = _safe_int(row.get("connection_id"))
+        if connection_id <= 0:
+            continue
+        kind = str(row.get("kind") or "")
+        if kind == "statement_start":
+            sequence = _safe_int(
+                row.get("connection_execution_sequence")
+            )
+            if sequence > 0:
+                current[connection_id] = (
+                    sequence,
+                    str(row.get("statement_fingerprint") or ""),
+                )
+            continue
+        if kind != "statement_end":
+            continue
+        active = current.get(connection_id)
+        if active is None:
+            continue
+        sequence, fingerprint = active
+        if (
+            fingerprint
+            and str(row.get("statement_fingerprint") or "")
+            != fingerprint
+        ):
+            continue
+        completed[(connection_id, sequence)] = str(
+            row.get("timestamp_utc") or ""
+        )
+        current.pop(connection_id, None)
+    return completed
+
+
+def _aligned_execution_references(
+    marker_by_connection: dict[int, list[dict[str, object]]],
+    server_by_connection: dict[int, list[dict[str, object]]],
+    sequence_alignment_failures: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    failed_connections = {
+        _safe_int(row.get("connection_id"))
+        for row in sequence_alignment_failures
+        if _safe_int(row.get("connection_id")) > 0
+    }
+    observations: dict[
+        str,
+        list[tuple[str, str, int]],
+    ] = {}
+    for connection_id, markers in marker_by_connection.items():
+        if connection_id in failed_connections:
+            continue
+        events = server_by_connection.get(connection_id, [])
+        if not markers or len(markers) != len(events):
+            continue
+        for marker, event in zip(markers, events):
+            if marker.get("kind") != "statement_start":
+                continue
+            fingerprint = str(
+                marker.get("statement_fingerprint") or ""
+            )
+            if not fingerprint:
+                continue
+            observations.setdefault(fingerprint, []).append(
+                _execution_signature(event)
+            )
+
+    references: dict[str, dict[str, object]] = {}
+    for fingerprint, values in observations.items():
+        categories = {
+            (category, rpc_name)
+            for category, rpc_name, _row_count in values
+        }
+        row_counts = {row_count for _, _, row_count in values}
+        stable_category = (
+            next(iter(categories))
+            if len(values) >= 2 and len(categories) == 1
+            else None
+        )
+        references[fingerprint] = {
+            "observation_count": len(values),
+            "stable_execution_category": (
+                stable_category[0]
+                if stable_category is not None
+                else ""
+            ),
+            "stable_normalized_rpc_name": (
+                stable_category[1]
+                if stable_category is not None
+                else ""
+            ),
+            "stable_row_count": (
+                next(iter(row_counts))
+                if len(values) >= 2 and len(row_counts) == 1
+                else None
+            ),
+        }
+    return references
+
+
+def _reference_match(
+    reference: dict[str, object] | None,
+    event: dict[str, object] | None,
+) -> bool | None:
+    if not reference or event is None:
+        return None
+    expected_category = str(
+        reference.get("stable_execution_category") or ""
+    )
+    expected_rpc = str(
+        reference.get("stable_normalized_rpc_name") or ""
+    )
+    if not expected_category:
+        return None
+    category, rpc_name, row_count = _execution_signature(event)
+    if category != expected_category or rpc_name != expected_rpc:
+        return False
+    stable_row_count = reference.get("stable_row_count")
+    if (
+        stable_row_count is not None
+        and row_count != _safe_int(stable_row_count)
+    ):
+        return False
+    return True
+
+
 def _bounded_execution_divergence_evidence(
     *,
     trace_rows: list[dict[str, object]],
@@ -768,49 +908,101 @@ def _bounded_execution_divergence_evidence(
     timing_inconsistencies: list[dict[str, object]],
     unmatched_app: list[dict[str, object]],
 ) -> list[dict[str, object]]:
+    del row_count_mismatches, timing_inconsistencies, unmatched_app
     evidence: list[dict[str, object]] = []
-    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    references = _aligned_execution_references(
+        marker_by_connection,
+        server_by_connection,
+        sequence_alignment_failures,
+    )
+    statement_completions = _statement_completion_lookup(trace_rows)
+    fetch_by_key = {
+        (
+            _safe_int(row.get("connection_id")),
+            _safe_int(row.get("connection_execution_sequence")),
+        ): row
+        for row in app_fetches
+    }
+
     for failure in sequence_alignment_failures:
         if failure.get("reason") != "execution_count_mismatch":
             continue
         connection_id = _safe_int(failure.get("connection_id"))
         spid = _safe_int(failure.get("spid"))
-        candidate_sequences = [
-            _safe_int(row.get("connection_execution_sequence"))
-            for row in (
-                *row_count_mismatches,
-                *timing_inconsistencies,
-                *unmatched_app,
-            )
-            if _safe_int(row.get("connection_id")) == connection_id
-            or (
-                not row.get("connection_id")
-                and _safe_int(row.get("spid")) == spid
-            )
-        ]
-        candidate_sequences = [
-            sequence for sequence in candidate_sequences if sequence > 0
-        ]
-        if not candidate_sequences:
-            continue
-        anchor_sequence = min(candidate_sequences)
-        lower = max(1, anchor_sequence - 2)
-        upper = anchor_sequence + 2
+        markers = marker_by_connection.get(connection_id, [])
+        server_events = server_by_connection.get(connection_id, [])
 
-        fetch_by_sequence = {
-            _safe_int(row.get("connection_execution_sequence")): row
-            for row in app_fetches
-            if _safe_int(row.get("connection_id")) == connection_id
-        }
+        candidate_sequence = 0
+        candidate_classification = "execution_divergence_ambiguous"
+        candidate_reference: dict[str, object] | None = None
+        candidate_event: dict[str, object] | None = None
+        preceding_aligned = 0
+
+        for marker in markers:
+            sequence = _safe_int(
+                marker.get("connection_execution_sequence")
+            )
+            if sequence <= 0 or marker.get("kind") == "spid_probe":
+                continue
+            event = (
+                server_events[sequence - 1]
+                if sequence <= len(server_events)
+                else None
+            )
+            fingerprint = str(
+                marker.get("statement_fingerprint") or ""
+            )
+            reference = references.get(fingerprint)
+            matched = _reference_match(reference, event)
+            if matched is True:
+                preceding_aligned = sequence
+                continue
+            if matched is False:
+                candidate_sequence = sequence
+                candidate_classification = (
+                    "participating_server_execution_mismatch"
+                )
+                candidate_reference = reference
+                candidate_event = event
+                break
+            if event is None and reference and str(
+                reference.get("stable_execution_category") or ""
+            ):
+                candidate_sequence = sequence
+                candidate_classification = (
+                    "application_execution_without_observed_server_execution"
+                )
+                candidate_reference = reference
+                candidate_event = None
+                break
+
+        if candidate_sequence <= 0:
+            candidate_sequence = max(
+                1,
+                min(len(markers), len(server_events) + 1),
+            )
+            if candidate_sequence <= len(markers):
+                marker = markers[candidate_sequence - 1]
+                candidate_reference = references.get(
+                    str(marker.get("statement_fingerprint") or "")
+                )
+            candidate_event = (
+                server_events[candidate_sequence - 1]
+                if candidate_sequence <= len(server_events)
+                else None
+            )
+
+        lower = max(1, candidate_sequence - 2)
+        upper = min(len(markers), candidate_sequence + 2)
         app_window: list[dict[str, object]] = []
-        for marker in marker_by_connection.get(connection_id, []):
+        for marker in markers:
             sequence = _safe_int(
                 marker.get("connection_execution_sequence")
             )
             if not lower <= sequence <= upper:
                 continue
-            fetch = fetch_by_sequence.get(sequence)
-            item = {
+            fetch = fetch_by_key.get((connection_id, sequence))
+            item: dict[str, object] = {
                 "connection_execution_sequence": sequence,
                 "kind": str(marker.get("kind") or ""),
                 "timestamp_utc": str(marker.get("timestamp_utc") or ""),
@@ -818,6 +1010,11 @@ def _bounded_execution_divergence_evidence(
                     marker.get("statement_fingerprint") or ""
                 ),
             }
+            completion = statement_completions.get(
+                (connection_id, sequence)
+            )
+            if completion:
+                item["statement_completion_utc"] = completion
             if fetch is not None:
                 item["fetch_timestamp_utc"] = str(
                     fetch.get("timestamp_utc") or ""
@@ -828,40 +1025,55 @@ def _bounded_execution_divergence_evidence(
                 item["target_role"] = str(
                     fetch.get("target_role") or ""
                 )
+            reference = references.get(
+                str(marker.get("statement_fingerprint") or "")
+            )
+            if reference:
+                item["aligned_reference"] = reference
+            event = (
+                server_events[sequence - 1]
+                if sequence <= len(server_events)
+                else None
+            )
+            item["same_ordinal_reference_match"] = _reference_match(
+                reference,
+                event,
+            )
             app_window.append(item)
 
         server_window: list[dict[str, object]] = []
-        for event in server_by_connection.get(connection_id, []):
+        for event in server_events:
             sequence = _safe_int(event.get("server_execution_sequence"))
             if not lower <= sequence <= upper:
                 continue
+            category, rpc_name, row_count = _execution_signature(event)
             server_window.append({
                 "server_execution_sequence": sequence,
                 "timestamp_utc": str(event.get("timestamp_utc") or ""),
                 "event": str(event.get("event") or ""),
-                "execution_category": str(
-                    event.get("execution_category") or ""
-                ),
-                "normalized_rpc_name": _normalized_rpc_name(
-                    event.get("object_name")
-                ),
-                "row_count": _safe_int(event.get("row_count")),
+                "execution_category": category,
+                "normalized_rpc_name": rpc_name,
+                "row_count": row_count,
             })
 
-        timestamps: list[datetime] = []
-        for item in (*app_window, *server_window):
-            for key in ("timestamp_utc", "fetch_timestamp_utc"):
-                value = item.get(key)
-                if not value:
-                    continue
-                try:
-                    timestamps.append(_parse_utc(value))
-                except (TypeError, ValueError):
-                    pass
-        excluded_rpc_window: list[dict[str, object]] = []
-        if timestamps:
-            start_utc = min(timestamps) - margin
-            end_utc = max(timestamps) + margin
+        candidate_marker = (
+            markers[candidate_sequence - 1]
+            if 0 < candidate_sequence <= len(markers)
+            else None
+        )
+        candidate_time = None
+        if candidate_marker is not None:
+            try:
+                candidate_time = _parse_utc(
+                    candidate_marker.get("timestamp_utc")
+                )
+            except (TypeError, ValueError):
+                candidate_time = None
+
+        excluded_candidates: list[
+            tuple[float, datetime, str, dict[str, object]]
+        ] = []
+        if candidate_time is not None:
             for row in capture.get("events", []):
                 if (
                     not isinstance(row, dict)
@@ -876,24 +1088,78 @@ def _bounded_execution_divergence_evidence(
                     event_utc = _parse_utc(row.get("timestamp_utc"))
                 except (TypeError, ValueError):
                     continue
-                if start_utc <= event_utc <= end_utc:
-                    excluded_rpc_window.append({
-                        "timestamp_utc": str(
-                            row.get("timestamp_utc") or ""
-                        ),
-                        "normalized_rpc_name": name,
-                        "row_count": _safe_int(row.get("row_count")),
-                    })
-                if len(excluded_rpc_window) >= 8:
-                    break
+                distance_ms = abs(
+                    (event_utc - candidate_time).total_seconds() * 1000.0
+                )
+                excluded_candidates.append(
+                    (distance_ms, event_utc, name, row)
+                )
+        excluded_candidates.sort(
+            key=lambda value: (
+                value[0],
+                value[1],
+                value[2],
+            )
+        )
+        excluded_rpc_window = [
+            {
+                "distance_from_candidate_ms": round(distance_ms, 3),
+                "timestamp_utc": str(row.get("timestamp_utc") or ""),
+                "normalized_rpc_name": name,
+                "row_count": _safe_int(row.get("row_count")),
+            }
+            for distance_ms, _event_utc, name, row
+            in excluded_candidates[:8]
+        ]
+
+        next_reference = None
+        current_matches_next_reference = None
+        if (
+            candidate_event is not None
+            and candidate_sequence < len(markers)
+        ):
+            next_marker = markers[candidate_sequence]
+            next_reference = references.get(
+                str(next_marker.get("statement_fingerprint") or "")
+            )
+            current_matches_next_reference = _reference_match(
+                next_reference,
+                candidate_event,
+            )
 
         evidence.append({
             "connection_id": connection_id,
             "spid": spid,
-            "diagnostic_window_anchor_sequence": anchor_sequence,
+            "diagnostic_window_anchor_sequence": candidate_sequence,
             "diagnostic_window_basis": (
-                "first observable target correlation anomaly on an "
-                "execution-count-mismatched physical connection"
+                "earliest same-ordinal association that is not supported "
+                "by a stable execution signature learned only from "
+                "count-aligned physical connections"
+            ),
+            "classification": candidate_classification,
+            "cause_certainty": "ambiguous",
+            "preceding_reference_aligned_through_sequence": (
+                preceding_aligned
+            ),
+            "candidate_aligned_reference": candidate_reference,
+            "candidate_server_signature": (
+                {
+                    "execution_category": _execution_signature(
+                        candidate_event
+                    )[0],
+                    "normalized_rpc_name": _execution_signature(
+                        candidate_event
+                    )[1],
+                    "row_count": _execution_signature(
+                        candidate_event
+                    )[2],
+                }
+                if candidate_event is not None
+                else None
+            ),
+            "next_application_aligned_reference": next_reference,
+            "candidate_server_matches_next_reference": (
+                current_matches_next_reference
             ),
             "application_window": app_window,
             "server_window": server_window,
