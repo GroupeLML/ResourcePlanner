@@ -1501,6 +1501,54 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             180.0,
         )
 
+    def test_execution_count_mismatch_emits_bounded_divergence_evidence(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        capture["events"] = [
+            row
+            for row in capture["events"]
+            if not (
+                row.get("event") == "sql_batch_completed"
+                and row.get("timestamp_utc")
+                == "2026-11-23T02:00:01.300+00:00"
+            )
+        ]
+
+        report = _server_client_correlation(trace_rows, capture)
+
+        self.assertFalse(report["complete"])
+        self.assertEqual(len(report["execution_divergence_evidence"]), 1)
+        evidence = report["execution_divergence_evidence"][0]
+        self.assertEqual(evidence["connection_id"], 100)
+        self.assertEqual(evidence["spid"], 70)
+        self.assertEqual(
+            evidence["diagnostic_window_anchor_sequence"],
+            6,
+        )
+        self.assertEqual(
+            [
+                row["connection_execution_sequence"]
+                for row in evidence["application_window"]
+            ],
+            [4, 5, 6],
+        )
+        self.assertEqual(
+            [
+                row["server_execution_sequence"]
+                for row in evidence["server_window"]
+            ],
+            [4, 5],
+        )
+        self.assertTrue(
+            any(
+                row["normalized_rpc_name"] == "sp_unprepare"
+                for row in evidence["excluded_rpc_window"]
+            )
+        )
+        serialized = json.dumps(evidence, sort_keys=True)
+        self.assertNotIn("statement", serialized)
+        self.assertNotIn("parameters", serialized)
+        self.assertNotIn("batch_text", serialized)
+
     def test_pre_lifetime_spid_execution_is_excluded(self) -> None:
         trace_rows, capture = self._correlation_fixture()
         report = _server_client_correlation(trace_rows, capture)
