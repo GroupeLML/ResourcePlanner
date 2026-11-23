@@ -41,6 +41,10 @@ TARGET_RESULT_FINGERPRINTS = (
 )
 XE_SESSION_NAME = "rp894_short_correlation"
 XE_CLOCK_UNCERTAINTY_MS = 250.0
+XE_EVENT_FILE_DIRECTORY = "/var/opt/mssql/log"
+XE_EVENT_FILE_BASENAME = "rp894_short_correlation"
+XE_EVENT_FILE_SIZE_MB = 8
+XE_EVENT_FILE_ROLLOVER_COUNT = 4
 _PREPARED_EXECUTION_RPC_NAMES = frozenset(
     {"sp_prepexec", "sp_execute", "sp_executesql"}
 )
@@ -91,6 +95,53 @@ def _xe_connection(database_url: str):
     return engine, connection
 
 
+def _xe_event_file_pattern() -> str:
+    return (
+        f"{XE_EVENT_FILE_DIRECTORY}/{XE_EVENT_FILE_BASENAME}*.xel"
+    )
+
+
+def _xe_event_file_base() -> str:
+    return f"{XE_EVENT_FILE_DIRECTORY}/{XE_EVENT_FILE_BASENAME}.xel"
+
+
+def _xe_delete_event_files(connection: object) -> None:
+    connection.exec_driver_sql(
+        f"""
+        EXEC master.dbo.xp_delete_file
+            0,
+            N'{XE_EVENT_FILE_DIRECTORY}',
+            N'xel',
+            N'2099-12-31T23:59:59',
+            1
+        """
+    )
+
+
+def _xe_list_event_files(connection: object) -> list[str]:
+    rows = connection.exec_driver_sql(
+        f"""
+        CREATE TABLE #rp894_files (
+            subdirectory nvarchar(512),
+            depth int,
+            isfile bit
+        );
+        INSERT INTO #rp894_files
+        EXEC master.sys.xp_dirtree
+            N'{XE_EVENT_FILE_DIRECTORY}',
+            1,
+            1;
+        SELECT subdirectory
+        FROM #rp894_files
+        WHERE isfile = 1
+          AND subdirectory LIKE N'{XE_EVENT_FILE_BASENAME}%.xel'
+        ORDER BY subdirectory;
+        DROP TABLE #rp894_files;
+        """
+    ).all()
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
 def _xe_cleanup(database_url: str) -> None:
     engine, connection = _xe_connection(database_url)
     try:
@@ -112,6 +163,12 @@ def _xe_cleanup(database_url: str) -> None:
             DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
             """
         )
+        _xe_delete_event_files(connection)
+        remaining = _xe_list_event_files(connection)
+        if remaining:
+            raise ValueError(
+                "SQL Server Extended Events files were not removed"
+            )
     finally:
         connection.close()
         engine.dispose()
@@ -120,7 +177,18 @@ def _xe_cleanup(database_url: str) -> None:
 def _xe_start(database_url: str, output: Path) -> dict[str, object]:
     engine, connection = _xe_connection(database_url)
     try:
-        database_id = int(connection.exec_driver_sql("SELECT DB_ID()").scalar_one())
+        database_id = int(
+            connection.exec_driver_sql("SELECT DB_ID()").scalar_one()
+        )
+        connection.exec_driver_sql(
+            f"""
+            IF EXISTS (
+                SELECT 1 FROM sys.dm_xe_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+            )
+            ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP
+            """
+        )
         connection.exec_driver_sql(
             f"""
             IF EXISTS (
@@ -130,6 +198,11 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
             DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
             """
         )
+        _xe_delete_event_files(connection)
+        if _xe_list_event_files(connection):
+            raise ValueError(
+                "stale SQL Server Extended Events files remain"
+            )
         connection.exec_driver_sql(
             f"""
             CREATE EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
@@ -140,11 +213,13 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
                 ACTION(sqlserver.database_id, sqlserver.session_id)
                 WHERE ([duration] > (1000))
             )
-            ADD TARGET package0.ring_buffer(
-                SET max_memory=(16384), max_events_limit=(30000)
+            ADD TARGET package0.event_file(
+                SET filename=N'{_xe_event_file_base()}',
+                    max_file_size=({XE_EVENT_FILE_SIZE_MB}),
+                    max_rollover_files=({XE_EVENT_FILE_ROLLOVER_COUNT})
             )
             WITH (
-                MAX_MEMORY=16384 KB,
+                MAX_MEMORY=4096 KB,
                 EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,
                 MAX_DISPATCH_LATENCY=1 SECONDS,
                 TRACK_CAUSALITY=OFF,
@@ -155,11 +230,19 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
         connection.exec_driver_sql(
             f"ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=START"
         )
+        started_utc = datetime.now(timezone.utc).isoformat(
+            timespec="milliseconds"
+        )
         report = {
-            "schema": "issue-894-sqlserver-xe-start-v1",
+            "schema": "issue-894-sqlserver-xe-start-v2",
             "label": DIAGNOSTIC_LABEL,
             "session_name": XE_SESSION_NAME,
             "database_id": database_id,
+            "target": "event_file",
+            "event_file_pattern": _xe_event_file_pattern(),
+            "max_file_size_mb": XE_EVENT_FILE_SIZE_MB,
+            "max_rollover_files": XE_EVENT_FILE_ROLLOVER_COUNT,
+            "started_utc": started_utc,
             "bounded": True,
             "raw_sql_captured_in_evidence": False,
         }
@@ -170,12 +253,22 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
             connection.exec_driver_sql(
                 f"""
                 IF EXISTS (
+                    SELECT 1 FROM sys.dm_xe_sessions
+                    WHERE name = N'{XE_SESSION_NAME}'
+                )
+                ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP
+                """
+            )
+            connection.exec_driver_sql(
+                f"""
+                IF EXISTS (
                     SELECT 1 FROM sys.server_event_sessions
                     WHERE name = N'{XE_SESSION_NAME}'
                 )
                 DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
                 """
             )
+            _xe_delete_event_files(connection)
         except Exception:
             pass
         raise
@@ -206,56 +299,46 @@ def _safe_int(value: object) -> int:
         return 0
 
 
-def _parse_xe_ring_buffer(
-    target_xml: str,
+def _parse_xe_event_xml(
+    event_xml: str,
     *,
     database_id: int,
-) -> dict[str, object]:
-    root = ET.fromstring(target_xml)
-    dropped = _safe_int(root.attrib.get("droppedCount"))
-    truncated = str(root.attrib.get("truncated") or "0") not in {
-        "0", "false", "False"
-    }
-    events: list[dict[str, object]] = []
-    for node in root.findall("./event"):
-        event_name = str(node.attrib.get("name") or "")
-        timestamp = str(node.attrib.get("timestamp") or "")
-        event_database_id = _safe_int(_xe_value(node, "database_id"))
-        if event_database_id and event_database_id != database_id:
-            continue
-        session_id = _safe_int(_xe_value(node, "session_id"))
-        if not session_id:
-            continue
-        if event_name == "rpc_completed":
-            events.append({
-                "event": "rpc_completed",
-                "timestamp_utc": timestamp,
-                "session_id": session_id,
-                "database_id": event_database_id,
-                "duration_us": _safe_int(_xe_value(node, "duration")),
-                "cpu_us": _safe_int(_xe_value(node, "cpu_time")),
-                "logical_reads": _safe_int(_xe_value(node, "logical_reads")),
-                "physical_reads": _safe_int(_xe_value(node, "physical_reads")),
-                "row_count": _safe_int(_xe_value(node, "row_count")),
-                "object_name": str(_xe_value(node, "object_name") or ""),
-            })
-        elif event_name == "wait_info":
-            events.append({
-                "event": "wait_info",
-                "timestamp_utc": timestamp,
-                "session_id": session_id,
-                "database_id": event_database_id,
-                "wait_type": str(_xe_value(node, "wait_type") or "UNKNOWN"),
-                "duration_ms": float(_safe_int(_xe_value(node, "duration"))),
-                "opcode": str(_xe_value(node, "opcode") or ""),
-            })
-    events.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
-    return {
-        "events": events,
-        "event_count": len(events),
-        "dropped_event_count": dropped,
-        "truncated": truncated,
-    }
+) -> dict[str, object] | None:
+    node = ET.fromstring(event_xml)
+    event_name = str(node.attrib.get("name") or "")
+    timestamp = str(node.attrib.get("timestamp") or "")
+    event_database_id = _safe_int(_xe_value(node, "database_id"))
+    if event_database_id and event_database_id != database_id:
+        return None
+    session_id = _safe_int(_xe_value(node, "session_id"))
+    if not session_id:
+        return None
+    if event_name == "rpc_completed":
+        return {
+            "event": "rpc_completed",
+            "timestamp_utc": timestamp,
+            "session_id": session_id,
+            "database_id": event_database_id,
+            "duration_us": _safe_int(_xe_value(node, "duration")),
+            "cpu_us": _safe_int(_xe_value(node, "cpu_time")),
+            "logical_reads": _safe_int(_xe_value(node, "logical_reads")),
+            "physical_reads": _safe_int(_xe_value(node, "physical_reads")),
+            "row_count": _safe_int(_xe_value(node, "row_count")),
+            "object_name": str(_xe_value(node, "object_name") or ""),
+        }
+    if event_name == "wait_info":
+        return {
+            "event": "wait_info",
+            "timestamp_utc": timestamp,
+            "session_id": session_id,
+            "database_id": event_database_id,
+            "wait_type": str(_xe_value(node, "wait_type") or "UNKNOWN"),
+            "duration_ms": float(
+                _safe_int(_xe_value(node, "duration"))
+            ),
+            "opcode": str(_xe_value(node, "opcode") or ""),
+        }
+    return None
 
 
 def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
@@ -263,39 +346,113 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
     capture: dict[str, object] | None = None
     cleanup_error = ""
     try:
-        database_id = int(connection.exec_driver_sql("SELECT DB_ID()").scalar_one())
+        database_id = int(
+            connection.exec_driver_sql("SELECT DB_ID()").scalar_one()
+        )
+        session_dropped = _safe_int(
+            connection.exec_driver_sql(
+                f"""
+                SELECT dropped_event_count
+                FROM sys.dm_xe_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+                """
+            ).scalar_one()
+        )
+        connection.exec_driver_sql(
+            f"ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP"
+        )
         time.sleep(1.2)
-        row = connection.exec_driver_sql(
+        files = _xe_list_event_files(connection)
+        if not files:
+            raise ValueError(
+                "SQL Server Extended Events event file is missing"
+            )
+        if len(files) >= XE_EVENT_FILE_ROLLOVER_COUNT:
+            raise ValueError(
+                "SQL Server Extended Events bounded file retention exhausted"
+            )
+
+        rows = connection.exec_driver_sql(
             f"""
             SELECT
-                CAST(target.target_data AS nvarchar(max)),
-                session.dropped_event_count
-            FROM sys.dm_xe_session_targets AS target
-            JOIN sys.dm_xe_sessions AS session
-              ON session.address = target.event_session_address
-            WHERE session.name = N'{XE_SESSION_NAME}'
-              AND target.target_name = N'ring_buffer'
+                file_name,
+                file_offset,
+                CAST(event_data AS nvarchar(max)) AS event_xml
+            FROM sys.fn_xe_file_target_read_file(
+                N'{_xe_event_file_pattern()}',
+                NULL,
+                NULL,
+                NULL
+            )
+            ORDER BY file_name, file_offset
             """
-        ).first()
-        if row is None or not row[0]:
-            raise ValueError("SQL Server Extended Events ring buffer is missing")
-        parsed = _parse_xe_ring_buffer(str(row[0]), database_id=database_id)
-        session_dropped = _safe_int(row[1] if len(row) > 1 else 0)
-        parsed["ring_buffer_dropped_event_count"] = int(
-            parsed["dropped_event_count"]
-        )
-        parsed["session_dropped_event_count"] = session_dropped
-        parsed["dropped_event_count"] = max(
-            int(parsed["dropped_event_count"]),
-            session_dropped,
+        ).all()
+        if not rows:
+            raise ValueError(
+                "SQL Server Extended Events event files contain no events"
+            )
+
+        read_files: list[str] = []
+        events: list[dict[str, object]] = []
+        parse_failures = 0
+        for row in rows:
+            file_name = str(row[0] or "")
+            if file_name and file_name not in read_files:
+                read_files.append(file_name)
+            try:
+                parsed = _parse_xe_event_xml(
+                    str(row[2] or ""),
+                    database_id=database_id,
+                )
+            except (ET.ParseError, ValueError):
+                parse_failures += 1
+                continue
+            if parsed is not None:
+                events.append(parsed)
+
+        listed_names = {
+            name.casefold() for name in files
+        }
+        read_names = {
+            Path(name).name.casefold() for name in read_files
+        }
+        missing_rollover_files = sorted(listed_names - read_names)
+        unexpected_read_files = sorted(read_names - listed_names)
+        if (
+            parse_failures
+            or missing_rollover_files
+            or unexpected_read_files
+        ):
+            raise ValueError(
+                "SQL Server Extended Events event-file collection "
+                "is incomplete"
+            )
+
+        events.sort(
+            key=lambda row: str(row.get("timestamp_utc") or "")
         )
         capture = {
-            "schema": "issue-894-sqlserver-xe-capture-v1",
+            "schema": "issue-894-sqlserver-xe-capture-v2",
             "label": DIAGNOSTIC_LABEL,
             "session_name": XE_SESSION_NAME,
             "database_id": database_id,
+            "target": "event_file",
+            "event_file_count": len(files),
+            "event_files": files,
+            "read_event_files": [
+                Path(name).name for name in read_files
+            ],
+            "max_file_size_mb": XE_EVENT_FILE_SIZE_MB,
+            "max_rollover_files": XE_EVENT_FILE_ROLLOVER_COUNT,
+            "event_count": len(events),
+            "dropped_event_count": session_dropped,
+            "session_dropped_event_count": session_dropped,
+            "file_parse_failure_count": parse_failures,
+            "missing_rollover_files": missing_rollover_files,
+            "unexpected_read_files": unexpected_read_files,
+            "truncated": False,
             "raw_sql_captured_in_evidence": False,
-            **parsed,
+            "events": events,
         }
     finally:
         try:
@@ -317,16 +474,24 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
                 DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
                 """
             )
+            _xe_delete_event_files(connection)
+            if _xe_list_event_files(connection):
+                raise ValueError(
+                    "SQL Server Extended Events files remain after cleanup"
+                )
         except Exception as exc:
             cleanup_error = type(exc).__name__
         connection.close()
         engine.dispose()
     if capture is None:
-        raise ValueError("SQL Server Extended Events capture was not collected")
+        raise ValueError(
+            "SQL Server Extended Events capture was not collected"
+        )
     capture["cleanup_succeeded"] = not cleanup_error
     capture["cleanup_error_type"] = cleanup_error
     _write_json(output, capture)
     return capture
+
 
 def _parse_utc(value: object) -> datetime:
     text = str(value or "").strip()
