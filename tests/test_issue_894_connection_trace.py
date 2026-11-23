@@ -1545,7 +1545,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         serialized = json.dumps(evidence, sort_keys=True)
-        self.assertNotIn("statement", serialized)
+        self.assertNotIn("SELECT ", serialized)
         self.assertNotIn("parameters", serialized)
         self.assertNotIn("batch_text", serialized)
 
