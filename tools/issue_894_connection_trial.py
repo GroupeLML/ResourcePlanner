@@ -293,6 +293,233 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
     _write_json(output, capture)
     return capture
 
+def _parse_utc(value: object) -> datetime:
+    text = str(value or "").strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _count_distribution(values: list[float]) -> dict[str, float | int]:
+    latency_shape = _latencies(values)
+    return {
+        "count": int(latency_shape["count"]),
+        "p50": float(latency_shape["p50_ms"]),
+        "p95": float(latency_shape["p95_ms"]),
+        "max": float(latency_shape["max_ms"]),
+        "mean": float(latency_shape["mean_ms"]),
+    }
+
+
+def _server_client_correlation(
+    trace_rows: list[dict[str, object]],
+    capture: dict[str, object],
+) -> dict[str, object]:
+    target_fingerprints = _current_result_fingerprints(trace_rows)
+    app_fetches = [
+        row
+        for row in trace_rows
+        if row.get("kind") == "dbapi_fetch"
+        and str(row.get("statement_fingerprint") or "") in target_fingerprints
+        and _safe_int(row.get("spid")) > 0
+        and _safe_int(row.get("statement_sequence")) > 0
+    ]
+    rpc_events = [
+        dict(row)
+        for row in capture.get("events", [])
+        if isinstance(row, dict) and row.get("event") == "rpc_completed"
+    ]
+    wait_events = [
+        dict(row)
+        for row in capture.get("events", [])
+        if isinstance(row, dict) and row.get("event") == "wait_info"
+    ]
+    observed_spids = {_safe_int(row.get("spid")) for row in app_fetches}
+    server_by_spid: dict[int, list[dict[str, object]]] = {}
+    for event in rpc_events:
+        spid = _safe_int(event.get("session_id"))
+        if spid in observed_spids:
+            server_by_spid.setdefault(spid, []).append(event)
+
+    used_server_ids: set[int] = set()
+    ambiguous = 0
+    matches: list[dict[str, object]] = []
+    unmatched_app: list[dict[str, object]] = []
+    for app in sorted(
+        app_fetches,
+        key=lambda row: (
+            _safe_int(row.get("spid")),
+            _safe_int(row.get("statement_sequence")),
+        ),
+    ):
+        spid = _safe_int(app.get("spid"))
+        app_end = _parse_utc(app.get("timestamp_utc"))
+        candidates: list[tuple[float, int, dict[str, object]]] = []
+        for event in server_by_spid.get(spid, []):
+            identity = id(event)
+            if identity in used_server_ids:
+                continue
+            event_time = _parse_utc(event.get("timestamp_utc"))
+            delta_ms = abs((event_time - app_end).total_seconds() * 1000.0)
+            if delta_ms <= XE_CLOCK_UNCERTAINTY_MS:
+                candidates.append((delta_ms, identity, event))
+        candidates.sort(key=lambda item: item[0])
+        if not candidates:
+            unmatched_app.append(app)
+            continue
+        if len(candidates) > 1 and abs(candidates[1][0] - candidates[0][0]) <= 25.0:
+            ambiguous += 1
+            unmatched_app.append(app)
+            continue
+        delta_ms, identity, event = candidates[0]
+        used_server_ids.add(identity)
+        event_end = _parse_utc(event.get("timestamp_utc"))
+        event_start = event_end - timedelta(
+            microseconds=_safe_int(event.get("duration_us"))
+        )
+        waits: dict[str, list[float]] = {}
+        for wait in wait_events:
+            if _safe_int(wait.get("session_id")) != spid:
+                continue
+            wait_time = _parse_utc(wait.get("timestamp_utc"))
+            if event_start <= wait_time <= event_end:
+                waits.setdefault(
+                    str(wait.get("wait_type") or "UNKNOWN"),
+                    [],
+                ).append(float(wait.get("duration_ms") or 0.0))
+        matches.append({
+            "statement_fingerprint": str(app.get("statement_fingerprint") or ""),
+            "request_id": str(app.get("request_id") or ""),
+            "connection_id": _safe_int(app.get("connection_id")),
+            "spid": spid,
+            "statement_sequence": _safe_int(app.get("statement_sequence")),
+            "fetch_elapsed_ms": float(app.get("fetch_elapsed_ms") or 0.0),
+            "completion_clock_delta_ms": delta_ms,
+            "server_duration_ms": _safe_int(event.get("duration_us")) / 1000.0,
+            "server_cpu_ms": _safe_int(event.get("cpu_us")) / 1000.0,
+            "logical_reads": _safe_int(event.get("logical_reads")),
+            "physical_reads": _safe_int(event.get("physical_reads")),
+            "row_count": _safe_int(event.get("row_count")),
+            "rpc_object_name": str(event.get("object_name") or ""),
+            "waits_ms": {
+                wait_type: _latencies(values)
+                for wait_type, values in sorted(waits.items())
+            },
+        })
+
+    unmatched_server = [
+        row
+        for row in rpc_events
+        if _safe_int(row.get("session_id")) in observed_spids
+        and id(row) not in used_server_ids
+    ]
+    by_fingerprint: dict[str, dict[str, object]] = {}
+    for fingerprint in target_fingerprints:
+        values = [
+            match
+            for match in matches
+            if match["statement_fingerprint"] == fingerprint
+        ]
+        waits: dict[str, list[float]] = {}
+        for match in values:
+            for wait_type, summary in match["waits_ms"].items():
+                if int(summary.get("count") or 0):
+                    waits.setdefault(wait_type, []).append(
+                        float(summary.get("mean_ms") or 0.0)
+                    )
+        by_fingerprint[fingerprint] = {
+            "correlated_execution_count": len(values),
+            "server_duration_ms": _latencies(
+                [float(row["server_duration_ms"]) for row in values]
+            ),
+            "server_cpu_ms": _latencies(
+                [float(row["server_cpu_ms"]) for row in values]
+            ),
+            "logical_reads": _count_distribution(
+                [float(row["logical_reads"]) for row in values]
+            ),
+            "physical_reads": _count_distribution(
+                [float(row["physical_reads"]) for row in values]
+            ),
+            "row_count": _count_distribution(
+                [float(row["row_count"]) for row in values]
+            ),
+            "waits_ms": {
+                wait_type: _latencies(durations)
+                for wait_type, durations in sorted(waits.items())
+            },
+            "spids": sorted({int(row["spid"]) for row in values}),
+            "prepared_rpc_names": sorted({
+                str(row["rpc_object_name"])
+                for row in values
+                if str(row["rpc_object_name"])
+            }),
+        }
+
+    prepared_execution_observed = any(
+        str(match.get("rpc_object_name") or "").casefold()
+        in _PREPARED_RPC_NAMES
+        for match in matches
+    )
+    dropped = _safe_int(capture.get("dropped_event_count"))
+    truncated = bool(capture.get("truncated"))
+    cleanup_succeeded = capture.get("cleanup_succeeded") is True
+    complete = (
+        len(target_fingerprints) == 3
+        and all(
+            int(by_fingerprint[fingerprint]["correlated_execution_count"]) > 0
+            for fingerprint in target_fingerprints
+        )
+        and not unmatched_app
+        and ambiguous == 0
+        and dropped == 0
+        and not truncated
+        and cleanup_succeeded
+        and prepared_execution_observed
+    )
+    return {
+        "schema": "issue-894-server-client-correlation-v1",
+        "label": DIAGNOSTIC_LABEL,
+        "target_fingerprints": target_fingerprints,
+        "targets": by_fingerprint,
+        "correlated_execution_count": len(matches),
+        "unmatched_server_events": len(unmatched_server),
+        "unmatched_application_fetches": len(unmatched_app),
+        "ambiguous_correlations": ambiguous,
+        "dropped_event_count": dropped,
+        "capture_truncated": truncated,
+        "cleanup_succeeded": cleanup_succeeded,
+        "prepared_execution_observed": prepared_execution_observed,
+        "clock_uncertainty_ms": XE_CLOCK_UNCERTAINTY_MS,
+        "clock_correlation_basis": (
+            "same-SPID completion-nearest matching; server timestamps and "
+            "application UTC record timestamps are compared only within a "
+            "bounded uncertainty window; monotonic clocks are not subtracted "
+            "from SQL Server timestamps"
+        ),
+        "complete": complete,
+    }
+
+
+def _correlate_report(
+    trial_path: Path,
+    trace_path: Path,
+    server_path: Path,
+    output: Path,
+) -> dict[str, object]:
+    report = json.loads(trial_path.read_text(encoding="utf-8"))
+    capture = json.loads(server_path.read_text(encoding="utf-8"))
+    correlation = _server_client_correlation(
+        _trace_rows(trace_path),
+        capture,
+    )
+    report["server_client_correlation"] = correlation
+    _write_json(output, report)
+    return report
+
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
