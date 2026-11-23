@@ -445,6 +445,7 @@ def _server_client_correlation(
                 wait_type: _latencies(values)
                 for wait_type, values in sorted(waits.items())
             },
+            "_wait_durations_ms": waits,
         })
 
     unmatched_server = [
@@ -462,11 +463,10 @@ def _server_client_correlation(
         ]
         waits: dict[str, list[float]] = {}
         for match in values:
-            for wait_type, summary in match["waits_ms"].items():
-                if int(summary.get("count") or 0):
-                    waits.setdefault(wait_type, []).append(
-                        float(summary.get("mean_ms") or 0.0)
-                    )
+            for wait_type, durations in match["_wait_durations_ms"].items():
+                waits.setdefault(wait_type, []).extend(
+                    float(value) for value in durations
+                )
         by_fingerprint[fingerprint] = {
             "correlated_execution_count": len(values),
             "server_duration_ms": _latencies(
