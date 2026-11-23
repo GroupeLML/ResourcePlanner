@@ -924,6 +924,88 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             "unresolved",
         )
 
+    def test_native_profile_failed_preflight_blocks_interpretation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "profile.json"
+            preflight = root / "preflight.json"
+            trace = root / "trace.jsonl"
+            output = root / "summary.json"
+            profile.write_text(
+                json.dumps({
+                    "profiles": [],
+                    "shared": {"frames": []},
+                }),
+                encoding="utf-8",
+            )
+            preflight.write_text(
+                json.dumps({"passed": False}),
+                encoding="utf-8",
+            )
+            trace.write_text("", encoding="utf-8")
+            report = native_profile._summarize(
+                SimpleNamespace(
+                    profile=profile,
+                    preflight=preflight,
+                    trace=trace,
+                    output=output,
+                    command_start_ns=1,
+                    command_end_ns=2,
+                )
+            )
+        self.assertFalse(report["interpretation_allowed"])
+        self.assertEqual(report["reason"], "preflight_failed")
+
+    def test_native_profile_materiality_failure_disables_interpretation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = root / "baseline.json"
+            profiled = root / "profiled.json"
+            output = root / "comparison.json"
+            baseline.write_text(
+                json.dumps({
+                    "achieved_request_start_rps": 4.0,
+                    "latency": {"p95_ms": 1000.0},
+                    "completed": 100,
+                    "failed": 1,
+                }),
+                encoding="utf-8",
+            )
+            profiled.write_text(
+                json.dumps({
+                    "achieved_request_start_rps": 3.5,
+                    "latency": {"p95_ms": 1000.0},
+                    "completed": 100,
+                    "failed": 1,
+                }),
+                encoding="utf-8",
+            )
+            report = native_profile._compare(
+                SimpleNamespace(
+                    baseline=baseline,
+                    profiled=profiled,
+                    output=output,
+                )
+            )
+        self.assertTrue(
+            report["material_native_profiling_deterioration"]
+        )
+        self.assertFalse(report["interpretation_allowed"])
+
+    def test_external_native_workflow_disables_in_process_sampler(self) -> None:
+        workflow = Path(".github/workflows/syntax-check.yml").read_text(
+            encoding="utf-8"
+        )
+        branch = workflow.split(
+            'elif [ "$mode" = "external-profiled" ]; then',
+            1,
+        )[1].split("fi", 1)[0]
+        self.assertNotIn(
+            "RESOURCEPLANNER_PHASE4_FETCH_PROFILE",
+            branch,
+        )
+        self.assertIn("py-spy==0.4.4", workflow)
+
     def test_native_profile_materiality_is_independent(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
