@@ -43,6 +43,7 @@ jobs:
       frontend: ${{ steps.classify.outputs.frontend }}
       runtime: ${{ steps.classify.outputs.runtime }}
       conservative: ${{ steps.classify.outputs.conservative }}
+      issue_894_inventory_only: ${{ steps.phase.outputs.issue_894_inventory_only }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,6 +59,18 @@ jobs:
           git diff --name-only --no-renames "$base_sha" "$head_sha" > /tmp/changed-files.txt
           cat /tmp/changed-files.txt
           python tools/ci_change_classifier.py < /tmp/changed-files.txt | tee -a "$GITHUB_OUTPUT"
+      - name: Detect bounded #894 environment-inventory head
+        id: phase
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          if git log -1 --format=%B "$head_sha" \
+            | grep -Fxq 'RP894_ENVIRONMENT_INVENTORY_ONLY'; then
+            printf 'issue_894_inventory_only=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'issue_894_inventory_only=false\n' >> "$GITHUB_OUTPUT"
+          fi
 
   server-isolation:
     needs: changes
@@ -537,10 +550,116 @@ jobs:
 
 
 
+  issue-894-environment-inventory:
+    name: Issue #894 environment inventory
+    needs: changes
+    if: ${{ startsWith(github.event.pull_request.title, '#894') && needs.changes.outputs.issue_894_inventory_only == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate bounded inventory contract and routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          python tools/issue_894_environment_inventory.py self-test
+          python tools/issue_894_environment_inventory.py validate-workflow \
+            --workflow .github/workflows/syntax-check.yml
+          python -m py_compile tools/issue_894_environment_inventory.py
+
+      - name: Build exact-head backend image for inventory only
+        id: image
+        shell: bash
+        env:
+          RP894_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          image_ref="resourceplanner-894-inventory-backend:$RP894_HEAD_SHA"
+          docker build \
+            -f Dockerfile.backend \
+            --build-arg "RESOURCEPLANNER_GIT_REVISION=$RP894_HEAD_SHA" \
+            -t "$image_ref" \
+            .
+          revision="$(docker image inspect "$image_ref" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          test "$revision" = "$RP894_HEAD_SHA"
+          printf 'image_ref=%s\n' "$image_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Start bounded exact-image inventory target
+        id: target
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          container_name="rp894-inventory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run -d \
+            --name "$container_name" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -w /app \
+            "$IMAGE_REF" \
+            python /workspace/tools/issue_894_environment_inventory.py \
+              target --seconds 180 \
+            >/dev/null
+          sleep 2
+          host_pid="$(docker inspect --format '{{.State.Pid}}' "$container_name")"
+          test "$host_pid" -gt 0
+          test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "true"
+          printf 'container_name=%s\n' "$container_name" >> "$GITHUB_OUTPUT"
+          printf 'host_pid=%s\n' "$host_pid" >> "$GITHUB_OUTPUT"
+
+      - name: Collect allowlisted read-only environment inventory
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+          CONTAINER_NAME: ${{ steps.target.outputs.container_name }}
+          TARGET_PID: ${{ steps.target.outputs.host_pid }}
+          RP894_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python tools/issue_894_environment_inventory.py collect \
+            --target-pid "$TARGET_PID" \
+            --container-name "$CONTAINER_NAME" \
+            --image-ref "$IMAGE_REF" \
+            --expected-head "$RP894_HEAD_SHA" \
+            --historical-image-digest \
+              sha256:911273639c9186aecb45cafc30f32d42c1044ed31c84d8848b604815d3462c5a \
+            --output issue-894-environment-inventory.json
+          python tools/issue_894_environment_inventory.py validate \
+            --input issue-894-environment-inventory.json
+
+      - name: Upload bounded environment inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-894-environment-inventory-${{ github.event.pull_request.head.sha }}
+          path: issue-894-environment-inventory.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean inventory target
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f "rp894-inventory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            >/dev/null 2>&1 || true
+
+
   issue-894-phase4:
     name: Issue #894 Phase 4 load / rollback
     needs: changes
-    if: ${{ startsWith(github.event.pull_request.title, '#894') }}
+    if: ${{ startsWith(github.event.pull_request.title, '#894') && needs.changes.outputs.issue_894_inventory_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
