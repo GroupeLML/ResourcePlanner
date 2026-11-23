@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import time
 from typing import Any
 
@@ -109,6 +108,15 @@ def _validate_workflow_text(text: str) -> None:
         "sched:sched_wakeup_new",
         "--clockid mono",
     )
+    workflow_required = (
+        'perf_executable="$(command -v perf)"',
+        '--perf-executable "$perf_executable"',
+        '--parser-argv-lines "$raw_dir/perf-parser-argv.txt"',
+        'sudo "${parser_args[@]}"',
+        'sudo "${perf_args[@]}"',
+    )
+    if any(token not in region for token in workflow_required):
+        raise ValueError("perf gate/recorder execution context is not aligned")
     if any(token not in generated for token in generated_required):
         raise ValueError("generated perf command drifted from the authorized event model")
     if generated.count("call-graph=dwarf") != 1:
@@ -359,9 +367,11 @@ def switch_out_event() -> str:
     )
 
 
-def perf_parser_argv() -> list[str]:
+def perf_parser_argv(
+    perf_executable: str = "perf",
+) -> list[str]:
     return [
-        "perf",
+        perf_executable,
         "record",
         "--dry-run",
         "-e",
@@ -374,6 +384,7 @@ def perf_parser_argv() -> list[str]:
 def perf_argv(
     tids: list[int],
     raw_path: Path,
+    perf_executable: str = "perf",
 ) -> list[str]:
     switch_out = _tid_filter(
         "prev_pid",
@@ -394,7 +405,7 @@ def perf_argv(
         tids,
     )
     return [
-        "perf",
+        perf_executable,
         "record",
         "-o",
         str(raw_path),
@@ -432,13 +443,10 @@ def command(args: argparse.Namespace) -> int:
     argv = perf_argv(
         tids,
         args.raw,
+        args.perf_executable,
     )
-    parser_argv = perf_parser_argv()
-    parser_result = subprocess.run(
-        parser_argv,
-        check=False,
-        capture_output=True,
-        text=True,
+    parser_argv = perf_parser_argv(
+        args.perf_executable,
     )
     report = {
         "schema": "issue-894-perf-command-v1",
@@ -449,10 +457,9 @@ def command(args: argparse.Namespace) -> int:
         "argv": argv,
         "parser_check": {
             "argv": parser_argv,
-            "returncode": parser_result.returncode,
-            "stdout": parser_result.stdout,
-            "stderr": parser_result.stderr,
-            "accepted": parser_result.returncode == 0,
+            "perf_executable": args.perf_executable,
+            "execution_context": "host-sudo",
+            "result_evidence": "perf-parser-check.json",
         },
         "channels": {
             "switch_out": {
@@ -503,7 +510,12 @@ def command(args: argparse.Namespace) -> int:
             "\n".join(argv) + "\n",
             encoding="utf-8",
         )
-    return 0 if parser_result.returncode == 0 else 1
+    if args.parser_argv_lines:
+        args.parser_argv_lines.write_text(
+            "\n".join(parser_argv) + "\n",
+            encoding="utf-8",
+        )
+    return 0
 
 
 def identity(args: argparse.Namespace) -> int:
@@ -1564,8 +1576,10 @@ def _self_test() -> None:
         in text
     )
     assert "call-graph=dwarf,8192" not in text
-    parser_text = " ".join(perf_parser_argv())
-    assert "perf record --dry-run" in parser_text
+    parser_text = " ".join(
+        perf_parser_argv("/usr/bin/perf")
+    )
+    assert "/usr/bin/perf record --dry-run" in parser_text
     assert switch_out_event() in parser_text
     assert (
         text.count(
@@ -1752,6 +1766,10 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
     command_p.add_argument(
+        "--perf-executable",
+        required=True,
+    )
+    command_p.add_argument(
         "--raw",
         type=Path,
         required=True,
@@ -1763,6 +1781,10 @@ def parser() -> argparse.ArgumentParser:
     )
     command_p.add_argument(
         "--argv-lines",
+        type=Path,
+    )
+    command_p.add_argument(
+        "--parser-argv-lines",
         type=Path,
     )
 
