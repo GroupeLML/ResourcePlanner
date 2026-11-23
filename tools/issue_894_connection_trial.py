@@ -198,11 +198,32 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
         connection.exec_driver_sql(
             f"""
             CREATE EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+            ADD EVENT sqlserver.rpc_starting(
+                SET collect_statement=(0)
+                ACTION(
+                    package0.event_sequence,
+                    sqlserver.client_connection_id,
+                    sqlserver.database_id,
+                    sqlserver.session_id
+                )
+            ),
             ADD EVENT sqlserver.rpc_completed(
-                ACTION(sqlserver.database_id, sqlserver.session_id)
+                SET collect_statement=(0)
+                ACTION(
+                    package0.event_sequence,
+                    sqlserver.client_connection_id,
+                    sqlserver.database_id,
+                    sqlserver.session_id
+                )
             ),
             ADD EVENT sqlserver.sql_batch_completed(
-                ACTION(sqlserver.database_id, sqlserver.session_id)
+                SET collect_batch_text=(0)
+                ACTION(
+                    package0.event_sequence,
+                    sqlserver.client_connection_id,
+                    sqlserver.database_id,
+                    sqlserver.session_id
+                )
             ),
             ADD EVENT sqlos.wait_info(
                 ACTION(sqlserver.database_id, sqlserver.session_id)
@@ -240,6 +261,22 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
             "started_utc": started_utc,
             "bounded": True,
             "raw_sql_captured_in_evidence": False,
+            "capture_source_privacy": {
+                "rpc_starting_collect_statement": False,
+                "rpc_completed_collect_statement": False,
+                "sql_batch_completed_collect_batch_text": False,
+                "sql_text_action_enabled": False,
+            },
+            "pairing_identifiers": {
+                "event_sequence": (
+                    "package0 event ordering evidence only; not treated "
+                    "as an application execution identity"
+                ),
+                "client_connection_id": (
+                    "SQL Server client connection identity; not treated "
+                    "as a per-execution identity"
+                ),
+            },
         }
         _write_json(output, report)
         return report
