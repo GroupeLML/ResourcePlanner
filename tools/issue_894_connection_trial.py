@@ -44,7 +44,7 @@ XE_CLOCK_UNCERTAINTY_MS = 250.0
 XE_EVENT_FILE_DIRECTORY = "/var/opt/mssql/log"
 XE_EVENT_FILE_BASENAME = "rp894_short_correlation"
 XE_EVENT_FILE_SIZE_MB = 8
-XE_EVENT_FILE_ROLLOVER_COUNT = 4
+XE_EVENT_FILE_ROLLOVER_COUNT = 8
 _PREPARED_EXECUTION_RPC_NAMES = frozenset(
     {"sp_prepexec", "sp_execute", "sp_executesql"}
 )
@@ -333,6 +333,18 @@ def _parse_xe_event_xml(
     return None
 
 
+def _ordered_xe_file_rows(
+    rows: list[object],
+) -> list[object]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row[0] or "").casefold(),
+            _safe_int(row[1]),
+        ),
+    )
+
+
 def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
     engine, connection = _xe_connection(database_url)
     capture: dict[str, object] | None = None
@@ -364,21 +376,24 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
                 "SQL Server Extended Events bounded file retention exhausted"
             )
 
-        rows = connection.exec_driver_sql(
-            f"""
-            SELECT
-                file_name,
-                file_offset,
-                CAST(event_data AS nvarchar(max)) AS event_xml
-            FROM sys.fn_xe_file_target_read_file(
-                N'{_xe_event_file_pattern()}',
-                NULL,
-                NULL,
-                NULL
+        rows = _ordered_xe_file_rows(
+            list(
+                connection.exec_driver_sql(
+                    f"""
+                    SELECT
+                        file_name,
+                        file_offset,
+                        CAST(event_data AS nvarchar(max)) AS event_xml
+                    FROM sys.fn_xe_file_target_read_file(
+                        N'{_xe_event_file_pattern()}',
+                        NULL,
+                        NULL,
+                        NULL
+                    )
+                    """
+                ).all()
             )
-            ORDER BY file_name, file_offset
-            """
-        ).all()
+        )
         if not rows:
             raise ValueError(
                 "SQL Server Extended Events event files contain no events"
@@ -478,6 +493,14 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
     capture["cleanup_succeeded"] = False
     capture["cleanup_error_type"] = cleanup_error
     _write_json(output, capture)
+    if _safe_int(capture.get("dropped_event_count")) > 0:
+        raise ValueError(
+            "SQL Server Extended Events reported dropped events"
+        )
+    if cleanup_error:
+        raise ValueError(
+            "SQL Server Extended Events session cleanup failed"
+        )
     return capture
 
 
