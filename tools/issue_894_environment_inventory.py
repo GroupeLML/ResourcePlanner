@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 
 SCHEMA = "issue-894-environment-inventory-v1"
@@ -1512,32 +1514,88 @@ def _validate_report(
             )
 
 
-def _reference_manifest(
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _archive_json_member(
+    handle: tarfile.TarFile,
+    name: str,
+) -> tuple[bytes, object]:
+    try:
+        member = handle.getmember(name)
+    except KeyError as exc:
+        raise ValueError(
+            f"docker archive member is missing: {name}"
+        ) from exc
+    extracted = handle.extractfile(member)
+    if extracted is None:
+        raise ValueError(
+            f"docker archive member is unreadable: {name}"
+        )
+    raw = extracted.read()
+    try:
+        return raw, json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"docker archive JSON is invalid: {name}"
+        ) from exc
+
+
+def _digest_blob_name(digest: str) -> str:
+    match = re.fullmatch(
+        r"sha256:([0-9a-f]{64})",
+        digest,
+    )
+    if not match:
+        raise ValueError(
+            f"unsupported OCI digest: {digest}"
+        )
+    return f"blobs/sha256/{match.group(1)}"
+
+
+def _verified_blob_json(
+    handle: tarfile.TarFile,
+    digest: str,
+) -> tuple[bytes, object]:
+    name = _digest_blob_name(digest)
+    raw, payload = _archive_json_member(
+        handle,
+        name,
+    )
+    expected = digest.removeprefix(
+        "sha256:"
+    )
+    actual = _sha256_bytes(raw)
+    if actual != expected:
+        raise ValueError(
+            f"OCI blob digest mismatch: {name}"
+        )
+    return raw, payload
+
+
+def _reference_manifest_from_inspect(
     archive: Path,
     image_ref: str,
     expected_head: str,
+    inspected: dict[str, object],
 ) -> dict[str, object]:
     archive_hash = _sha256(archive)
     if archive_hash["state"] != "AVAILABLE":
         raise ValueError(
             "image archive is not readable"
         )
-    image = _docker_json(
-        ["image", "inspect", image_ref]
-    )
-    if image["state"] != "AVAILABLE":
-        raise ValueError(
-            "exact inventory image is unavailable"
-        )
-    rows = image.get("value") or []
-    if len(rows) != 1:
-        raise ValueError(
-            "expected exactly one image inspection result"
-        )
-    inspected = rows[0]
+
     image_id = str(
         inspected.get("Id") or ""
     )
+    if not re.fullmatch(
+        r"sha256:[0-9a-f]{64}",
+        image_id,
+    ):
+        raise ValueError(
+            "live Docker image ID is missing or malformed"
+        )
     labels = (
         (
             inspected.get("Config")
@@ -1555,75 +1613,206 @@ def _reference_manifest(
         raise ValueError(
             "inventory image revision does not match PR head"
         )
+    architecture = str(
+        inspected.get("Architecture") or ""
+    )
+    operating_system = str(
+        inspected.get("Os") or ""
+    )
+    if not architecture or not operating_system:
+        raise ValueError(
+            "live Docker platform identity is incomplete"
+        )
+
+    repo_digests = sorted(
+        str(value)
+        for value in (
+            inspected.get("RepoDigests")
+            or []
+        )
+    )
+    if repo_digests:
+        matching_repo_digests = [
+            value
+            for value in repo_digests
+            if value.rsplit("@", 1)[-1]
+            == image_id
+        ]
+        if not matching_repo_digests:
+            raise ValueError(
+                "live repo digest does not match live image ID"
+            )
 
     with tarfile.open(
         archive,
         mode="r:*",
     ) as handle:
-        manifest_member = handle.getmember(
-            "manifest.json"
+        legacy_raw, legacy = _archive_json_member(
+            handle,
+            "manifest.json",
         )
-        manifest_bytes = handle.extractfile(
-            manifest_member
-        )
-        if manifest_bytes is None:
+        if not isinstance(legacy, list):
             raise ValueError(
-                "docker archive manifest is unreadable"
+                "docker archive manifest.json is malformed"
             )
-        raw_manifest = manifest_bytes.read()
-        manifest = json.loads(
-            raw_manifest.decode("utf-8")
-        )
-        if not isinstance(manifest, list):
-            raise ValueError(
-                "docker archive manifest is malformed"
-            )
-        matching = [
+        legacy_matches = [
             row
-            for row in manifest
+            for row in legacy
             if isinstance(row, dict)
             and image_ref in (
                 row.get("RepoTags")
                 or []
             )
         ]
-        if not matching and len(manifest) == 1:
-            matching = [manifest[0]]
-        if len(matching) != 1:
+        if len(legacy_matches) != 1:
             raise ValueError(
-                "docker archive image entry is ambiguous"
+                "docker archive tag entry is missing or ambiguous"
             )
-        entry = matching[0]
-        config_name = str(
-            entry.get("Config") or ""
+        legacy_entry = legacy_matches[0]
+
+        index_raw, index = _archive_json_member(
+            handle,
+            "index.json",
         )
-        if not config_name:
+        if not isinstance(index, dict):
             raise ValueError(
-                "docker archive config is missing"
+                "OCI archive index.json is malformed"
             )
-        config_member = handle.getmember(
-            config_name
+        top_descriptors = index.get(
+            "manifests"
         )
-        config_file = handle.extractfile(
-            config_member
-        )
-        if config_file is None:
+        if (
+            not isinstance(top_descriptors, list)
+            or len(top_descriptors) != 1
+            or not isinstance(
+                top_descriptors[0],
+                dict,
+            )
+        ):
             raise ValueError(
-                "docker archive config is unreadable"
+                "OCI archive top-level image descriptor is ambiguous"
             )
-        config_bytes = config_file.read()
-        config_hash = hashlib.sha256(
-            config_bytes
-        ).hexdigest()
-        config = json.loads(
-            config_bytes.decode("utf-8")
+        top_descriptor = top_descriptors[0]
+        top_digest = str(
+            top_descriptor.get("digest")
+            or ""
         )
 
-    expected_image_id = f"sha256:{config_hash}"
-    if image_id != expected_image_id:
-        raise ValueError(
-            "archive config digest does not match Docker image ID"
+        top_raw, top_index = _verified_blob_json(
+            handle,
+            top_digest,
         )
+        if not isinstance(top_index, dict):
+            raise ValueError(
+                "OCI image-index blob is malformed"
+            )
+
+        # On the GitHub Actions containerd-backed Docker store
+        # observed in CI #3223, docker image inspect .Id is the
+        # digest of this OCI image-index blob, not the config
+        # object digest. Bind the live image to the archive at
+        # that exact cryptographic identity.
+        if image_id != top_digest:
+            raise ValueError(
+                "live Docker image ID does not match archive "
+                "OCI image-index digest"
+            )
+
+        platform_descriptors = [
+            descriptor
+            for descriptor in (
+                top_index.get("manifests")
+                or []
+            )
+            if isinstance(
+                descriptor,
+                dict,
+            )
+            and (
+                descriptor.get("platform")
+                or {}
+            ).get("architecture")
+            == architecture
+            and (
+                descriptor.get("platform")
+                or {}
+            ).get("os")
+            == operating_system
+        ]
+        if len(platform_descriptors) != 1:
+            raise ValueError(
+                "OCI platform image manifest is missing or ambiguous"
+            )
+        platform_descriptor = (
+            platform_descriptors[0]
+        )
+        platform_digest = str(
+            platform_descriptor.get(
+                "digest"
+            )
+            or ""
+        )
+        platform_raw, platform_manifest = (
+            _verified_blob_json(
+                handle,
+                platform_digest,
+            )
+        )
+        if not isinstance(
+            platform_manifest,
+            dict,
+        ):
+            raise ValueError(
+                "OCI platform manifest is malformed"
+            )
+
+        config_descriptor = (
+            platform_manifest.get(
+                "config"
+            )
+            or {}
+        )
+        if not isinstance(
+            config_descriptor,
+            dict,
+        ):
+            raise ValueError(
+                "OCI config descriptor is malformed"
+            )
+        config_digest = str(
+            config_descriptor.get(
+                "digest"
+            )
+            or ""
+        )
+        config_raw, config = (
+            _verified_blob_json(
+                handle,
+                config_digest,
+            )
+        )
+        if not isinstance(config, dict):
+            raise ValueError(
+                "OCI config object is malformed"
+            )
+
+        legacy_config_name = str(
+            legacy_entry.get(
+                "Config"
+            )
+            or ""
+        )
+        if (
+            legacy_config_name
+            != _digest_blob_name(
+                config_digest
+            )
+        ):
+            raise ValueError(
+                "legacy docker manifest config does not match "
+                "OCI platform manifest config"
+            )
+
     archived_labels = (
         (
             config.get("config")
@@ -1641,10 +1830,19 @@ def _reference_manifest(
         raise ValueError(
             "archive OCI revision does not match PR head"
         )
+    if (
+        str(config.get("architecture") or "")
+        != architecture
+        or str(config.get("os") or "")
+        != operating_system
+    ):
+        raise ValueError(
+            "archive config platform does not match live image"
+        )
 
     report = {
         "schema": (
-            "issue-894-diagnostic-reference-runtime-v1"
+            "issue-894-diagnostic-reference-runtime-v2"
         ),
         "diagnostic_reference": True,
         "historical_recovery": False,
@@ -1653,37 +1851,105 @@ def _reference_manifest(
         ),
         "pr_head": expected_head,
         "image_ref": image_ref,
-        "image_id": image_id,
-        "repo_digests": sorted(
-            inspected.get("RepoDigests")
-            or []
-        ),
-        "revision_label": revision,
-        "architecture": inspected.get(
-            "Architecture"
-        ),
-        "os": inspected.get("Os"),
+        "live_image_id": image_id,
+        "live_repo_digests": repo_digests,
+        "live_revision_label": revision,
+        "architecture": architecture,
+        "os": operating_system,
         "archive_file": archive.name,
         "archive_size_bytes": archive.stat().st_size,
         "archive_sha256": str(
             archive_hash.get("value") or ""
         ),
         "docker_archive_manifest_sha256": (
-            hashlib.sha256(
-                raw_manifest
-            ).hexdigest()
+            _sha256_bytes(legacy_raw)
         ),
-        "archive_config_name": config_name,
-        "archive_config_sha256": config_hash,
-        "archive_config_matches_image_id": True,
+        "oci_layout_index_sha256": (
+            _sha256_bytes(index_raw)
+        ),
+        "archive_top_descriptor_digest": (
+            top_digest
+        ),
+        "archive_top_index_sha256": (
+            _sha256_bytes(top_raw)
+        ),
+        "archive_platform_manifest_digest": (
+            platform_digest
+        ),
+        "archive_platform_manifest_sha256": (
+            _sha256_bytes(platform_raw)
+        ),
+        "archive_config_digest": config_digest,
+        "archive_config_sha256": (
+            _sha256_bytes(config_raw)
+        ),
         "archive_revision_label": archived_revision,
         "archive_architecture": config.get(
             "architecture"
         ),
         "archive_os": config.get("os"),
+        "identity_chain": {
+            "live_image_id_equals_archive_top_descriptor": (
+                image_id == top_digest
+            ),
+            "archive_top_descriptor_hash_verified": (
+                _sha256_bytes(top_raw)
+                == top_digest.removeprefix(
+                    "sha256:"
+                )
+            ),
+            "archive_platform_manifest_hash_verified": (
+                _sha256_bytes(platform_raw)
+                == platform_digest.removeprefix(
+                    "sha256:"
+                )
+            ),
+            "archive_config_hash_verified": (
+                _sha256_bytes(config_raw)
+                == config_digest.removeprefix(
+                    "sha256:"
+                )
+            ),
+            "legacy_manifest_config_matches_oci_config": True,
+            "live_revision_matches_pr_head": (
+                revision == expected_head
+            ),
+            "archive_revision_matches_pr_head": (
+                archived_revision == expected_head
+            ),
+        },
     }
     _validate_reference_manifest(report)
     return report
+
+
+def _reference_manifest(
+    archive: Path,
+    image_ref: str,
+    expected_head: str,
+) -> dict[str, object]:
+    image = _docker_json(
+        ["image", "inspect", image_ref]
+    )
+    if image["state"] != "AVAILABLE":
+        raise ValueError(
+            "exact inventory image is unavailable"
+        )
+    rows = image.get("value") or []
+    if (
+        not isinstance(rows, list)
+        or len(rows) != 1
+        or not isinstance(rows[0], dict)
+    ):
+        raise ValueError(
+            "expected exactly one image inspection result"
+        )
+    return _reference_manifest_from_inspect(
+        archive,
+        image_ref,
+        expected_head,
+        rows[0],
+    )
 
 
 def _validate_reference_manifest(
@@ -1696,31 +1962,40 @@ def _validate_reference_manifest(
         "source",
         "pr_head",
         "image_ref",
-        "image_id",
-        "repo_digests",
-        "revision_label",
+        "live_image_id",
+        "live_repo_digests",
+        "live_revision_label",
         "architecture",
         "os",
         "archive_file",
         "archive_size_bytes",
         "archive_sha256",
         "docker_archive_manifest_sha256",
-        "archive_config_name",
+        "oci_layout_index_sha256",
+        "archive_top_descriptor_digest",
+        "archive_top_index_sha256",
+        "archive_platform_manifest_digest",
+        "archive_platform_manifest_sha256",
+        "archive_config_digest",
         "archive_config_sha256",
-        "archive_config_matches_image_id",
         "archive_revision_label",
         "archive_architecture",
         "archive_os",
+        "identity_chain",
     }
     if set(report) != expected:
         raise ValueError(
             "diagnostic reference manifest schema drift"
         )
     if report.get("schema") != (
-        "issue-894-diagnostic-reference-runtime-v1"
+        "issue-894-diagnostic-reference-runtime-v2"
     ):
         raise ValueError(
             "diagnostic reference manifest schema mismatch"
+        )
+    if report.get("diagnostic_reference") is not True:
+        raise ValueError(
+            "diagnostic reference marker is missing"
         )
     if report.get("historical_recovery") is not False:
         raise ValueError(
@@ -1732,21 +2007,23 @@ def _validate_reference_manifest(
         raise ValueError(
             "diagnostic reference source is invalid"
         )
-    if (
-        report.get(
-            "archive_config_matches_image_id"
-        )
-        is not True
+
+    head = str(report.get("pr_head") or "")
+    if not re.fullmatch(
+        r"[0-9a-f]{40}",
+        head,
     ):
         raise ValueError(
-            "archive is not bound to image ID"
+            "PR head is missing or malformed"
         )
-    head = str(report.get("pr_head") or "")
-    if not head or str(
-        report.get("revision_label") or ""
+    if str(
+        report.get(
+            "live_revision_label"
+        )
+        or ""
     ) != head:
         raise ValueError(
-            "revision label is not bound to PR head"
+            "live revision label is not bound to PR head"
         )
     if str(
         report.get(
@@ -1757,22 +2034,54 @@ def _validate_reference_manifest(
         raise ValueError(
             "archive revision is not bound to PR head"
         )
-    image_id = str(
-        report.get("image_id") or ""
+
+    live_image_id = str(
+        report.get("live_image_id") or ""
     )
-    config_hash = str(
+    top_digest = str(
         report.get(
-            "archive_config_sha256"
+            "archive_top_descriptor_digest"
         )
         or ""
     )
-    if image_id != f"sha256:{config_hash}":
+    if live_image_id != top_digest:
         raise ValueError(
-            "archive config hash is not the Docker image ID"
+            "live image identity is not bound to archive OCI index"
         )
+
+    digest_pairs = (
+        (
+            "archive_top_descriptor_digest",
+            "archive_top_index_sha256",
+        ),
+        (
+            "archive_platform_manifest_digest",
+            "archive_platform_manifest_sha256",
+        ),
+        (
+            "archive_config_digest",
+            "archive_config_sha256",
+        ),
+    )
+    for digest_key, hash_key in digest_pairs:
+        digest = str(
+            report.get(digest_key) or ""
+        )
+        value_hash = str(
+            report.get(hash_key) or ""
+        )
+        if digest != f"sha256:{value_hash}":
+            raise ValueError(
+                "archive OCI descriptor/hash mismatch: "
+                f"{digest_key}"
+            )
+
     for key in (
         "archive_sha256",
         "docker_archive_manifest_sha256",
+        "oci_layout_index_sha256",
+        "archive_top_index_sha256",
+        "archive_platform_manifest_sha256",
         "archive_config_sha256",
     ):
         value = str(report.get(key) or "")
@@ -1783,6 +2092,64 @@ def _validate_reference_manifest(
             raise ValueError(
                 f"invalid diagnostic reference digest: {key}"
             )
+
+    chain = report.get(
+        "identity_chain"
+    )
+    if not isinstance(chain, dict):
+        raise ValueError(
+            "identity chain is missing"
+        )
+    required_chain = {
+        "live_image_id_equals_archive_top_descriptor",
+        "archive_top_descriptor_hash_verified",
+        "archive_platform_manifest_hash_verified",
+        "archive_config_hash_verified",
+        "legacy_manifest_config_matches_oci_config",
+        "live_revision_matches_pr_head",
+        "archive_revision_matches_pr_head",
+    }
+    if set(chain) != required_chain:
+        raise ValueError(
+            "identity chain schema drift"
+        )
+    if not all(
+        chain.get(key) is True
+        for key in required_chain
+    ):
+        raise ValueError(
+            "diagnostic reference identity chain is incomplete"
+        )
+    if (
+        report.get("architecture")
+        != report.get(
+            "archive_architecture"
+        )
+        or report.get("os")
+        != report.get("archive_os")
+    ):
+        raise ValueError(
+            "live/archive platform identity mismatch"
+        )
+
+    repo_digests = report.get(
+        "live_repo_digests"
+    )
+    if not isinstance(
+        repo_digests,
+        list,
+    ):
+        raise ValueError(
+            "live repo digests are malformed"
+        )
+    if repo_digests and not any(
+        str(value).rsplit("@", 1)[-1]
+        == live_image_id
+        for value in repo_digests
+    ):
+        raise ValueError(
+            "live repo digest is inconsistent with image ID"
+        )
 
 
 def _validate_workflow(
@@ -1975,48 +2342,274 @@ def _self_test() -> None:
         "remaining_unknowns": [],
     }
     _validate_report(sample)
-    reference_sample = {
-        "schema": "issue-894-diagnostic-reference-runtime-v1",
-        "diagnostic_reference": True,
-        "historical_recovery": False,
-        "source": "new_exact_head_inventory_build",
-        "pr_head": "a" * 40,
-        "image_ref": "example:new",
-        "image_id": "sha256:" + "b" * 64,
-        "repo_digests": [],
-        "revision_label": "a" * 40,
+    def _json_bytes(value: object) -> bytes:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def _add_bytes(
+        handle: tarfile.TarFile,
+        name: str,
+        value: bytes,
+    ) -> None:
+        info = tarfile.TarInfo(name)
+        info.size = len(value)
+        info.mtime = 0
+        handle.addfile(
+            info,
+            io.BytesIO(value),
+        )
+
+    head = "a" * 40
+    image_ref = f"example:{head}"
+    config_bytes = _json_bytes({
         "architecture": "amd64",
         "os": "linux",
-        "archive_file": "image.tar.gz",
-        "archive_size_bytes": 1,
-        "archive_sha256": "c" * 64,
-        "docker_archive_manifest_sha256": "d" * 64,
-        "archive_config_name": "b" * 64 + ".json",
-        "archive_config_sha256": "b" * 64,
-        "archive_config_matches_image_id": True,
-        "archive_revision_label": "a" * 40,
-        "archive_architecture": "amd64",
-        "archive_os": "linux",
+        "config": {
+            "Labels": {
+                "org.opencontainers.image.revision": head,
+            }
+        },
+    })
+    config_hash = _sha256_bytes(
+        config_bytes
+    )
+    config_digest = (
+        f"sha256:{config_hash}"
+    )
+    platform_bytes = _json_bytes({
+        "schemaVersion": 2,
+        "mediaType": (
+            "application/vnd.oci.image.manifest.v1+json"
+        ),
+        "config": {
+            "mediaType": (
+                "application/vnd.oci.image.config.v1+json"
+            ),
+            "digest": config_digest,
+            "size": len(config_bytes),
+        },
+        "layers": [],
+    })
+    platform_hash = _sha256_bytes(
+        platform_bytes
+    )
+    platform_digest = (
+        f"sha256:{platform_hash}"
+    )
+    top_bytes = _json_bytes({
+        "schemaVersion": 2,
+        "mediaType": (
+            "application/vnd.oci.image.index.v1+json"
+        ),
+        "manifests": [{
+            "mediaType": (
+                "application/vnd.oci.image.manifest.v1+json"
+            ),
+            "digest": platform_digest,
+            "size": len(platform_bytes),
+            "platform": {
+                "architecture": "amd64",
+                "os": "linux",
+            },
+        }],
+    })
+    top_hash = _sha256_bytes(
+        top_bytes
+    )
+    top_digest = f"sha256:{top_hash}"
+    index = {
+        "schemaVersion": 2,
+        "mediaType": (
+            "application/vnd.oci.image.index.v1+json"
+        ),
+        "manifests": [{
+            "mediaType": (
+                "application/vnd.oci.image.index.v1+json"
+            ),
+            "digest": top_digest,
+            "size": len(top_bytes),
+        }],
     }
-    _validate_reference_manifest(
-        reference_sample
-    )
-    invalid_reference = dict(
-        reference_sample
-    )
-    invalid_reference[
-        "historical_recovery"
-    ] = True
-    try:
+    legacy = [{
+        "Config": (
+            f"blobs/sha256/{config_hash}"
+        ),
+        "RepoTags": [image_ref],
+        "Layers": [],
+    }]
+    inspected = {
+        "Id": top_digest,
+        "RepoDigests": [
+            f"example@{top_digest}"
+        ],
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Config": {
+            "Labels": {
+                "org.opencontainers.image.revision": head,
+            }
+        },
+    }
+
+    def _write_synthetic_archive(
+        path: Path,
+        *,
+        top_descriptors: list[dict[str, object]] | None = None,
+    ) -> None:
+        with tarfile.open(
+            path,
+            mode="w",
+        ) as handle:
+            _add_bytes(
+                handle,
+                "manifest.json",
+                _json_bytes(legacy),
+            )
+            chosen_index = dict(index)
+            if top_descriptors is not None:
+                chosen_index[
+                    "manifests"
+                ] = top_descriptors
+            _add_bytes(
+                handle,
+                "index.json",
+                _json_bytes(
+                    chosen_index
+                ),
+            )
+            _add_bytes(
+                handle,
+                "blobs/sha256/"
+                f"{top_hash}",
+                top_bytes,
+            )
+            _add_bytes(
+                handle,
+                "blobs/sha256/"
+                f"{platform_hash}",
+                platform_bytes,
+            )
+            _add_bytes(
+                handle,
+                "blobs/sha256/"
+                f"{config_hash}",
+                config_bytes,
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        valid_archive = (
+            root / "valid.tar"
+        )
+        _write_synthetic_archive(
+            valid_archive
+        )
+        valid = _reference_manifest_from_inspect(
+            valid_archive,
+            image_ref,
+            head,
+            inspected,
+        )
+        # Regression for CI #3223: on the containerd-backed
+        # Docker store the live image ID is the OCI index digest,
+        # intentionally different from the config digest.
+        if (
+            valid["live_image_id"]
+            == valid[
+                "archive_config_digest"
+            ]
+        ):
+            raise AssertionError(
+                "synthetic fixture does not reproduce "
+                "the CI #3223 identity distinction"
+            )
         _validate_reference_manifest(
-            invalid_reference
+            valid
         )
-    except ValueError:
-        pass
-    else:
-        raise AssertionError(
-            "historical recovery relabel was not rejected"
+
+        mismatched_image = dict(
+            inspected
         )
+        mismatched_image[
+            "Id"
+        ] = "sha256:" + "f" * 64
+        mismatched_image[
+            "RepoDigests"
+        ] = []
+        try:
+            _reference_manifest_from_inspect(
+                valid_archive,
+                image_ref,
+                head,
+                mismatched_image,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                "mismatched live image/archive was accepted"
+            )
+
+        try:
+            _reference_manifest_from_inspect(
+                valid_archive,
+                image_ref,
+                "b" * 40,
+                inspected,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                "mismatched PR head/revision was accepted"
+            )
+
+        ambiguous_archive = (
+            root / "ambiguous.tar"
+        )
+        descriptor = (
+            index["manifests"][0]
+        )
+        _write_synthetic_archive(
+            ambiguous_archive,
+            top_descriptors=[
+                descriptor,
+                descriptor,
+            ],
+        )
+        try:
+            _reference_manifest_from_inspect(
+                ambiguous_archive,
+                image_ref,
+                head,
+                inspected,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                "ambiguous archive entry was accepted"
+            )
+
+        historical_mislabel = dict(
+            valid
+        )
+        historical_mislabel[
+            "historical_recovery"
+        ] = True
+        try:
+            _validate_reference_manifest(
+                historical_mislabel
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                "historical recovery relabel was not rejected"
+            )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -2189,8 +2782,8 @@ def main() -> int:
                     "archive_sha256": report[
                         "archive_sha256"
                     ],
-                    "image_id": report[
-                        "image_id"
+                    "live_image_id": report[
+                        "live_image_id"
                     ],
                 },
                 sort_keys=True,
