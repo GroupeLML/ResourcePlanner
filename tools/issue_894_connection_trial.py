@@ -1368,49 +1368,78 @@ def _monotonic_rpc_assignments(
                 valid.append(index)
         candidates.append(valid)
 
-    best_cardinality = -1
-    best_count = 0
-    unique_solution: list[int | None] | None = None
+    memo: dict[
+        tuple[int, int],
+        tuple[int, int, tuple[int | None, ...] | None],
+    ] = {}
 
-    def visit(
+    def solve(
         driver_index: int,
         previous_pair: int,
-        chosen: list[int | None],
-        matched: int,
-    ) -> None:
-        nonlocal best_cardinality, best_count, unique_solution
-        remaining = len(drivers) - driver_index
-        if matched + remaining < best_cardinality:
-            return
+    ) -> tuple[int, int, tuple[int | None, ...] | None]:
+        key = (driver_index, previous_pair)
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
         if driver_index == len(drivers):
-            if matched > best_cardinality:
-                best_cardinality = matched
-                best_count = 1
-                unique_solution = list(chosen)
-            elif matched == best_cardinality:
-                best_count += 1
-                if best_count > 1:
-                    unique_solution = None
-            return
+            result = (0, 1, ())
+            memo[key] = result
+            return result
 
-        visit(
-            driver_index + 1,
-            previous_pair,
-            [*chosen, None],
-            matched,
+        best = -1
+        count = 0
+        unique: tuple[int | None, ...] | None = None
+
+        options: list[int | None] = [None]
+        options.extend(
+            pair_index
+            for pair_index in candidates[driver_index]
+            if pair_index > previous_pair
         )
-        for pair_index in candidates[driver_index]:
-            if pair_index <= previous_pair:
-                continue
-            visit(
-                driver_index + 1,
-                pair_index,
-                [*chosen, pair_index],
-                matched + 1,
+        for pair_index in options:
+            next_previous = (
+                previous_pair
+                if pair_index is None
+                else pair_index
             )
+            suffix_best, suffix_count, suffix_solution = solve(
+                driver_index + 1,
+                next_previous,
+            )
+            matched = suffix_best + (
+                0 if pair_index is None else 1
+            )
+            if matched < best:
+                continue
 
-    visit(0, -1, [], 0)
-    return best_cardinality, best_count, unique_solution
+            option_solution = (
+                None
+                if suffix_solution is None
+                else (pair_index, *suffix_solution)
+            )
+            if matched > best:
+                best = matched
+                count = min(2, suffix_count)
+                unique = (
+                    option_solution
+                    if suffix_count == 1
+                    else None
+                )
+                continue
+
+            count = min(2, count + suffix_count)
+            unique = None
+
+        result = (best, count, unique)
+        memo[key] = result
+        return result
+
+    cardinality, count, solution = solve(0, -1)
+    return (
+        cardinality,
+        count,
+        list(solution) if solution is not None else None,
+    )
 
 
 def _execution_lifecycle_evidence(
