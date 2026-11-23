@@ -1013,7 +1013,12 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             kind="driver_execute_entry",
         )
         try:
-            cursor.execute(statement, parameters)
+            execution_context.dialect.do_execute(
+                cursor,
+                statement,
+                parameters,
+                execution_context,
+            )
         except Exception as exc:
             recorder.record_driver_execute(
                 execution_context,
@@ -1038,7 +1043,11 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             kind="driver_execute_entry",
         )
         try:
-            cursor.execute(statement)
+            execution_context.dialect.do_execute_no_params(
+                cursor,
+                statement,
+                execution_context,
+            )
         except Exception as exc:
             recorder.record_driver_execute(
                 execution_context,
@@ -1064,7 +1073,12 @@ def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTrace
             kind="driver_execute_entry",
         )
         try:
-            cursor.executemany(statement, parameters)
+            execution_context.dialect.do_executemany(
+                cursor,
+                statement,
+                parameters,
+                execution_context,
+            )
         except Exception as exc:
             recorder.record_driver_execute(
                 execution_context,
