@@ -2928,6 +2928,16 @@ def _compare(args: argparse.Namespace) -> dict[str, object]:
             "failure_rate_ceiling": failure_rate_ceiling,
             "failure_rate_max_absolute_delta": FAILURE_RATE_MATERIAL_DELTA,
         },
+        "correlation_complete": (
+            isinstance(
+                instrumented.get("server_client_correlation"),
+                dict,
+            )
+            and instrumented["server_client_correlation"].get(
+                "complete"
+            )
+            is True
+        ),
         "material_instrumentation_deterioration": material,
         "interpretation_allowed": not material,
     }
