@@ -1211,6 +1211,22 @@ def summarize(
             tids,
         )
     )
+    control_markers = (
+        _load_markers(
+            args.control_markers
+        )
+    )
+    observed_markers = (
+        _load_markers(
+            args.observed_markers
+        )
+    )
+    control = _phase_metrics(
+        control_markers
+    )
+    observed = _phase_metrics(
+        observed_markers
+    )
     # Perf uses CLOCK_MONOTONIC, matching the synthetic phase markers.
     # Restrict scheduler interpretation to the controlled phase windows so
     # the post-probe keepalive loop cannot create artificial unresolved tails.
@@ -1264,22 +1280,6 @@ def summarize(
     unresolved = sum(
         int(value["unresolved_transition_count"])
         for value in phase_scheduler.values()
-    )
-    control_markers = (
-        _load_markers(
-            args.control_markers
-        )
-    )
-    observed_markers = (
-        _load_markers(
-            args.observed_markers
-        )
-    )
-    control = _phase_metrics(
-        control_markers
-    )
-    observed = _phase_metrics(
-        observed_markers
     )
     buildids = _parse_buildids(
         args.buildids
@@ -1683,6 +1683,66 @@ def _self_test() -> None:
     assert _essential_chain([], [])["complete"] is False
     assert RAW_STACK_BYTES == 8192
     assert REFERENCE_HEAD == "1cb01861ddba17babb0b6b3b09d062bd15107f20"
+    synthetic_markers = []
+    for index, phase in enumerate(
+        (
+            "libc_block",
+            "odbc_wait_read",
+            "runnable_control",
+        ),
+        start=1,
+    ):
+        start_ns = index * 1_000_000_000
+        synthetic_markers.extend(
+            [
+                {
+                    "phase": phase,
+                    "event": "start",
+                    "monotonic_ns": start_ns,
+                    "native_tid": 11,
+                },
+                {
+                    "phase": phase,
+                    "event": "end",
+                    "monotonic_ns": start_ns + 10_000_000,
+                    "native_tid": 11,
+                    "iterations": (
+                        CPU_ITERATIONS
+                        if phase == "runnable_control"
+                        else 1
+                    ),
+                },
+            ]
+        )
+    synthetic_observed = _phase_metrics(
+        synthetic_markers
+    )
+    assert tuple(synthetic_observed) == (
+        "libc_block",
+        "odbc_wait_read",
+        "runnable_control",
+    )
+    assert all(
+        synthetic_observed[phase]["complete"]
+        for phase in (
+            "libc_block",
+            "odbc_wait_read",
+            "runnable_control",
+        )
+    )
+    for phase in (
+        "libc_block",
+        "odbc_wait_read",
+        "runnable_control",
+    ):
+        metrics = synthetic_observed.get(
+            phase,
+            {},
+        )
+        assert int(metrics.get("start_ns") or 0) > 0
+        assert int(metrics.get("end_ns") or 0) >= int(
+            metrics.get("start_ns") or 0
+        )
     sample_workflow = """
 jobs:
   issue-894-environment-inventory:
