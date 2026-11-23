@@ -141,10 +141,10 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
                 WHERE ([duration] > (1000))
             )
             ADD TARGET package0.ring_buffer(
-                SET max_memory=(4096), max_events_limit=(30000)
+                SET max_memory=(16384), max_events_limit=(30000)
             )
             WITH (
-                MAX_MEMORY=8192 KB,
+                MAX_MEMORY=16384 KB,
                 EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,
                 MAX_DISPATCH_LATENCY=1 SECONDS,
                 TRACK_CAUSALITY=OFF,
@@ -501,6 +501,7 @@ def _server_client_correlation(
     unmatched_app: list[dict[str, object]] = []
     timing_inconsistencies: list[dict[str, object]] = []
     duplicate_mappings = 0
+    row_count_mismatches: list[dict[str, object]] = []
     for app in sorted(
         app_fetches,
         key=lambda row: (
@@ -540,6 +541,20 @@ def _server_client_correlation(
                 "server_completion_utc": str(
                     event.get("timestamp_utc") or ""
                 ),
+            })
+            unmatched_app.append(app)
+            continue
+        app_rows = _safe_int(app.get("fetched_row_count"))
+        server_rows = _safe_int(event.get("row_count"))
+        if app_rows != server_rows:
+            row_count_mismatches.append({
+                "spid": spid,
+                "connection_execution_sequence": sequence,
+                "statement_fingerprint": str(
+                    app.get("statement_fingerprint") or ""
+                ),
+                "application_row_count": app_rows,
+                "server_row_count": server_rows,
             })
             unmatched_app.append(app)
             continue
@@ -678,6 +693,7 @@ def _server_client_correlation(
         and not unmatched_app
         and not sequence_alignment_failures
         and not timing_inconsistencies
+        and not row_count_mismatches
         and duplicate_mappings == 0
         and dropped == 0
         and not truncated
@@ -695,6 +711,7 @@ def _server_client_correlation(
         "ambiguous_correlations": duplicate_mappings,
         "sequence_alignment_failures": sequence_alignment_failures,
         "timing_inconsistencies": timing_inconsistencies,
+        "row_count_mismatches": row_count_mismatches,
         "ignored_non_execution_rpc_events": ignored_rpc_events,
         "dropped_event_count": dropped,
         "capture_truncated": truncated,
