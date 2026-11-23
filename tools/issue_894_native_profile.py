@@ -354,13 +354,33 @@ def _summarize(args: argparse.Namespace) -> dict[str, object]:
         return report
 
     payload = _load_speedscope(args.profile)
+    (
+        profile_start_lower,
+        profile_start_upper,
+        profile_uncertainty_ms,
+    ) = _timing_window(
+        payload,
+        command_start_ns=args.command_start_ns,
+        command_end_ns=args.command_end_ns,
+    )
+    if profile_uncertainty_ms > MAX_START_UNCERTAINTY_MS:
+        report = {
+            "schema": "issue-894-native-profile-summary-v1",
+            "label": DIAGNOSTIC_LABEL,
+            "interpretation_allowed": False,
+            "reason": "profile_timing_uncertainty_too_large",
+            "profile_start_uncertainty_ms": profile_uncertainty_ms,
+            "targets": {},
+        }
+        _write_json(args.output, report)
+        return report
     frames = [
         frame
         for frame in (payload.get("shared") or {}).get("frames", [])
         if isinstance(frame, dict)
     ]
-    lower_start = int(preflight["profile_start_lower_epoch_ns"])
-    upper_start = int(preflight["profile_start_upper_epoch_ns"])
+    lower_start = profile_start_lower
+    upper_start = profile_start_upper
     spans = _fetch_spans(args.trace)
     by_tid: dict[int, list[dict[str, object]]] = {}
     for span in spans:
@@ -467,9 +487,7 @@ def _summarize(args: argparse.Namespace) -> dict[str, object]:
         "observer": "py-spy",
         "observer_version": preflight.get("observer_version"),
         "interpretation_allowed": True,
-        "profile_start_uncertainty_ms": preflight.get(
-            "profile_start_uncertainty_ms"
-        ),
+        "profile_start_uncertainty_ms": profile_uncertainty_ms,
         "total_external_samples": total_samples,
         "timing_ambiguous_samples": timing_unresolved,
         "targets": targets,
@@ -569,6 +587,16 @@ def _parser() -> argparse.ArgumentParser:
     summarize.add_argument("--preflight", type=Path, required=True)
     summarize.add_argument("--trace", type=Path, required=True)
     summarize.add_argument("--output", type=Path, required=True)
+    summarize.add_argument(
+        "--command-start-ns",
+        type=int,
+        required=True,
+    )
+    summarize.add_argument(
+        "--command-end-ns",
+        type=int,
+        required=True,
+    )
 
     compare = sub.add_parser("compare")
     compare.add_argument("--baseline", type=Path, required=True)
