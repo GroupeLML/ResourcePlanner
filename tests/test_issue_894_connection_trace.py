@@ -1766,6 +1766,196 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("parameters", serialized)
         self.assertNotIn("batch_text", serialized)
 
+    @staticmethod
+    def _lifecycle_fixture(
+        *,
+        driver: bool = True,
+        server_start: bool = True,
+        server_completion: bool = True,
+        participating_completion: bool = True,
+        repeated_start: bool = False,
+    ):
+        markers = [
+            {
+                "kind": "spid_probe",
+                "connection_id": 100,
+                "spid": 70,
+                "connection_execution_sequence": 1,
+                "timestamp_utc": "2026-11-23T02:00:00.000+00:00",
+            },
+            {
+                "kind": "statement_start",
+                "connection_id": 100,
+                "spid": 70,
+                "connection_execution_sequence": 2,
+                "statement_fingerprint": "fp-prepared",
+                "timestamp_utc": "2026-11-23T02:00:00.100+00:00",
+            },
+        ]
+        aligned_markers = [
+            dict(row, connection_id=connection_id, spid=spid)
+            for connection_id, spid in ((200, 80), (201, 81))
+            for row in markers
+        ]
+        marker_by_connection = {
+            100: markers,
+            200: aligned_markers[:2],
+            201: aligned_markers[2:],
+        }
+        probe_event = {
+            "server_execution_sequence": 1,
+            "execution_category": "direct_batch",
+            "event": "sql_batch_completed",
+            "object_name": "",
+            "row_count": 1,
+            "event_sequence": 1,
+            "timestamp_utc": "2026-11-23T02:00:00.000Z",
+        }
+        prepared_event = {
+            "server_execution_sequence": 2,
+            "execution_category": "prepared_rpc",
+            "event": "rpc_completed",
+            "object_name": "sp_prepexec",
+            "row_count": 1,
+            "event_sequence": 11,
+            "timestamp_utc": "2026-11-23T02:00:00.150Z",
+        }
+        server_by_connection = {
+            100: [
+                dict(probe_event, session_id=70),
+                *(
+                    [dict(prepared_event, session_id=70)]
+                    if participating_completion
+                    else []
+                ),
+            ],
+            200: [
+                dict(probe_event, session_id=80),
+                dict(prepared_event, session_id=80),
+            ],
+            201: [
+                dict(probe_event, session_id=81),
+                dict(prepared_event, session_id=81),
+            ],
+        }
+        trace_rows = list(markers)
+        if driver:
+            trace_rows.extend([
+                {
+                    "kind": "driver_execute_entry",
+                    "connection_id": 100,
+                    "spid": 70,
+                    "connection_execution_sequence": 2,
+                    "statement_fingerprint": "fp-prepared",
+                    "timestamp_utc": "2026-11-23T02:00:00.110+00:00",
+                },
+                {
+                    "kind": "driver_execute_return",
+                    "connection_id": 100,
+                    "spid": 70,
+                    "connection_execution_sequence": 2,
+                    "statement_fingerprint": "fp-prepared",
+                    "timestamp_utc": "2026-11-23T02:00:00.190+00:00",
+                },
+            ])
+        events = []
+        if server_start:
+            events.append({
+                "event": "rpc_starting",
+                "session_id": 70,
+                "client_connection_id": "client-70",
+                "event_sequence": 10,
+                "object_name": "sp_prepexec",
+                "timestamp_utc": "2026-11-23T02:00:00.120Z",
+            })
+            if repeated_start:
+                events.append({
+                    "event": "rpc_starting",
+                    "session_id": 70,
+                    "client_connection_id": "client-70",
+                    "event_sequence": 10_1,
+                    "object_name": "sp_prepexec",
+                    "timestamp_utc": "2026-11-23T02:00:00.130Z",
+                })
+        if server_completion:
+            events.append({
+                "event": "rpc_completed",
+                "session_id": 70,
+                "client_connection_id": "client-70",
+                "event_sequence": 11,
+                "object_name": "sp_prepexec",
+                "row_count": 1,
+                "timestamp_utc": "2026-11-23T02:00:00.150Z",
+            })
+        failures = [{
+            "connection_id": 100,
+            "spid": 70,
+            "reason": "execution_count_mismatch",
+            "application_execution_count": 2,
+            "server_execution_count": 1,
+        }]
+        divergence = [{
+            "connection_id": 100,
+            "diagnostic_window_anchor_sequence": 2,
+        }]
+        evidence = connection_trial._execution_lifecycle_evidence(
+            trace_rows=trace_rows,
+            capture={"events": events},
+            marker_by_connection=marker_by_connection,
+            server_by_connection=server_by_connection,
+            sequence_alignment_failures=failures,
+            divergence_evidence=divergence,
+        )
+        return evidence[0]
+
+    def test_lifecycle_application_marker_without_driver_entry(self) -> None:
+        detail = self._lifecycle_fixture(driver=False)
+        self.assertEqual(
+            detail["candidate_classification"],
+            "application_marker_without_driver_execute",
+        )
+
+    def test_lifecycle_driver_entry_without_server_start(self) -> None:
+        detail = self._lifecycle_fixture(
+            server_start=False,
+            server_completion=False,
+        )
+        self.assertEqual(
+            detail["candidate_classification"],
+            "driver_execute_without_identifiable_server_start",
+        )
+
+    def test_lifecycle_server_start_without_completion(self) -> None:
+        detail = self._lifecycle_fixture(server_completion=False)
+        self.assertEqual(
+            detail["candidate_classification"],
+            "server_start_without_completion",
+        )
+
+    def test_lifecycle_start_completion_reconstruction_omission(self) -> None:
+        detail = self._lifecycle_fixture(
+            participating_completion=False,
+        )
+        self.assertEqual(
+            detail["candidate_classification"],
+            "server_start_completion_reconstruction_omission",
+        )
+
+    def test_lifecycle_normal_start_completion_pair(self) -> None:
+        detail = self._lifecycle_fixture()
+        self.assertEqual(
+            detail["candidate_classification"],
+            "server_start_completion_observed",
+        )
+
+    def test_lifecycle_repeated_signatures_remain_ambiguous(self) -> None:
+        detail = self._lifecycle_fixture(repeated_start=True)
+        self.assertEqual(
+            detail["candidate_classification"],
+            "execution_lifecycle_ambiguous",
+        )
+        self.assertTrue(detail["rpc_pairing_ambiguities"])
+
     def test_pre_lifetime_spid_execution_is_excluded(self) -> None:
         trace_rows, capture = self._correlation_fixture()
         report = _server_client_correlation(trace_rows, capture)
