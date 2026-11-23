@@ -858,6 +858,10 @@ class ConnectionTraceRecorder:
             native_thread_id=int(
                 profile.get("native_thread_id") or 0
             ),
+            profile_started_monotonic=float(
+                profile.get("started_monotonic") or ended
+            ),
+            profile_ended_monotonic=ended,
             wall_elapsed_ms=max(
                 0.0,
                 (
