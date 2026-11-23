@@ -46,6 +46,11 @@ _PREPARED_RPC_NAMES = frozenset(
 )
 
 
+def _normalized_rpc_name(value: object) -> str:
+    text = str(value or "").casefold().replace("[", "").replace("]", "")
+    return text.rsplit(".", 1)[-1]
+
+
 def _current_result_fingerprints(
     rows: list[dict[str, object]],
 ) -> tuple[str, ...]:
@@ -247,12 +252,12 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
     cleanup_error = ""
     try:
         database_id = int(connection.exec_driver_sql("SELECT DB_ID()").scalar_one())
-        connection.exec_driver_sql(
-            f"ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP"
-        )
+        time.sleep(1.2)
         row = connection.exec_driver_sql(
             f"""
-            SELECT CAST(target_data AS nvarchar(max))
+            SELECT
+                CAST(target.target_data AS nvarchar(max)),
+                session.dropped_event_count
             FROM sys.dm_xe_session_targets AS target
             JOIN sys.dm_xe_sessions AS session
               ON session.address = target.event_session_address
@@ -263,6 +268,15 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
         if row is None or not row[0]:
             raise ValueError("SQL Server Extended Events ring buffer is missing")
         parsed = _parse_xe_ring_buffer(str(row[0]), database_id=database_id)
+        session_dropped = _safe_int(row[1] if len(row) > 1 else 0)
+        parsed["ring_buffer_dropped_event_count"] = int(
+            parsed["dropped_event_count"]
+        )
+        parsed["session_dropped_event_count"] = session_dropped
+        parsed["dropped_event_count"] = max(
+            int(parsed["dropped_event_count"]),
+            session_dropped,
+        )
         capture = {
             "schema": "issue-894-sqlserver-xe-capture-v1",
             "label": DIAGNOSTIC_LABEL,
@@ -273,6 +287,15 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
         }
     finally:
         try:
+            connection.exec_driver_sql(
+                f"""
+                IF EXISTS (
+                    SELECT 1 FROM sys.dm_xe_sessions
+                    WHERE name = N'{XE_SESSION_NAME}'
+                )
+                ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP
+                """
+            )
             connection.exec_driver_sql(
                 f"""
                 IF EXISTS (
@@ -343,6 +366,10 @@ def _server_client_correlation(
         spid = _safe_int(event.get("session_id"))
         if spid in observed_spids:
             server_by_spid.setdefault(spid, []).append(event)
+    for spid, events in server_by_spid.items():
+        events.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
+        for sequence, event in enumerate(events, start=1):
+            event["server_sequence"] = sequence
 
     used_server_ids: set[int] = set()
     ambiguous = 0
@@ -404,6 +431,7 @@ def _server_client_correlation(
             "physical_reads": _safe_int(event.get("physical_reads")),
             "row_count": _safe_int(event.get("row_count")),
             "rpc_object_name": str(event.get("object_name") or ""),
+            "server_sequence": _safe_int(event.get("server_sequence")),
             "waits_ms": {
                 wait_type: _latencies(values)
                 for wait_type, values in sorted(waits.items())
@@ -460,7 +488,7 @@ def _server_client_correlation(
         }
 
     prepared_execution_observed = any(
-        str(match.get("rpc_object_name") or "").casefold()
+        _normalized_rpc_name(match.get("rpc_object_name"))
         in _PREPARED_RPC_NAMES
         for match in matches
     )
