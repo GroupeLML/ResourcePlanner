@@ -3107,26 +3107,26 @@ def _validated_trial_report(
         raise ValueError(
             f"{expected_mode} targeted result timing is missing or malformed"
         )
-    if expected_mode == "instrumented":
+    if expected_mode in {"instrumented", "profiled"}:
         if trace_summary.get("targeted_timing_complete") is not True:
-            raise ValueError("instrumented targeted result timing is incomplete")
+            raise ValueError(f"{expected_mode} targeted result timing is incomplete")
         list_shifts_fingerprint = trace_summary.get("list_shifts_fingerprint")
         if not isinstance(list_shifts_fingerprint, str) or not list_shifts_fingerprint:
-            raise ValueError("instrumented list_shifts fingerprint is missing")
+            raise ValueError(f"{expected_mode} list_shifts fingerprint is missing")
         fingerprints = trace_summary.get("target_fingerprints")
         if not isinstance(fingerprints, (list, tuple)) or len(fingerprints) != 3:
-            raise ValueError("instrumented target fingerprints are malformed")
+            raise ValueError(f"{expected_mode} target fingerprints are malformed")
         expected_fingerprints = (
             list_shifts_fingerprint,
             *UNCHANGED_RESULT_FINGERPRINTS,
         )
         if tuple(str(value) for value in fingerprints) != expected_fingerprints:
-            raise ValueError("instrumented target fingerprint recognition is invalid")
+            raise ValueError(f"{expected_mode} target fingerprint recognition is invalid")
         for fingerprint in expected_fingerprints:
             detail = targeted.get(fingerprint)
             if not isinstance(detail, dict) or detail.get("evidence_complete") is not True:
                 raise ValueError(
-                    f"instrumented timing evidence incomplete for {fingerprint}"
+                    f"{expected_mode} timing evidence incomplete for {fingerprint}"
                 )
         if require_server_correlation:
             correlation = report.get("server_client_correlation")
@@ -3137,6 +3137,13 @@ def _validated_trial_report(
                 raise ValueError(
                     "instrumented SQL Server correlation is incomplete"
                 )
+        if (
+            expected_mode == "profiled"
+            and trace_summary.get("fetch_profile_complete") is not True
+        ):
+            raise ValueError(
+                "profiled fetch profiling evidence is incomplete"
+            )
     else:
         event_counts = trace_summary.get("event_counts")
         if not isinstance(event_counts, dict):
@@ -3235,6 +3242,96 @@ def _compare(args: argparse.Namespace) -> dict[str, object]:
     return report
 
 
+def _compare_profiled(args: argparse.Namespace) -> dict[str, object]:
+    baseline = _validated_trial_report(
+        args.instrumented,
+        expected_mode="instrumented",
+        require_server_correlation=False,
+    )
+    profiled = _validated_trial_report(
+        args.profiled,
+        expected_mode="profiled",
+        require_server_correlation=False,
+    )
+
+    baseline_rate = float(
+        baseline.get("achieved_request_start_rps") or 0.0
+    )
+    profiled_rate = float(
+        profiled.get("achieved_request_start_rps") or 0.0
+    )
+    baseline_p95 = float(
+        (baseline.get("latency") or {}).get("p95_ms") or 0.0
+    )
+    profiled_p95 = float(
+        (profiled.get("latency") or {}).get("p95_ms") or 0.0
+    )
+    rate_floor = baseline_rate * 0.90
+    latency_ceiling = max(
+        baseline_p95 * 1.10,
+        baseline_p95 + 50.0,
+    )
+    baseline_completed = max(
+        1,
+        int(baseline.get("completed") or 0),
+    )
+    profiled_completed = max(
+        1,
+        int(profiled.get("completed") or 0),
+    )
+    baseline_failures = int(baseline.get("failed") or 0)
+    profiled_failures = int(profiled.get("failed") or 0)
+    baseline_failure_rate = (
+        baseline_failures / baseline_completed
+    )
+    profiled_failure_rate = (
+        profiled_failures / profiled_completed
+    )
+    failure_rate_ceiling = min(
+        1.0,
+        baseline_failure_rate + FAILURE_RATE_MATERIAL_DELTA,
+    )
+    material = (
+        profiled_rate < rate_floor
+        or profiled_p95 > latency_ceiling
+        or profiled_failure_rate > failure_rate_ceiling
+    )
+    report = {
+        "schema": "issue-894-fetch-profile-comparison-v1",
+        "label": DIAGNOSTIC_LABEL,
+        "certification_pass": False,
+        "instrumented_baseline": {
+            "achieved_request_start_rps": baseline_rate,
+            "latency_p95_ms": baseline_p95,
+            "failure_rate": baseline_failure_rate,
+        },
+        "profiled": {
+            "achieved_request_start_rps": profiled_rate,
+            "latency_p95_ms": profiled_p95,
+            "failure_rate": profiled_failure_rate,
+        },
+        "delta": {
+            "request_start_rps": profiled_rate - baseline_rate,
+            "latency_p95_ms": profiled_p95 - baseline_p95,
+            "failure_rate": (
+                profiled_failure_rate - baseline_failure_rate
+            ),
+        },
+        "materiality_thresholds": {
+            "request_start_rate_floor": rate_floor,
+            "latency_p95_ceiling_ms": latency_ceiling,
+            "failure_rate_ceiling": failure_rate_ceiling,
+            "failure_rate_max_absolute_delta": (
+                FAILURE_RATE_MATERIAL_DELTA
+            ),
+        },
+        "material_profiling_deterioration": material,
+        "interpretation_allowed": not material,
+    }
+    _write_json(args.output, report)
+    return report
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -3246,7 +3343,7 @@ def _parser() -> argparse.ArgumentParser:
     trial.add_argument("--output", type=Path, required=True)
     trial.add_argument(
         "--mode",
-        choices=("canonical", "instrumented"),
+        choices=("canonical", "instrumented", "profiled"),
         required=True,
     )
     trial.add_argument(
@@ -3292,6 +3389,19 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument("--canonical", type=Path, required=True)
     compare.add_argument("--instrumented", type=Path, required=True)
     compare.add_argument("--output", type=Path, required=True)
+
+    compare_profiled = sub.add_parser("compare-profiled")
+    compare_profiled.add_argument(
+        "--instrumented",
+        type=Path,
+        required=True,
+    )
+    compare_profiled.add_argument(
+        "--profiled",
+        type=Path,
+        required=True,
+    )
+    compare_profiled.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -3343,6 +3453,15 @@ def main() -> int:
         return (
             0
             if report.get("material_instrumentation_deterioration") is False
+            and report.get("interpretation_allowed") is True
+            else 1
+        )
+    if args.command == "compare-profiled":
+        report = _compare_profiled(args)
+        print(json.dumps(report, sort_keys=True))
+        return (
+            0
+            if report.get("material_profiling_deterioration") is False
             and report.get("interpretation_allowed") is True
             else 1
         )
