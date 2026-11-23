@@ -22,8 +22,12 @@ from tools.issue_894_connection_trial import (
     TARGET_RESULT_FINGERPRINTS,
     _compare,
     _correlate_timeouts,
+    _parse_xe_ring_buffer,
+    _server_client_correlation,
     _summarize_trace,
     _validated_trial_report,
+    _xe_cleanup,
+    _xe_stop_collect,
 )
 
 
@@ -67,6 +71,11 @@ def _trial_report(
             "targeted_result_timing": targeted,
             "targeted_timing_complete": mode == "instrumented",
         },
+        "server_client_correlation": (
+            {"complete": True}
+            if mode == "instrumented"
+            else None
+        ),
     }
     report.update(overrides)
     return report
@@ -934,6 +943,208 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                     output,
                     expected_mode="canonical",
                 )
+
+    @staticmethod
+    def _correlation_fixture(
+        *,
+        duplicate_first: bool = False,
+        ambiguous_first: bool = False,
+        dropped: int = 0,
+        truncated: bool = False,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        changed = "3d86d93500f16875"
+        fingerprints = (changed, *TARGET_RESULT_FINGERPRINTS[1:])
+        trace_rows: list[dict[str, object]] = []
+        server_events: list[dict[str, object]] = []
+        base_seconds = [1, 3, 5]
+        for index, fingerprint in enumerate(fingerprints):
+            spid = 70 + index
+            timestamp = f"2026-11-23T02:00:0{base_seconds[index]}.000+00:00"
+            trace_rows.append({
+                "kind": "dbapi_fetch",
+                "timestamp_utc": timestamp,
+                "request_id": f"request-{index}",
+                "connection_id": 100 + index,
+                "spid": spid,
+                "statement_sequence": 1,
+                "statement_fingerprint": fingerprint,
+                "target_role": (
+                    "list_shifts_initial" if index == 0 else ""
+                ),
+                "fetch_elapsed_ms": 1200.0 + index * 100.0,
+            })
+            server_events.append({
+                "event": "rpc_completed",
+                "timestamp_utc": timestamp,
+                "session_id": spid,
+                "duration_us": 1100000 + index * 100000,
+                "cpu_us": 25000 + index * 1000,
+                "logical_reads": 100 + index,
+                "physical_reads": index,
+                "row_count": 180 if index == 0 else 120,
+                "object_name": "sp_execute",
+            })
+        if duplicate_first:
+            trace_rows.append({
+                **trace_rows[0],
+                "timestamp_utc": "2026-11-23T02:00:02.000+00:00",
+                "statement_sequence": 2,
+                "request_id": "request-0b",
+            })
+            server_events.append({
+                **server_events[0],
+                "timestamp_utc": "2026-11-23T02:00:02.000+00:00",
+            })
+        if ambiguous_first:
+            server_events.append({
+                **server_events[0],
+                "timestamp_utc": "2026-11-23T02:00:01.010+00:00",
+            })
+        server_events.append({
+            "event": "wait_info",
+            "timestamp_utc": "2026-11-23T02:00:00.900+00:00",
+            "session_id": 70,
+            "wait_type": "ASYNC_NETWORK_IO",
+            "duration_ms": 900.0,
+            "opcode": "End",
+        })
+        return trace_rows, {
+            "events": server_events,
+            "dropped_event_count": dropped,
+            "truncated": truncated,
+            "cleanup_succeeded": True,
+        }
+
+    def test_server_client_correlation_matches_all_three_targets(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        report = _server_client_correlation(trace_rows, capture)
+        self.assertTrue(report["complete"])
+        self.assertTrue(report["prepared_execution_observed"])
+        self.assertEqual(report["unmatched_application_fetches"], 0)
+        self.assertEqual(report["ambiguous_correlations"], 0)
+        self.assertEqual(
+            tuple(report["target_fingerprints"]),
+            ("3d86d93500f16875", *TARGET_RESULT_FINGERPRINTS[1:]),
+        )
+        self.assertEqual(
+            report["targets"]["3d86d93500f16875"]["row_count"]["p50"],
+            180.0,
+        )
+        self.assertIn(
+            "ASYNC_NETWORK_IO",
+            report["targets"]["3d86d93500f16875"]["waits_ms"],
+        )
+
+    def test_server_client_correlation_handles_multiple_executions_per_spid(self) -> None:
+        trace_rows, capture = self._correlation_fixture(duplicate_first=True)
+        report = _server_client_correlation(trace_rows, capture)
+        self.assertTrue(report["complete"])
+        self.assertEqual(
+            report["targets"]["3d86d93500f16875"]["correlated_execution_count"],
+            2,
+        )
+
+    def test_server_client_correlation_leaves_unknown_server_event_unmatched(self) -> None:
+        trace_rows, capture = self._correlation_fixture()
+        capture["events"].append({
+            "event": "rpc_completed",
+            "timestamp_utc": "2026-11-23T02:00:07.000+00:00",
+            "session_id": 70,
+            "duration_us": 1000,
+            "cpu_us": 0,
+            "logical_reads": 0,
+            "physical_reads": 0,
+            "row_count": 0,
+            "object_name": "sp_execute",
+        })
+        report = _server_client_correlation(trace_rows, capture)
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["unmatched_server_events"], 1)
+
+    def test_server_client_correlation_fails_closed_on_ambiguity(self) -> None:
+        trace_rows, capture = self._correlation_fixture(ambiguous_first=True)
+        report = _server_client_correlation(trace_rows, capture)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["ambiguous_correlations"], 1)
+
+    def test_server_client_correlation_fails_closed_on_dropped_events(self) -> None:
+        trace_rows, capture = self._correlation_fixture(dropped=1)
+        report = _server_client_correlation(trace_rows, capture)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["dropped_event_count"], 1)
+
+    def test_server_client_correlation_fails_closed_on_truncation(self) -> None:
+        trace_rows, capture = self._correlation_fixture(truncated=True)
+        report = _server_client_correlation(trace_rows, capture)
+        self.assertFalse(report["complete"])
+        self.assertTrue(report["capture_truncated"])
+
+    def test_xe_parser_sanitizes_statement_and_parameter_text(self) -> None:
+        xml = """
+        <RingBufferTarget eventCount="1" droppedCount="0" truncated="0">
+          <event name="rpc_completed" timestamp="2026-11-23T02:00:01.000Z">
+            <data name="duration"><value>1000</value></data>
+            <data name="cpu_time"><value>10</value></data>
+            <data name="logical_reads"><value>2</value></data>
+            <data name="physical_reads"><value>0</value></data>
+            <data name="row_count"><value>1</value></data>
+            <data name="object_name"><value>sp_execute</value></data>
+            <data name="statement"><value>SELECT secret_parameter_894</value></data>
+            <action name="database_id"><value>5</value></action>
+            <action name="session_id"><value>77</value></action>
+          </event>
+        </RingBufferTarget>
+        """
+        parsed = _parse_xe_ring_buffer(xml, database_id=5)
+        serialized = json.dumps(parsed, sort_keys=True)
+        self.assertNotIn("secret_parameter_894", serialized)
+        self.assertNotIn("statement", serialized)
+        self.assertEqual(parsed["events"][0]["object_name"], "sp_execute")
+
+    def test_xe_cleanup_executes_drop_on_success(self) -> None:
+        connection = mock.MagicMock()
+        engine = mock.MagicMock()
+        with mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ):
+            _xe_cleanup("database-url")
+        sql = " ".join(
+            str(connection.exec_driver_sql.call_args.args[0]).split()
+        )
+        self.assertIn("DROP EVENT SESSION", sql)
+        connection.close.assert_called_once()
+        engine.dispose.assert_called_once()
+
+    def test_xe_stop_cleanup_runs_after_capture_failure(self) -> None:
+        scalar_result = mock.MagicMock()
+        scalar_result.scalar_one.return_value = 5
+        missing_target = mock.MagicMock()
+        missing_target.first.return_value = None
+        connection = mock.MagicMock()
+        connection.exec_driver_sql.side_effect = [
+            scalar_result,
+            mock.MagicMock(),
+            missing_target,
+            mock.MagicMock(),
+        ]
+        engine = mock.MagicMock()
+        with mock.patch.object(
+            connection_trial,
+            "_xe_connection",
+            return_value=(engine, connection),
+        ):
+            with self.assertRaises(ValueError):
+                _xe_stop_collect("database-url", Path("unused.json"))
+        drop_calls = [
+            str(call.args[0])
+            for call in connection.exec_driver_sql.call_args_list
+            if "DROP EVENT SESSION" in str(call.args[0])
+        ]
+        self.assertEqual(len(drop_calls), 1)
+        connection.close.assert_called_once()
+        engine.dispose.assert_called_once()
 
     async def test_first_stall_snapshot_is_bounded_to_one_capture(self) -> None:
         with TemporaryDirectory() as tmp:
