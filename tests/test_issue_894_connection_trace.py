@@ -22,6 +22,7 @@ from tools.issue_894_connection_trial import (
     TARGET_RESULT_FINGERPRINTS,
     _compare,
     _correlate_timeouts,
+    _fetch_time_consistent,
     _ordered_xe_file_rows,
     _parse_xe_event_xml,
     _server_client_correlation,
@@ -1225,6 +1226,99 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             "truncated": truncated,
             "cleanup_succeeded": True,
         }
+
+    def test_fetch_time_consistent_inside_interval_passes(self) -> None:
+        self.assertTrue(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:01.000+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.800+00:00"},
+            )
+        )
+
+    def test_fetch_time_consistent_uncertainty_boundary_passes(self) -> None:
+        self.assertTrue(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:01.000+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.250+00:00"},
+            )
+        )
+        self.assertTrue(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:01.000+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:01.250+00:00"},
+            )
+        )
+
+    def test_fetch_time_consistent_before_boundary_fails(self) -> None:
+        self.assertFalse(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:01.000+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.249+00:00"},
+            )
+        )
+
+    def test_fetch_time_consistent_after_boundary_fails(self) -> None:
+        self.assertFalse(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:01.000+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:01.251+00:00"},
+            )
+        )
+
+    def test_fetch_time_consistent_malformed_application_time_fails(self) -> None:
+        self.assertFalse(
+            _fetch_time_consistent(
+                {"timestamp_utc": "not-a-time"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.800+00:00"},
+            )
+        )
+
+    def test_fetch_time_consistent_malformed_server_time_fails(self) -> None:
+        self.assertFalse(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:01.000+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "not-a-time"},
+            )
+        )
+
+    def test_fetch_time_consistent_missing_timing_fails(self) -> None:
+        self.assertFalse(
+            _fetch_time_consistent(
+                {},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.800+00:00"},
+            )
+        )
+        self.assertFalse(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:01.000+00:00"},
+                {},
+                {"timestamp_utc": "2026-11-23T02:00:00.800+00:00"},
+            )
+        )
+        self.assertFalse(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:01.000+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {},
+            )
+        )
+
+    def test_fetch_time_consistent_inverted_application_window_fails(self) -> None:
+        self.assertFalse(
+            _fetch_time_consistent(
+                {"timestamp_utc": "2026-11-23T02:00:00.400+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.500+00:00"},
+                {"timestamp_utc": "2026-11-23T02:00:00.450+00:00"},
+            )
+        )
 
     def test_server_client_correlation_maps_mixed_execution_stream(self) -> None:
         trace_rows, capture = self._correlation_fixture()
