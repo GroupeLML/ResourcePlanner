@@ -109,13 +109,26 @@ def create_phase4_app():
         .casefold()
         in {"1", "true", "yes", "on"}
     )
+    fetch_profile_enabled = (
+        os.environ.get("RESOURCEPLANNER_PHASE4_FETCH_PROFILE", "")
+        .strip()
+        .casefold()
+        in {"1", "true", "yes", "on"}
+    )
     trace_path = Path(
         os.environ.get(
             "RESOURCEPLANNER_PHASE4_CONNECTION_TRACE_PATH",
             "/home/resourceplanner/.resourceplanner/logs/issue894-connection-trace.jsonl",
         )
     )
-    trace_recorder = ConnectionTraceRecorder(trace_path) if trace_enabled else None
+    trace_recorder = (
+        ConnectionTraceRecorder(
+            trace_path,
+            fetch_profile_enabled=fetch_profile_enabled,
+        )
+        if trace_enabled
+        else None
+    )
 
     def on_checkout(_dbapi_connection, connection_record, _connection_proxy):
         with _POOL_HOLDER_LOCK:
@@ -244,8 +257,13 @@ def create_phase4_app():
                 )
                 trace_recorder.record(
                     "trace_enabled",
-                    mode="instrumented",
+                    mode=(
+                        "profiled"
+                        if fetch_profile_enabled
+                        else "instrumented"
+                    ),
                     process_count=1,
+                    fetch_profile_enabled=fetch_profile_enabled,
                 )
             previous_usr2 = signal.getsignal(signal.SIGUSR2)
             faulthandler.register(
