@@ -2706,6 +2706,16 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             "projection_ms": [],
             "worker_cpu_ms": [],
             "non_nested_worker_cpu_ms": [],
+            "profile_wall_ms": [],
+            "profile_thread_cpu_ms": [],
+            "profile_samples": 0,
+            "profile_running_samples": 0,
+            "profile_waiting_samples": 0,
+            "profile_unresolved_samples": 0,
+            "profile_wait_channels": {},
+            "profile_native_symbols": {},
+            "profile_python_categories": {},
+            "profile_native_stack_available": 0,
             "call_sites": set(),
             "request_ids": set(),
             "connection_ids": set(),
@@ -2808,6 +2818,49 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             detail["fetch_cpu_ms"].append(float(row.get("fetch_cpu_ms") or 0.0))
             if bool(row.get("fetch_error")):
                 detail["fetch_errors"] = int(detail["fetch_errors"]) + 1
+        elif kind == "fetch_profile":
+            detail["profile_wall_ms"].append(
+                float(row.get("wall_elapsed_ms") or 0.0)
+            )
+            detail["profile_thread_cpu_ms"].append(
+                float(row.get("thread_cpu_ms") or 0.0)
+            )
+            detail["profile_samples"] = (
+                int(detail["profile_samples"])
+                + int(row.get("sample_count") or 0)
+            )
+            detail["profile_running_samples"] = (
+                int(detail["profile_running_samples"])
+                + int(row.get("running_samples") or 0)
+            )
+            detail["profile_waiting_samples"] = (
+                int(detail["profile_waiting_samples"])
+                + int(row.get("waiting_samples") or 0)
+            )
+            detail["profile_unresolved_samples"] = (
+                int(detail["profile_unresolved_samples"])
+                + int(row.get("unresolved_samples") or 0)
+            )
+            if bool(row.get("native_stack_available")):
+                detail["profile_native_stack_available"] = (
+                    int(detail["profile_native_stack_available"]) + 1
+                )
+            for source, target in (
+                ("wait_channels", "profile_wait_channels"),
+                ("native_stack_symbols", "profile_native_symbols"),
+                ("python_stack_categories", "profile_python_categories"),
+            ):
+                for item in row.get(source, []) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    category = str(item.get("category") or "")
+                    if not category:
+                        continue
+                    counts = detail[target]
+                    counts[category] = (
+                        int(counts.get(category) or 0)
+                        + int(item.get("samples") or 0)
+                    )
         elif kind == "result_consumer":
             detail["consumer_ms"].append(
                 float(row.get("consumer_elapsed_ms") or 0.0)
@@ -2861,6 +2914,26 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
         else:
             dominant_stage = "waiting_elsewhere"
 
+        profile_samples = int(detail["profile_samples"])
+        profile_spans = len(detail["profile_wall_ms"])
+        profile_running = int(detail["profile_running_samples"])
+        profile_waiting = int(detail["profile_waiting_samples"])
+        profile_unresolved = int(
+            detail["profile_unresolved_samples"]
+        )
+        profile_total_classified = (
+            profile_running + profile_waiting + profile_unresolved
+        )
+
+        def _top_counts(values: dict[str, object]) -> list[dict[str, object]]:
+            return [
+                {"category": key, "samples": int(value)}
+                for key, value in sorted(
+                    values.items(),
+                    key=lambda item: (-int(item[1]), item[0]),
+                )[:8]
+            ]
+
         targeted_summary[fingerprint] = {
             "observed_fetches": fetch_count,
             "observed_consumers": consumer_count,
@@ -2886,6 +2959,52 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             "non_nested_worker_cpu_ms": _latencies(
                 detail["non_nested_worker_cpu_ms"]
             ),
+            "fetch_profile": {
+                "profiled_fetch_spans": profile_spans,
+                "wall_elapsed_ms": _latencies(
+                    detail["profile_wall_ms"]
+                ),
+                "thread_cpu_ms": _latencies(
+                    detail["profile_thread_cpu_ms"]
+                ),
+                "sample_count": profile_samples,
+                "running_samples": profile_running,
+                "waiting_samples": profile_waiting,
+                "unresolved_samples": profile_unresolved,
+                "running_share": (
+                    profile_running / profile_total_classified
+                    if profile_total_classified
+                    else 0.0
+                ),
+                "waiting_share": (
+                    profile_waiting / profile_total_classified
+                    if profile_total_classified
+                    else 0.0
+                ),
+                "unresolved_share": (
+                    profile_unresolved / profile_total_classified
+                    if profile_total_classified
+                    else 1.0
+                ),
+                "dominant_wait_channels": _top_counts(
+                    detail["profile_wait_channels"]
+                ),
+                "dominant_native_stack_symbols": _top_counts(
+                    detail["profile_native_symbols"]
+                ),
+                "dominant_python_stack_categories": _top_counts(
+                    detail["profile_python_categories"]
+                ),
+                "native_stack_available_span_count": int(
+                    detail["profile_native_stack_available"]
+                ),
+                "payload_capture": False,
+                "evidence_complete": bool(
+                    profile_spans
+                    and profile_samples
+                    and profile_spans <= fetch_count
+                ),
+            },
             "derived_dominant_stage": dominant_stage,
             "evidence_complete": evidence_complete,
         }
@@ -2925,6 +3044,17 @@ def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
             len(current_fingerprints) == 3
             and all(
                 bool(targeted_summary[fingerprint]["evidence_complete"])
+                for fingerprint in current_fingerprints
+            )
+        ),
+        "fetch_profile_complete": (
+            len(current_fingerprints) == 3
+            and all(
+                bool(
+                    targeted_summary[fingerprint][
+                        "fetch_profile"
+                    ]["evidence_complete"]
+                )
                 for fingerprint in current_fingerprints
             )
         ),
