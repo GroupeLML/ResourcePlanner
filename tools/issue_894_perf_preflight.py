@@ -649,8 +649,10 @@ KEY_VALUE_WAKE_RE = re.compile(
     r"^comm=(?P<comm>.*?)\s+"
     r"pid=(?P<pid>\d+)\s+"
     r"prio=(?P<prio>-?\d+)"
-    r"(?:\s+success=(?P<success>[01]))?"
-    r"(?:\s+target_cpu=(?P<target_cpu>\d+))?\s*$"
+    r"(?:(?:\s+success=(?P<success_before>[01]))?"
+    r"(?:\s+target_cpu=(?P<target_cpu>\d+))?"
+    r"|(?:\s+target_cpu=(?P<target_cpu_before>\d+))"
+    r"(?:\s+success=(?P<success_after>[01]))?)\s*$"
 )
 COMPACT_SWITCH_RE = re.compile(
     r"^(?P<prev_comm>.+):(?P<prev_pid>\d+)\s+"
@@ -825,9 +827,19 @@ def _decode_scheduler_payload_only(
         key_value = KEY_VALUE_WAKE_RE.fullmatch(stripped)
         if key_value is not None:
             payload = {"pid": key_value.group("pid")}
-            if key_value.group("success") is not None:
-                payload["success"] = key_value.group("success")
+            success = (
+                key_value.group("success_before")
+                or key_value.group("success_after")
+            )
+            if success is not None:
+                payload["success"] = success
             return payload, "key_value", None
+        compact = COMPACT_WAKE_RE.fullmatch(stripped)
+        if compact is not None:
+            payload = {"pid": compact.group("pid")}
+            if compact.group("success") is not None:
+                payload["success"] = compact.group("success")
+            return payload, "compact", None
         if fields:
             if not fields.get("pid"):
                 return None, None, "missing_required_field"
@@ -836,13 +848,7 @@ def _decode_scheduler_payload_only(
             except ValueError:
                 return None, None, "invalid_numeric_field"
             return None, None, "malformed_key_value_payload"
-        compact = COMPACT_WAKE_RE.fullmatch(stripped)
-        if compact is None:
-            return None, None, "malformed_compact_payload"
-        payload = {"pid": compact.group("pid")}
-        if compact.group("success") is not None:
-            payload["success"] = compact.group("success")
-        return payload, "compact", None
+        return None, None, "malformed_compact_payload"
     return None, None, "unsupported_scheduler_event"
 
 
@@ -1990,32 +1996,56 @@ idle 99 1.150000: sched:sched_switch: prev_comm=idle prev_pid=99 prev_prio=120 p
 
     for event in ("sched_wakeup", "sched_wakeup_new"):
         wake_payload = "worker:11 [120] CPU:001"
+        wake_success_zero = "worker:11 [120] success=0 CPU:001"
         wake_success = "worker:11 [120] success=1 CPU:001"
+        for payload_text, expected_success in (
+            (wake_payload, None),
+            (wake_success_zero, "0"),
+            (wake_success, "1"),
+        ):
+            decoded = _decode_scheduler_payload(
+                event,
+                payload_text,
+            )
+            assert decoded[0] is not None
+            assert decoded[0]["pid"] == "11"
+            assert decoded[0].get("success") == expected_success
+            assert decoded[1] == "compact"
+            assert decoded[2] is None
+            assert decoded[3] is False
         wake_annotated = (
             wake_success
             + " 7fff0000 wake_up+0x20 (/lib/libc.so.6)"
         )
-        plain_wake, plain_format, plain_reason, plain_suffix = (
-            _decode_scheduler_payload(event, wake_payload)
-        )
-        success_wake, success_format, success_reason, success_suffix = (
-            _decode_scheduler_payload(event, wake_success)
-        )
         annotated_wake, annotated_format, annotated_reason, annotated_suffix = (
             _decode_scheduler_payload(event, wake_annotated)
         )
-        assert plain_wake is not None
-        assert success_wake is not None
         assert annotated_wake is not None
-        assert plain_wake["pid"] == "11"
-        assert success_wake["pid"] == annotated_wake["pid"] == "11"
-        assert success_wake["success"] == annotated_wake["success"] == "1"
-        assert plain_format == success_format == annotated_format == "compact"
-        assert plain_reason is success_reason is annotated_reason is None
-        assert plain_suffix is False
-        assert success_suffix is False
+        assert annotated_wake["pid"] == "11"
+        assert annotated_wake["success"] == "1"
+        assert annotated_format == "compact"
+        assert annotated_reason is None
         assert annotated_suffix is True
 
+    for event in ("sched_wakeup", "sched_wakeup_new"):
+        malformed_canonical = _decode_scheduler_payload(
+            event,
+            "comm=worker prio=120 target_cpu=001",
+        )
+        assert malformed_canonical[0] is None
+        assert malformed_canonical[2] == "missing_required_field"
+        malformed_compact = _decode_scheduler_payload(
+            event,
+            "worker [120] CPU:001",
+        )
+        assert malformed_compact[0] is None
+        assert malformed_compact[2] == "malformed_compact_payload"
+        mixed = _decode_scheduler_payload(
+            event,
+            "worker:11 [120] pid=11 success=1 CPU:001",
+        )
+        assert mixed[0] is None
+        assert mixed[2] == "malformed_key_value_payload"
     rejected_suffix = _decode_scheduler_payload(
         "sched_switch",
         compact_switch_payload + " arbitrary trailing text",
