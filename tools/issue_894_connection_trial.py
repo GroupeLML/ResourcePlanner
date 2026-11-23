@@ -40,7 +40,7 @@ TARGET_RESULT_FINGERPRINTS = (
     *UNCHANGED_RESULT_FINGERPRINTS,
 )
 XE_SESSION_NAME = "rp894_short_correlation"
-XE_CLOCK_UNCERTAINTY_MS = 750.0
+XE_CLOCK_UNCERTAINTY_MS = 250.0
 _PREPARED_RPC_NAMES = frozenset(
     {"sp_prepexec", "sp_execute", "sp_executesql", "sp_prepare"}
 )
@@ -393,15 +393,24 @@ def _server_client_correlation(
     ):
         spid = _safe_int(app.get("spid"))
         app_end = _parse_utc(app.get("timestamp_utc"))
+        fetch_elapsed_ms = float(app.get("fetch_elapsed_ms") or 0.0)
+        app_start = app_end - timedelta(milliseconds=fetch_elapsed_ms)
+        lower_bound = app_start - timedelta(
+            milliseconds=XE_CLOCK_UNCERTAINTY_MS
+        )
+        upper_bound = app_end + timedelta(
+            milliseconds=XE_CLOCK_UNCERTAINTY_MS
+        )
         candidates: list[tuple[float, int, dict[str, object]]] = []
         for event in server_by_spid.get(spid, []):
             identity = id(event)
             if identity in used_server_ids:
                 continue
             event_time = _parse_utc(event.get("timestamp_utc"))
+            if not (lower_bound <= event_time <= upper_bound):
+                continue
             delta_ms = abs((event_time - app_end).total_seconds() * 1000.0)
-            if delta_ms <= XE_CLOCK_UNCERTAINTY_MS:
-                candidates.append((delta_ms, identity, event))
+            candidates.append((delta_ms, identity, event))
         candidates.sort(key=lambda item: item[0])
         if not candidates:
             unmatched_app.append(app)
@@ -532,10 +541,10 @@ def _server_client_correlation(
         "prepared_execution_observed": prepared_execution_observed,
         "clock_uncertainty_ms": XE_CLOCK_UNCERTAINTY_MS,
         "clock_correlation_basis": (
-            "same-SPID completion-nearest matching; server timestamps and "
-            "application UTC record timestamps are compared only within a "
-            "bounded uncertainty window; monotonic clocks are not subtracted "
-            "from SQL Server timestamps"
+            "same-SPID matching within the reconstructed DBAPI fetch interval "
+            "plus a bounded UTC clock-uncertainty margin; application "
+            "monotonic durations reconstruct the local fetch window but are "
+            "never subtracted directly from SQL Server timestamps"
         ),
         "complete": complete,
     }
