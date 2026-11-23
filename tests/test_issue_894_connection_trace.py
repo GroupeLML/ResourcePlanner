@@ -1817,7 +1817,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             "event": "rpc_completed",
             "object_name": "sp_prepexec",
             "row_count": 1,
-            "event_sequence": 11,
+            "event_sequence": 12,
             "timestamp_utc": "2026-11-23T02:00:00.150Z",
         }
         server_by_connection = {
@@ -1873,7 +1873,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                     "event": "rpc_starting",
                     "session_id": 70,
                     "client_connection_id": "client-70",
-                    "event_sequence": 10_1,
+                    "event_sequence": 11,
                     "object_name": "sp_prepexec",
                     "timestamp_utc": "2026-11-23T02:00:00.130Z",
                 })
@@ -1882,7 +1882,7 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
                 "event": "rpc_completed",
                 "session_id": 70,
                 "client_connection_id": "client-70",
-                "event_sequence": 11,
+                "event_sequence": 12,
                 "object_name": "sp_prepexec",
                 "row_count": 1,
                 "timestamp_utc": "2026-11-23T02:00:00.150Z",
