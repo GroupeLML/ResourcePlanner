@@ -1114,10 +1114,16 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
             return_value=(engine, connection),
         ):
             _xe_cleanup("database-url")
-        sql = " ".join(
-            str(connection.exec_driver_sql.call_args.args[0]).split()
+        sql_calls = [
+            " ".join(str(call.args[0]).split())
+            for call in connection.exec_driver_sql.call_args_list
+        ]
+        self.assertTrue(
+            any("STATE=STOP" in sql for sql in sql_calls)
         )
-        self.assertIn("DROP EVENT SESSION", sql)
+        self.assertTrue(
+            any("DROP EVENT SESSION" in sql for sql in sql_calls)
+        )
         connection.close.assert_called_once()
         engine.dispose.assert_called_once()
 
@@ -1129,8 +1135,8 @@ class ConnectionTraceRecorderTests(unittest.IsolatedAsyncioTestCase):
         connection = mock.MagicMock()
         connection.exec_driver_sql.side_effect = [
             scalar_result,
-            mock.MagicMock(),
             missing_target,
+            mock.MagicMock(),
             mock.MagicMock(),
         ]
         engine = mock.MagicMock()
