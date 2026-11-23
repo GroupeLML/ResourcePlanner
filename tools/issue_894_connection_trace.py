@@ -999,6 +999,7 @@ class ConnectionTraceRecorder:
             fetched_row_count=int(row_count),
             fetch_error=bool(error),
             thread_id=threading.get_ident(),
+            native_thread_id=threading.get_native_id(),
         )
 
     def end_result_consumer(self, span: dict[str, object]) -> None:
