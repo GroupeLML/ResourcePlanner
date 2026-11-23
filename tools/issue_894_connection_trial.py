@@ -676,6 +676,32 @@ def _server_execution_events(
     return executions, ignored
 
 
+def _fetch_time_consistent(
+    app_fetch: dict[str, object],
+    app_statement: dict[str, object],
+    server_event: dict[str, object],
+) -> bool:
+    statement_value = app_statement.get("timestamp_utc")
+    fetch_value = app_fetch.get("timestamp_utc")
+    server_value = server_event.get("timestamp_utc")
+    if not statement_value or not fetch_value or not server_value:
+        return False
+    try:
+        statement_start = _parse_utc(statement_value)
+        fetch_completed = _parse_utc(fetch_value)
+        server_completed = _parse_utc(server_value)
+    except (TypeError, ValueError):
+        return False
+    if fetch_completed < statement_start:
+        return False
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    return (
+        statement_start - margin
+        <= server_completed
+        <= fetch_completed + margin
+    )
+
+
 def _server_client_correlation(
     trace_rows: list[dict[str, object]],
     capture: dict[str, object],
