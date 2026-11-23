@@ -138,10 +138,10 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
                 WHERE ([duration] > (1000))
             )
             ADD TARGET package0.ring_buffer(
-                SET max_memory=(8192), max_events_limit=(30000)
+                SET max_memory=(1024), max_events_limit=(10000)
             )
             WITH (
-                MAX_MEMORY=8192 KB,
+                MAX_MEMORY=4096 KB,
                 EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,
                 MAX_DISPATCH_LATENCY=1 SECONDS,
                 TRACK_CAUSALITY=OFF,
