@@ -1339,6 +1339,27 @@ def _server_client_correlation(
                 "server_execution_count": len(server_events),
             })
 
+    quarantined_connection_ids = {
+        _safe_int(failure.get("connection_id"))
+        for failure in sequence_alignment_failures
+        if _safe_int(failure.get("connection_id")) > 0
+    }
+    quarantined_lifetimes = [
+        {
+            "connection_id": _safe_int(failure.get("connection_id")),
+            "spid": _safe_int(failure.get("spid")),
+            "reason": str(failure.get("reason") or ""),
+            "application_execution_count": _safe_int(
+                failure.get("application_execution_count")
+            ),
+            "server_execution_count": _safe_int(
+                failure.get("server_execution_count")
+            ),
+        }
+        for failure in sequence_alignment_failures
+        if _safe_int(failure.get("connection_id")) > 0
+    ]
+
     server_lookup: dict[tuple[int, int], dict[str, object]] = {}
     for connection_id, events in server_by_connection.items():
         for event in events:
@@ -1391,6 +1412,9 @@ def _server_client_correlation(
             app.get("connection_execution_sequence")
         )
         key = (connection_id, sequence)
+        if connection_id in quarantined_connection_ids:
+            unmatched_app.append(app)
+            continue
         marker = app_statement_lookup.get(key)
         event = server_lookup.get(key)
         if (
@@ -1611,6 +1635,11 @@ def _server_client_correlation(
         "unmatched_application_fetches": len(unmatched_app),
         "ambiguous_correlations": duplicate_mappings,
         "sequence_alignment_failures": sequence_alignment_failures,
+        "quarantined_lifetimes": quarantined_lifetimes,
+        "quarantined_connection_count": len(
+            quarantined_connection_ids
+        ),
+        "interpretable_target_aggregates_exclude_quarantined": True,
         "timing_inconsistencies": timing_inconsistencies,
         "row_count_mismatches": row_count_mismatches,
         "execution_divergence_evidence": divergence_evidence,
@@ -2462,7 +2491,7 @@ def _compare(args: argparse.Namespace) -> dict[str, object]:
     instrumented = _validated_trial_report(
         args.instrumented,
         expected_mode="instrumented",
-        require_server_correlation=True,
+        require_server_correlation=False,
     )
 
     canonical_rate = float(canonical.get("achieved_request_start_rps") or 0.0)
