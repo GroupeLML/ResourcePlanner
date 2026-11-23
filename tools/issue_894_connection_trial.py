@@ -105,19 +105,6 @@ def _xe_event_file_base() -> str:
     return f"{XE_EVENT_FILE_DIRECTORY}/{XE_EVENT_FILE_BASENAME}.xel"
 
 
-def _xe_delete_event_files(connection: object) -> None:
-    connection.exec_driver_sql(
-        f"""
-        EXEC master.dbo.xp_delete_file
-            0,
-            N'{XE_EVENT_FILE_DIRECTORY}',
-            N'xel',
-            N'2099-12-31T23:59:59',
-            1
-        """
-    )
-
-
 def _xe_list_event_files(connection: object) -> list[str]:
     rows = connection.exec_driver_sql(
         f"""
@@ -163,11 +150,18 @@ def _xe_cleanup(database_url: str) -> None:
             DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
             """
         )
-        _xe_delete_event_files(connection)
+    finally:
+        connection.close()
+        engine.dispose()
+
+
+def _xe_verify_files_removed(database_url: str) -> None:
+    engine, connection = _xe_connection(database_url)
+    try:
         remaining = _xe_list_event_files(connection)
         if remaining:
             raise ValueError(
-                "SQL Server Extended Events files were not removed"
+                "SQL Server Extended Events diagnostic files remain"
             )
     finally:
         connection.close()
@@ -198,7 +192,6 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
             DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
             """
         )
-        _xe_delete_event_files(connection)
         if _xe_list_event_files(connection):
             raise ValueError(
                 "stale SQL Server Extended Events files remain"
@@ -268,7 +261,6 @@ def _xe_start(database_url: str, output: Path) -> dict[str, object]:
                 DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
                 """
             )
-            _xe_delete_event_files(connection)
         except Exception:
             pass
         raise
@@ -474,11 +466,6 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
                 DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
                 """
             )
-            _xe_delete_event_files(connection)
-            if _xe_list_event_files(connection):
-                raise ValueError(
-                    "SQL Server Extended Events files remain after cleanup"
-                )
         except Exception as exc:
             cleanup_error = type(exc).__name__
         connection.close()
@@ -487,9 +474,24 @@ def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
         raise ValueError(
             "SQL Server Extended Events capture was not collected"
         )
-    capture["cleanup_succeeded"] = not cleanup_error
+    capture["session_cleanup_succeeded"] = not cleanup_error
+    capture["cleanup_succeeded"] = False
     capture["cleanup_error_type"] = cleanup_error
     _write_json(output, capture)
+    return capture
+
+
+def _xe_finalize_capture_cleanup(
+    database_url: str,
+    capture_path: Path,
+) -> dict[str, object]:
+    capture = json.loads(capture_path.read_text(encoding="utf-8"))
+    if capture.get("session_cleanup_succeeded") is not True:
+        raise ValueError("XE session cleanup was not successful")
+    _xe_verify_files_removed(database_url)
+    capture["cleanup_succeeded"] = True
+    capture["event_files_removed"] = True
+    _write_json(capture_path, capture)
     return capture
 
 
@@ -1835,6 +1837,10 @@ def _parser() -> argparse.ArgumentParser:
     xe_cleanup = sub.add_parser("xe-cleanup")
     xe_cleanup.add_argument("--database-url", required=True)
 
+    xe_finalize = sub.add_parser("xe-finalize-cleanup")
+    xe_finalize.add_argument("--database-url", required=True)
+    xe_finalize.add_argument("--capture", type=Path, required=True)
+
     correlate = sub.add_parser("correlate")
     correlate.add_argument("--trial", type=Path, required=True)
     correlate.add_argument("--trace", type=Path, required=True)
@@ -1865,6 +1871,16 @@ def main() -> int:
         return 0
     if args.command == "xe-cleanup":
         _xe_cleanup(args.database_url)
+        return 0
+    if args.command == "xe-finalize-cleanup":
+        report = _xe_finalize_capture_cleanup(
+            args.database_url,
+            args.capture,
+        )
+        print(json.dumps({
+            "cleanup_succeeded": report["cleanup_succeeded"],
+            "event_files_removed": report["event_files_removed"],
+        }, sort_keys=True))
         return 0
     if args.command == "correlate":
         report = _correlate_report(
