@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-import inspect
 import os
 import subprocess
 import unittest
@@ -13,6 +12,13 @@ spec = importlib.util.spec_from_file_location("gdb_preflight", MODULE_PATH)
 assert spec and spec.loader
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+
+def _source_between(start: str, end: str) -> str:
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    start_index = source.index(start)
+    end_index = source.index(end, start_index)
+    return source[start_index:end_index]
 
 
 class ReceiverPipe:
@@ -241,8 +247,11 @@ class GdbCapabilityPreflightTests(unittest.TestCase):
             os.close(read_fd)
 
     def test_gdb_mi_uses_one_shared_receiver_without_text_readline(self):
-        source = inspect.getsource(mod.GdbMI)
-        receiver_source = inspect.getsource(mod.MIRecordReceiver)
+        source = _source_between("class GdbMI:", "\ndef _decode_mi")
+        receiver_source = _source_between(
+            "class MIRecordReceiver:",
+            "\n\nclass GdbMI:",
+        )
         self.assertNotIn("readline(", source)
         self.assertNotIn("select.select", source)
         self.assertEqual(receiver_source.count("select.select"), 1)
@@ -250,8 +259,11 @@ class GdbCapabilityPreflightTests(unittest.TestCase):
 
     def test_gdb_mi_receiver_does_not_persist_raw_transcript(self):
         source = (
-            inspect.getsource(mod.GdbMI)
-            + inspect.getsource(mod.MIRecordReceiver)
+            _source_between("class GdbMI:", "\ndef _decode_mi")
+            + _source_between(
+                "class MIRecordReceiver:",
+                "\n\nclass GdbMI:",
+            )
         ).casefold()
         self.assertNotIn("write_text", source)
         self.assertNotIn("_write_json", source)
