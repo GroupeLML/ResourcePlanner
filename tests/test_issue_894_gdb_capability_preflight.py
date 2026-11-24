@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import inspect
+import os
+import subprocess
 import unittest
 from unittest import mock
 
@@ -12,7 +15,248 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 
+class ReceiverPipe:
+    def __init__(self, payload: bytes = b"", *, read_size: int = 4096, keep_open: bool = False):
+        self.read_fd, self.write_fd = os.pipe()
+        if payload:
+            os.write(self.write_fd, payload)
+        if not keep_open:
+            os.close(self.write_fd)
+            self.write_fd = -1
+        self.receiver = mod.MIRecordReceiver(self.read_fd, read_size=read_size)
+
+    def close(self) -> None:
+        if self.write_fd >= 0:
+            os.close(self.write_fd)
+            self.write_fd = -1
+        os.close(self.read_fd)
+
+
 class GdbCapabilityPreflightTests(unittest.TestCase):
+    def test_mi_receiver_accepts_single_prompt_readiness(self):
+        pipe = ReceiverPipe(b"(gdb)\n")
+        try:
+            record = pipe.receiver.wait_for(
+                mod._is_mi_prompt,
+                deadline=mod.time.monotonic() + 0.2,
+                description="GDB readiness",
+            )
+            self.assertEqual(record, "(gdb)")
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_preserves_notification_before_coalesced_prompt(self):
+        pipe = ReceiverPipe(b'=thread-group-added,id="i1"\n(gdb)\n')
+        try:
+            pipe.receiver.wait_for(
+                mod._is_mi_prompt,
+                deadline=mod.time.monotonic() + 0.2,
+                description="GDB readiness",
+            )
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('=thread-group-added,id="i1"',),
+            )
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_accepts_prompt_trailing_whitespace(self):
+        pipe = ReceiverPipe(b"(gdb)   \t\r\n")
+        try:
+            record = pipe.receiver.wait_for(
+                mod._is_mi_prompt,
+                deadline=mod.time.monotonic() + 0.2,
+                description="GDB readiness",
+            )
+            self.assertTrue(mod._is_mi_prompt(record))
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_handles_fragmented_records_and_prompt(self):
+        pipe = ReceiverPipe(
+            b'=thread-created,id="1"\n(gdb) \n',
+            read_size=2,
+        )
+        try:
+            pipe.receiver.wait_for(
+                mod._is_mi_prompt,
+                deadline=mod.time.monotonic() + 0.2,
+                description="GDB readiness",
+            )
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('=thread-created,id="1"',),
+            )
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_buffers_multiple_records_in_order(self):
+        pipe = ReceiverPipe(b'*running,thread-id="all"\n7^done\n(gdb)\n')
+        try:
+            result = pipe.receiver.wait_for(
+                lambda line: line.startswith("7^"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="command",
+            )
+            self.assertEqual(result, "7^done")
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('*running,thread-id="all"', "(gdb)"),
+            )
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_preserves_async_while_waiting_for_result(self):
+        pipe = ReceiverPipe(b'*stopped,reason="signal-received"\n9^done\n')
+        try:
+            result = pipe.receiver.wait_for(
+                lambda line: line.startswith("9^"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="command",
+            )
+            event = pipe.receiver.wait_for(
+                lambda line: line.startswith("*stopped"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="async",
+            )
+            self.assertEqual(result, "9^done")
+            self.assertTrue(event.startswith("*stopped"))
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_preserves_result_while_waiting_for_async(self):
+        pipe = ReceiverPipe(b'11^done\n*running,thread-id="all"\n')
+        try:
+            event = pipe.receiver.wait_for(
+                lambda line: line.startswith("*running"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="async",
+            )
+            result = pipe.receiver.wait_for(
+                lambda line: line.startswith("11^"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="command",
+            )
+            self.assertTrue(event.startswith("*running"))
+            self.assertEqual(result, "11^done")
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_preserves_async_event_ordering(self):
+        pipe = ReceiverPipe(
+            b'*running,thread-id="all"\n*stopped,reason="end-stepping-range"\n'
+        )
+        try:
+            running = pipe.receiver.wait_for(
+                lambda line: line.startswith("*running"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="running",
+            )
+            stopped = pipe.receiver.wait_for(
+                lambda line: line.startswith("*stopped"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="stopped",
+            )
+            self.assertTrue(running.startswith("*running"))
+            self.assertTrue(stopped.startswith("*stopped"))
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_fails_closed_on_eof(self):
+        pipe = ReceiverPipe()
+        try:
+            with self.assertRaisesRegex(mod.MIError, "EOF"):
+                pipe.receiver.wait_for(
+                    lambda line: line.startswith("^done"),
+                    deadline=mod.time.monotonic() + 0.2,
+                    description="command",
+                )
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_fails_closed_on_partial_line_deadline(self):
+        pipe = ReceiverPipe(b"7^do", keep_open=True)
+        try:
+            with self.assertRaisesRegex(TimeoutError, "partial MI record"):
+                pipe.receiver.wait_for(
+                    lambda line: line.startswith("7^done"),
+                    deadline=mod.time.monotonic() + 0.02,
+                    description="command",
+                )
+        finally:
+            pipe.close()
+
+    def test_mi_receiver_genuinely_late_readiness_times_out(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            started = mod.time.monotonic()
+            with self.assertRaisesRegex(TimeoutError, "GDB readiness"):
+                pipe.receiver.wait_for(
+                    mod._is_mi_prompt,
+                    deadline=started + 0.02,
+                    description="GDB readiness",
+                )
+            self.assertLess(mod.time.monotonic() - started, 0.5)
+            self.assertEqual(mod.READINESS_SECONDS, 2.0)
+        finally:
+            pipe.close()
+
+    def test_gdb_constructor_failure_reaps_child(self):
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+
+        class FakePipe:
+            def fileno(self):
+                return read_fd
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = FakePipe()
+                self.stdin = mock.Mock()
+                self.terminated = False
+                self.waited = False
+                self.killed = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        proc = FakeProcess()
+        try:
+            with mock.patch.object(mod.subprocess, "Popen", return_value=proc):
+                with self.assertRaises(mod.MIError):
+                    mod.GdbMI("gdb")
+            self.assertTrue(proc.terminated)
+            self.assertTrue(proc.waited)
+        finally:
+            os.close(read_fd)
+
+    def test_gdb_mi_uses_one_shared_receiver_without_text_readline(self):
+        source = inspect.getsource(mod.GdbMI)
+        receiver_source = inspect.getsource(mod.MIRecordReceiver)
+        self.assertNotIn("readline(", source)
+        self.assertNotIn("select.select", source)
+        self.assertEqual(receiver_source.count("select.select"), 1)
+        self.assertIn("self.receiver.wait_for", source)
+
+    def test_gdb_mi_receiver_does_not_persist_raw_transcript(self):
+        source = (
+            inspect.getsource(mod.GdbMI)
+            + inspect.getsource(mod.MIRecordReceiver)
+        ).casefold()
+        self.assertNotIn("write_text", source)
+        self.assertNotIn("_write_json", source)
+        self.assertNotIn("transcript", source)
+
     def test_native_chain_requires_complete_order_without_gap(self):
         frames = [
             {"module": "libc.so.6"},

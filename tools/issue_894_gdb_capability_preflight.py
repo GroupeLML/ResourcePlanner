@@ -272,6 +272,84 @@ class MIError(RuntimeError):
     pass
 
 
+def _is_mi_prompt(record: str) -> bool:
+    return record.strip() == "(gdb)"
+
+
+class MIRecordReceiver:
+    def __init__(self, fd: int, *, read_size: int = 4096):
+        self.fd = fd
+        self.read_size = read_size
+        self._partial = bytearray()
+        self._records: list[str] = []
+        self._eof = False
+
+    @property
+    def queued_records(self) -> tuple[str, ...]:
+        return tuple(self._records)
+
+    def _decode_record(self, raw: bytes) -> str:
+        return raw.decode("utf-8", errors="replace").rstrip("\r")
+
+    def _extract_records(self) -> None:
+        while True:
+            newline = self._partial.find(b"\n")
+            if newline < 0:
+                break
+            raw = bytes(self._partial[:newline])
+            del self._partial[: newline + 1]
+            self._records.append(self._decode_record(raw))
+        if self._partial:
+            stripped = bytes(self._partial).rstrip(b" \t\r")
+            if stripped == b"(gdb)":
+                self._records.append(
+                    self._decode_record(bytes(self._partial)).rstrip()
+                )
+                self._partial.clear()
+
+    def _pop_matching(self, predicate) -> str | None:
+        for index, record in enumerate(self._records):
+            if predicate(record):
+                return self._records.pop(index)
+        return None
+
+    def _deadline_error(self, description: str) -> TimeoutError:
+        if self._partial:
+            return TimeoutError(
+                f"{description} deadline exceeded with partial MI record"
+            )
+        return TimeoutError(f"{description} deadline exceeded")
+
+    def wait_for(
+        self,
+        predicate,
+        *,
+        deadline: float,
+        description: str,
+    ) -> str:
+        while True:
+            matched = self._pop_matching(predicate)
+            if matched is not None:
+                return matched
+            if self._eof:
+                raise MIError(f"GDB MI EOF before {description}")
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise self._deadline_error(description)
+
+            ready, _, _ = select.select([self.fd], [], [], remaining)
+            if not ready:
+                raise self._deadline_error(description)
+
+            chunk = os.read(self.fd, self.read_size)
+            if not chunk:
+                self._eof = True
+                continue
+            self._partial.extend(chunk)
+            self._extract_records()
+
+
 class GdbMI:
     def __init__(self, executable: str):
         self.proc = subprocess.Popen(
@@ -291,88 +369,84 @@ class GdbMI:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
         self.token = 1
-        self._read_prompt(READINESS_SECONDS)
+        try:
+            if self.proc.stdout is None:
+                raise MIError("missing GDB stdout")
+            self.receiver = MIRecordReceiver(self.proc.stdout.fileno())
+            self._read_prompt(READINESS_SECONDS)
+        except BaseException:
+            self._reap_failed_start()
+            raise
+
+    def _reap_failed_start(self) -> None:
+        try:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=1.0)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+            try:
+                self.proc.wait(timeout=1.0)
+            except Exception:
+                pass
 
     def _read_prompt(self, timeout: float) -> list[str]:
-        if self.proc.stdout is None:
-            raise MIError("missing GDB stdout")
         deadline = time.monotonic() + timeout
-        lines: list[str] = []
-        while time.monotonic() < deadline:
-            wait = max(0.0, deadline - time.monotonic())
-            ready, _, _ = select.select([self.proc.stdout], [], [], wait)
-            if not ready:
-                break
-            line = self.proc.stdout.readline()
-            if line == "":
-                break
-            line = line.rstrip("\r\n")
-            if line == "(gdb)":
-                return lines
-            lines.append(line)
-        raise TimeoutError("GDB readiness deadline exceeded")
+        self.receiver.wait_for(
+            _is_mi_prompt,
+            deadline=deadline,
+            description="GDB readiness",
+        )
+        return []
 
-    def command(self, command: str, timeout: float = READINESS_SECONDS) -> tuple[str, list[str]]:
-        if self.proc.stdin is None or self.proc.stdout is None:
-            raise MIError("GDB pipes unavailable")
+    def command(
+        self,
+        command: str,
+        timeout: float = READINESS_SECONDS,
+    ) -> tuple[str, list[str]]:
+        if self.proc.stdin is None:
+            raise MIError("GDB stdin unavailable")
         token = self.token
         self.token += 1
-        self.proc.stdin.write(f"{token}{command}\n")
+        self.proc.stdin.write(f"{token}{command}\n".encode("utf-8"))
         self.proc.stdin.flush()
         deadline = time.monotonic() + timeout
-        async_lines: list[str] = []
-        result = ""
-        while time.monotonic() < deadline:
-            wait = max(0.0, deadline - time.monotonic())
-            ready, _, _ = select.select([self.proc.stdout], [], [], wait)
-            if not ready:
-                break
-            line = self.proc.stdout.readline()
-            if line == "":
-                break
-            line = line.rstrip("\r\n")
-            if line.startswith(f"{token}^"):
-                result = line[len(str(token)):]
-                break
-            if line == "(gdb)":
-                continue
-            async_lines.append(line)
-        if not result:
-            raise TimeoutError(f"GDB command deadline exceeded: {command.split()[0]}")
+        record = self.receiver.wait_for(
+            lambda line: line.startswith(f"{token}^"),
+            deadline=deadline,
+            description=f"GDB command {command.split()[0]}",
+        )
+        result = record[len(str(token)) :]
         if result.startswith("^error"):
             raise MIError("GDB command failed")
-        return result, async_lines
+        return result, []
 
     def wait_async(self, prefix: str, timeout: float) -> str:
-        if self.proc.stdout is None:
-            raise MIError("missing GDB stdout")
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            wait = max(0.0, deadline - time.monotonic())
-            ready, _, _ = select.select([self.proc.stdout], [], [], wait)
-            if not ready:
-                break
-            line = self.proc.stdout.readline()
-            if line == "":
-                break
-            line = line.rstrip("\r\n")
-            if line.startswith(prefix):
-                return line
-        raise TimeoutError(f"GDB async deadline exceeded: {prefix}")
+        return self.receiver.wait_for(
+            lambda line: line.startswith(prefix),
+            deadline=deadline,
+            description=f"GDB async {prefix}",
+        )
 
     def close(self) -> None:
         try:
             if self.proc.poll() is None and self.proc.stdin is not None:
-                self.proc.stdin.write("-gdb-exit\n")
+                self.proc.stdin.write(b"-gdb-exit\n")
                 self.proc.stdin.flush()
                 self.proc.wait(timeout=1.0)
         except Exception:
             self.proc.kill()
-
 
 def _decode_mi(value: str) -> str:
     return bytes(value, "utf-8").decode("unicode_escape", errors="replace")
@@ -507,12 +581,11 @@ def _snapshot(
     phase_marker = _wait_phase_start(markers, phase, READINESS_SECONDS)
     state, state_ns = _wait_blocked_state(pid, tid, READINESS_SECONDS)
     interrupt_request_ns = time.monotonic_ns()
-    _, interrupt_async = mi.command(
+    mi.command(
         f"-exec-interrupt --thread {gdb_thread_id}",
         timeout=0.1,
     )
-    if not any(line.startswith("*stopped") for line in interrupt_async):
-        mi.wait_async("*stopped", 0.1)
+    mi.wait_async("*stopped", 0.1)
     info, _ = mi.command("-thread-info", timeout=0.1)
     threads = _thread_rows(info)
     target_state = next(
@@ -528,12 +601,11 @@ def _snapshot(
         timeout=0.1,
     )
     frames = _frame_rows(frames_result)
-    _, continue_async = mi.command(
+    mi.command(
         f"-exec-continue --thread {gdb_thread_id}",
         timeout=0.1,
     )
-    if not any(line.startswith("*running") for line in continue_async):
-        mi.wait_async("*running", 0.1)
+    mi.wait_async("*running", 0.1)
     resume_ns = time.monotonic_ns()
     pause_ms = (resume_ns - interrupt_request_ns) / 1_000_000.0
     time.sleep(0.015)
@@ -615,9 +687,8 @@ def observe(args: argparse.Namespace) -> int:
         sentinel_row = next((row for row in threads if row["host_tid"] == args.sentinel_tid), None)
         if target_row is None or sentinel_row is None:
             raise ValueError("GDB thread identity does not match host TIDs")
-        _, attach_async = mi.command("-exec-continue --all", timeout=0.1)
-        if not any(line.startswith("*running") for line in attach_async):
-            mi.wait_async("*running", 0.1)
+        mi.command("-exec-continue --all", timeout=0.1)
+        mi.wait_async("*running", 0.1)
         attach_resume = time.monotonic_ns()
         attach_pause_ms = (attach_resume - attach_start) / 1_000_000.0
         report["attachment"] = {
