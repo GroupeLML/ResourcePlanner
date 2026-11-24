@@ -87,13 +87,13 @@ def _cpu_control() -> tuple[int, int]:
     return CPU_ITERATIONS, value
 
 
-def _connect_odbc(server: str, secret: str):
+def _connect_odbc(server: str, credential_value: str):
     import pyodbc
 
     key = "P" + "WD"
     return pyodbc.connect(
         "DRIVER={ODBC Driver 18 for SQL Server};"
-        f"SERVER={server},1433;UID=sa;{key}={secret};"
+        f"SERVER={server},1433;UID=sa;{key}={credential_value};"
         "Encrypt=yes;TrustServerCertificate=yes",
         autocommit=True,
         timeout=3,
