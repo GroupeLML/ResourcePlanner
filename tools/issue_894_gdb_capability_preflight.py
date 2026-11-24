@@ -482,6 +482,7 @@ class GdbMI:
         timeout: float = READINESS_SECONDS,
         *,
         after_sequence: int | None = None,
+        deadline: float | None = None,
     ) -> tuple[str, list[str]]:
         if self.proc.stdin is None:
             raise MIError("GDB stdin unavailable")
@@ -494,10 +495,14 @@ class GdbMI:
         self.token += 1
         self.proc.stdin.write(f"{token}{command}\n".encode("utf-8"))
         self.proc.stdin.flush()
-        deadline = time.monotonic() + timeout
+        command_deadline = (
+            time.monotonic() + timeout
+            if deadline is None
+            else deadline
+        )
         record = self.receiver.wait_for(
             lambda line: line.startswith(f"{token}^"),
-            deadline=deadline,
+            deadline=command_deadline,
             description=f"GDB command {command.split()[0]}",
             after_sequence=boundary,
         )
@@ -534,6 +539,49 @@ class GdbMI:
             through_sequence=through_sequence,
             after_sequence=after_sequence,
         )
+
+    def wait_running_coverage(
+        self,
+        required_thread_ids: set[str],
+        *,
+        after_sequence: int,
+        deadline: float,
+    ) -> dict[str, Any]:
+        required = set(required_thread_ids)
+        if not required:
+            raise MIError("post-attach resume has no threads requiring resume")
+        seen: set[str] = set()
+        while True:
+            record = self.receiver.wait_for(
+                lambda line: (
+                    (event := _mi_async_event(line)) is not None
+                    and event["kind"] == "running"
+                    and (
+                        event["thread_id"] == "all"
+                        or event["thread_id"] in required
+                    )
+                ),
+                deadline=deadline,
+                description="GDB post-attach running coverage",
+                after_sequence=after_sequence,
+            )
+            event = _mi_async_event(record)
+            if event is None:
+                raise MIError("invalid GDB running notification")
+            thread_id = event["thread_id"]
+            if thread_id == "all":
+                return {
+                    "mode": "aggregate",
+                    "required_thread_count": len(required),
+                    "covered_thread_count": len(required),
+                }
+            seen.add(thread_id)
+            if seen >= required:
+                return {
+                    "mode": "individual",
+                    "required_thread_count": len(required),
+                    "covered_thread_count": len(seen & required),
+                }
 
     def close(self) -> None:
         try:
@@ -816,23 +864,56 @@ def observe(args: argparse.Namespace) -> int:
         if target_row is None or sentinel_row is None:
             raise ValueError("GDB thread identity does not match host TIDs")
 
+        required_resume_thread_ids = {
+            str(row["gdb_thread_id"])
+            for row in threads
+            if row["state"] == "stopped"
+        }
+        if not required_resume_thread_ids:
+            raise RuntimeError("post-attach resume has no stopped threads to resume")
+
         resume_boundary = mi.operation_boundary()
         attachment_stops_accounted = 1 + mi.account_async_events(
             "stopped",
             through_sequence=resume_boundary,
             after_sequence=attach_boundary,
         )
+        resume_deadline = time.monotonic() + 0.1
         mi.command(
             "-exec-continue --all",
-            timeout=0.1,
             after_sequence=resume_boundary,
+            deadline=resume_deadline,
         )
-        mi.wait_async_event(
-            "running",
-            "all",
+        resume_coverage = mi.wait_running_coverage(
+            required_resume_thread_ids,
             after_sequence=resume_boundary,
-            timeout=0.1,
+            deadline=resume_deadline,
         )
+        resumed_info, _ = mi.command(
+            "-thread-info",
+            deadline=resume_deadline,
+        )
+        resumed_threads = _thread_rows(resumed_info)
+        resumed_target_state = next(
+            (
+                row["state"]
+                for row in resumed_threads
+                if row["gdb_thread_id"] == int(target_row["gdb_thread_id"])
+            ),
+            None,
+        )
+        resumed_sentinel_state = next(
+            (
+                row["state"]
+                for row in resumed_threads
+                if row["gdb_thread_id"] == int(sentinel_row["gdb_thread_id"])
+            ),
+            None,
+        )
+        if resumed_target_state != "running" or resumed_sentinel_state != "running":
+            raise RuntimeError(
+                "mapped target/sentinel threads were not running after post-attach resume"
+            )
         attach_resume = time.monotonic_ns()
         attach_pause_ms = (attach_resume - attach_start) / 1_000_000.0
         report["attachment"] = {
@@ -843,6 +924,11 @@ def observe(args: argparse.Namespace) -> int:
             "pause_within_limit": attach_pause_ms <= MAX_DEBUGGER_PAUSE_MS,
             "probe_released_after_resume": True,
             "attachment_stop_notifications_accounted": attachment_stops_accounted,
+            "resume_notification_mode": resume_coverage["mode"],
+            "resume_required_thread_count": resume_coverage["required_thread_count"],
+            "resume_covered_thread_count": resume_coverage["covered_thread_count"],
+            "target_running_after_resume": resumed_target_state == "running",
+            "sentinel_running_after_resume": resumed_sentinel_state == "running",
         }
         if attach_pause_ms > MAX_DEBUGGER_PAUSE_MS:
             raise RuntimeError("initial GDB attachment exceeded debugger pause limit")

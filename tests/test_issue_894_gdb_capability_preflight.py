@@ -574,6 +574,204 @@ class GdbCapabilityPreflightTests(unittest.TestCase):
             source.index('f"-stack-list-frames --thread {gdb_thread_id} 0 64"'),
         )
 
+    def _gdb_with_receiver(self, receiver):
+        mi = object.__new__(mod.GdbMI)
+        mi.receiver = receiver
+        return mi
+
+    def test_post_attach_resume_accepts_aggregate_all_notification(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(pipe.write_fd, b'*running,thread-id="all"\n')
+            result = self._gdb_with_receiver(pipe.receiver).wait_running_coverage(
+                {"7", "8", "9"},
+                after_sequence=boundary,
+                deadline=mod.time.monotonic() + 0.2,
+            )
+            self.assertEqual(result["mode"], "aggregate")
+            self.assertEqual(result["covered_thread_count"], 3)
+        finally:
+            pipe.close()
+
+    def test_post_attach_resume_accepts_complete_individual_coverage(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(
+                pipe.write_fd,
+                b'*running,thread-id="7"\n*running,thread-id="8"\n'
+                b'*running,thread-id="9"\n',
+            )
+            result = self._gdb_with_receiver(pipe.receiver).wait_running_coverage(
+                {"7", "8", "9"},
+                after_sequence=boundary,
+                deadline=mod.time.monotonic() + 0.2,
+            )
+            self.assertEqual(result["mode"], "individual")
+            self.assertEqual(result["covered_thread_count"], 3)
+        finally:
+            pipe.close()
+
+    def test_post_attach_resume_result_event_ordering_both_directions(self):
+        for payload in (
+            b'*running,thread-id="7"\n21^running\n*running,thread-id="8"\n',
+            b'21^running\n*running,thread-id="7"\n*running,thread-id="8"\n',
+        ):
+            pipe = ReceiverPipe(keep_open=True)
+            try:
+                boundary = pipe.receiver.operation_boundary()
+                os.write(pipe.write_fd, payload)
+                result_record = pipe.receiver.wait_for(
+                    lambda line: line.startswith("21^"),
+                    deadline=mod.time.monotonic() + 0.2,
+                    description="continue result",
+                    after_sequence=boundary,
+                )
+                coverage = self._gdb_with_receiver(
+                    pipe.receiver
+                ).wait_running_coverage(
+                    {"7", "8"},
+                    after_sequence=boundary,
+                    deadline=mod.time.monotonic() + 0.2,
+                )
+                self.assertEqual(result_record, "21^running")
+                self.assertEqual(coverage["covered_thread_count"], 2)
+            finally:
+                pipe.close()
+
+    def test_post_attach_resume_duplicates_do_not_complete_coverage(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(
+                pipe.write_fd,
+                b'*running,thread-id="7"\n*running,thread-id="7"\n',
+            )
+            with self.assertRaises(TimeoutError):
+                self._gdb_with_receiver(pipe.receiver).wait_running_coverage(
+                    {"7", "8"},
+                    after_sequence=boundary,
+                    deadline=mod.time.monotonic() + 0.02,
+                )
+        finally:
+            pipe.close()
+
+    def test_post_attach_resume_fragmented_and_coalesced_delivery(self):
+        fragmented = ReceiverPipe(read_size=2, keep_open=True)
+        try:
+            boundary = fragmented.receiver.operation_boundary()
+            os.write(
+                fragmented.write_fd,
+                b'*running,thread-id="7"\n*running,thread-id="8"\n',
+            )
+            result = self._gdb_with_receiver(
+                fragmented.receiver
+            ).wait_running_coverage(
+                {"7", "8"},
+                after_sequence=boundary,
+                deadline=mod.time.monotonic() + 0.2,
+            )
+            self.assertEqual(result["mode"], "individual")
+        finally:
+            fragmented.close()
+
+        coalesced = ReceiverPipe(keep_open=True)
+        try:
+            boundary = coalesced.receiver.operation_boundary()
+            os.write(
+                coalesced.write_fd,
+                b'=thread-selected,id="7"\n*running,thread-id="all"\n',
+            )
+            result = self._gdb_with_receiver(
+                coalesced.receiver
+            ).wait_running_coverage(
+                {"7", "8"},
+                after_sequence=boundary,
+                deadline=mod.time.monotonic() + 0.2,
+            )
+            self.assertEqual(result["mode"], "aggregate")
+            self.assertEqual(
+                coalesced.receiver.queued_records,
+                ('=thread-selected,id="7"',),
+            )
+        finally:
+            coalesced.close()
+
+    def test_post_attach_resume_rejects_stale_and_wrong_thread_notifications(self):
+        pipe = ReceiverPipe(
+            b'*running,thread-id="7"\n',
+            keep_open=True,
+        )
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(pipe.write_fd, b'*running,thread-id="99"\n')
+            with self.assertRaises(TimeoutError):
+                self._gdb_with_receiver(pipe.receiver).wait_running_coverage(
+                    {"7", "8"},
+                    after_sequence=boundary,
+                    deadline=mod.time.monotonic() + 0.02,
+                )
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('*running,thread-id="7"', '*running,thread-id="99"'),
+            )
+        finally:
+            pipe.close()
+
+    def test_post_attach_resume_incomplete_coverage_times_out(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(pipe.write_fd, b'*running,thread-id="7"\n')
+            started = mod.time.monotonic()
+            with self.assertRaises(TimeoutError):
+                self._gdb_with_receiver(pipe.receiver).wait_running_coverage(
+                    {"7", "8"},
+                    after_sequence=boundary,
+                    deadline=started + 0.02,
+                )
+            self.assertLess(mod.time.monotonic() - started, 0.5)
+        finally:
+            pipe.close()
+
+    def test_post_attach_resume_requires_nonempty_dynamic_coverage(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            with self.assertRaisesRegex(mod.MIError, "no threads requiring resume"):
+                self._gdb_with_receiver(pipe.receiver).wait_running_coverage(
+                    set(),
+                    after_sequence=0,
+                    deadline=mod.time.monotonic() + 0.2,
+                )
+        finally:
+            pipe.close()
+
+    def test_post_attach_probe_release_follows_complete_resume_and_state_check(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        coverage_position = source.index("resume_coverage = mi.wait_running_coverage")
+        state_check_position = source.index(
+            'if resumed_target_state != "running" or resumed_sentinel_state != "running"'
+        )
+        gate_position = source.index("args.gate.touch()")
+        self.assertLess(coverage_position, state_check_position)
+        self.assertLess(state_check_position, gate_position)
+        self.assertIn("deadline=resume_deadline", source)
+        self.assertGreaterEqual(source.count("deadline=resume_deadline"), 3)
+
+    def test_post_attach_resume_preserves_snapshot_selected_thread_correlation(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            'mi.wait_async_event(\n        "stopped",\n        str(gdb_thread_id)',
+            source,
+        )
+        self.assertIn(
+            'mi.wait_async_event(\n        "running",\n        str(gdb_thread_id)',
+            source,
+        )
+        self.assertEqual(mod.READINESS_SECONDS, 2.0)
+        self.assertEqual(mod.MAX_DEBUGGER_PAUSE_MS, 100.0)
+
     def test_native_chain_requires_complete_order_without_gap(self):
         frames = [
             {"module": "libc.so.6"},
