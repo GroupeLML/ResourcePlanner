@@ -1030,30 +1030,46 @@ jobs:
             exit 1
           fi
           test -s "$raw_dir/perf.data"
-          sudo "$perf_executable" script \
-            --header-only \
-            -i "$raw_dir/perf.data" \
-            > "$raw_dir/perf-header.txt"
           cat > "$raw_dir/perf-channel-meta.py" <<'PY'
           import json
+          import struct
+          import sys
 
           ALLOWED = {
               "sched:sched_switch",
               "sched:sched_wakeup",
               "sched:sched_wakeup_new",
           }
+          ENDIAN = "<" if sys.byteorder == "little" else ">"
+
+          def _u32(raw, offset):
+              return struct.unpack_from(ENDIAN + "I", raw, offset)[0]
+
+          def _u64(raw, offset):
+              return struct.unpack_from(ENDIAN + "Q", raw, offset)[0]
 
           def trace_unhandled(event_name, context, event_fields_dict, perf_sample_dict):
               ev_name = str(perf_sample_dict.get("ev_name", event_name))
               if ev_name not in ALLOWED:
                   return
               sample = perf_sample_dict.get("sample") or {}
+              attr = perf_sample_dict.get("attr") or b""
+              if isinstance(attr, str):
+                  attr = attr.encode("latin1")
+              attr = bytes(attr)
               row = {
                   "event": ev_name,
                   "id": int(sample.get("id") or 0),
                   "stream_id": int(sample.get("stream_id") or 0),
                   "time_ns": int(sample.get("time") or 0),
                   "tid": int(sample.get("tid") or 0),
+                  "attr_bytes": len(attr),
+                  "attr_size": _u32(attr, 4) if len(attr) >= 8 else 0,
+                  "event_type": _u32(attr, 0) if len(attr) >= 4 else 0,
+                  "event_config": _u64(attr, 8) if len(attr) >= 16 else 0,
+                  "sample_type": _u64(attr, 24) if len(attr) >= 32 else 0,
+                  "sample_regs_user": _u64(attr, 80) if len(attr) >= 88 else 0,
+                  "sample_stack_user": _u32(attr, 88) if len(attr) >= 92 else 0,
               }
               print(json.dumps(row, sort_keys=True))
           PY
@@ -1073,7 +1089,6 @@ jobs:
           python tools/issue_894_perf_preflight.py summarize \
             --identity "$evidence/identity.json" \
             --readiness "$evidence/perf-readiness.json" \
-            --perf-header "$raw_dir/perf-header.txt" \
             --channel-samples "$raw_dir/perf-channel-samples.jsonl" \
             --perf-script "$raw_dir/perf-script.txt" \
             --buildids "$raw_dir/buildids.txt" \

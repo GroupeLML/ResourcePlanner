@@ -128,7 +128,8 @@ def _validate_workflow_text(text: str) -> None:
         'issue_894_perf_preflight.py activate',
         '--readiness "$evidence/perf-readiness.json"',
         'perf-channel-samples.jsonl',
-        'perf-header.txt',
+        'perf_sample_dict.get("attr")',
+        '"sample_stack_user"',
     )
     if any(token not in region for token in workflow_required):
         raise ValueError("perf gate/recorder execution context is not aligned")
@@ -1071,84 +1072,189 @@ def _time_text_to_ns(value: str) -> int:
     return int(whole) * 1_000_000_000 + int(nanos)
 
 
-def _parse_perf_header_text(text: str) -> dict[str, Any]:
-    entries: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        match = HEADER_EVENT_RE.match(line.strip())
-        if match is None:
-            continue
-        name = match.group("name").strip()
-        if name not in {
-            "sched:sched_switch",
-            "sched:sched_wakeup",
-            "sched:sched_wakeup_new",
-        }:
-            continue
-        ids = [
-            int(value.strip())
-            for value in match.group("ids").split(",")
-            if value.strip().isdigit()
-        ]
-        sample_type = {
-            token.strip()
-            for token in match.group("sample_type").split("|")
-            if token.strip()
-        }
-        entries.append(
-            {"name": name, "ids": ids, "sample_type": sorted(sample_type)}
+PERF_SAMPLE_REGS_USER = 1 << 12
+PERF_SAMPLE_STACK_USER = 1 << 13
+
+
+def _sample_type_flags(sample_type: int) -> list[str]:
+    flags: list[str] = []
+    if sample_type & PERF_SAMPLE_REGS_USER:
+        flags.append("REGS_USER")
+    if sample_type & PERF_SAMPLE_STACK_USER:
+        flags.append("STACK_USER")
+    return flags
+
+
+def _classify_channel_configuration(
+    row: dict[str, Any],
+) -> str | None:
+    event = str(row.get("event", ""))
+    sample_type = int(row.get("sample_type") or 0)
+    sample_stack_user = int(row.get("sample_stack_user") or 0)
+    has_regs = bool(sample_type & PERF_SAMPLE_REGS_USER)
+    has_stack = bool(sample_type & PERF_SAMPLE_STACK_USER)
+    if event == "sched:sched_switch":
+        if has_regs and has_stack and sample_stack_user == RAW_STACK_BYTES:
+            return "switch_out_dwarf"
+        if not has_regs and not has_stack and sample_stack_user == 0:
+            return "timeline_switch"
+        return None
+    if event == "sched:sched_wakeup":
+        return (
+            "wakeup"
+            if not has_regs and not has_stack and sample_stack_user == 0
+            else None
         )
-    switches = [row for row in entries if row["name"] == "sched:sched_switch"]
-    dwarf_switch = [
-        row
-        for row in switches
-        if {"REGS_USER", "STACK_USER"}.issubset(set(row["sample_type"]))
-    ]
-    timeline_switch = [
-        row
-        for row in switches
-        if "STACK_USER" not in set(row["sample_type"])
-        and "REGS_USER" not in set(row["sample_type"])
-    ]
-    wakeup = [row for row in entries if row["name"] == "sched:sched_wakeup"]
-    wakeup_new = [
-        row for row in entries if row["name"] == "sched:sched_wakeup_new"
-    ]
-    groups = (dwarf_switch, timeline_switch, wakeup, wakeup_new)
-    complete = all(len(group) == 1 and group[0]["ids"] for group in groups)
-    channels: dict[str, dict[str, Any]] = {}
-    if complete:
-        for label, row, stack_expected in (
-            ("switch_out_dwarf", dwarf_switch[0], True),
-            ("timeline_switch", timeline_switch[0], False),
-            ("wakeup", wakeup[0], False),
-            ("wakeup_new", wakeup_new[0], False),
-        ):
-            channels[label] = {
-                "event": row["name"],
-                "ids": sorted(row["ids"]),
-                "sample_type": row["sample_type"],
-                "stack_expected": stack_expected,
-            }
+    if event == "sched:sched_wakeup_new":
+        return (
+            "wakeup_new"
+            if not has_regs and not has_stack and sample_stack_user == 0
+            else None
+        )
+    return None
+
+
+def _derive_channel_configuration(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    id_configs: dict[int, tuple[Any, ...]] = {}
     id_to_channel: dict[int, str] = {}
-    collision = False
-    for label, channel in channels.items():
-        for event_id in channel["ids"]:
-            if event_id in id_to_channel:
-                collision = True
-            id_to_channel[event_id] = label
-    complete = bool(complete and not collision)
+    channel_configs: dict[str, set[tuple[Any, ...]]] = {
+        label: set()
+        for label in (
+            "switch_out_dwarf",
+            "timeline_switch",
+            "wakeup",
+            "wakeup_new",
+        )
+    }
+    channel_ids: dict[str, set[int]] = {
+        label: set()
+        for label in channel_configs
+    }
+    channel_stream_ids: dict[str, set[int]] = {
+        label: set()
+        for label in channel_configs
+    }
+    duplicate_event_id_configuration_count = 0
+    unknown_configuration_count = 0
+    invalid_event_id_metadata_count = 0
+    attr_size_values: set[int] = set()
+
+    for row in rows:
+        event_id = int(row.get("id") or 0)
+        stream_id = int(row.get("stream_id") or 0)
+        attr_size = int(row.get("attr_size") or 0)
+        attr_bytes = int(row.get("attr_bytes") or 0)
+        sample_type = int(row.get("sample_type") or 0)
+        sample_regs_user = int(row.get("sample_regs_user") or 0)
+        sample_stack_user = int(row.get("sample_stack_user") or 0)
+        event_type = int(row.get("event_type") or 0)
+        event_config = int(row.get("event_config") or 0)
+        if attr_size:
+            attr_size_values.add(attr_size)
+        if event_id <= 0 or attr_size < 96 or attr_bytes < 96:
+            invalid_event_id_metadata_count += 1
+            continue
+        config = (
+            str(row.get("event", "")),
+            event_type,
+            event_config,
+            sample_type,
+            sample_regs_user,
+            sample_stack_user,
+        )
+        previous = id_configs.get(event_id)
+        if previous is not None and previous != config:
+            duplicate_event_id_configuration_count += 1
+            continue
+        id_configs[event_id] = config
+        label = _classify_channel_configuration(row)
+        if label is None:
+            unknown_configuration_count += 1
+            continue
+        previous_label = id_to_channel.get(event_id)
+        if previous_label is not None and previous_label != label:
+            duplicate_event_id_configuration_count += 1
+            continue
+        id_to_channel[event_id] = label
+        channel_configs[label].add(config)
+        channel_ids[label].add(event_id)
+        if stream_id > 0:
+            channel_stream_ids[label].add(stream_id)
+
+    ambiguous_configuration_count = sum(
+        max(0, len(configs) - 1)
+        for configs in channel_configs.values()
+    )
+    missing_channel_count = sum(
+        not ids
+        for ids in channel_ids.values()
+    )
+    complete = bool(
+        missing_channel_count == 0
+        and ambiguous_configuration_count == 0
+        and duplicate_event_id_configuration_count == 0
+        and unknown_configuration_count == 0
+        and invalid_event_id_metadata_count == 0
+    )
+    channels: dict[str, dict[str, Any]] = {}
+    for label, configs in channel_configs.items():
+        if len(configs) != 1:
+            continue
+        config = next(iter(configs))
+        (
+            event,
+            event_type,
+            event_config,
+            sample_type,
+            sample_regs_user,
+            sample_stack_user,
+        ) = config
+        channels[label] = {
+            "event": event,
+            "ids": sorted(channel_ids[label]),
+            "stream_ids": sorted(channel_stream_ids[label]),
+            "event_type": event_type,
+            "event_config": event_config,
+            "sample_type": sample_type,
+            "sample_type_flags": _sample_type_flags(sample_type),
+            "sample_regs_user": sample_regs_user,
+            "sample_stack_user": sample_stack_user,
+            "stack_expected": label == "switch_out_dwarf",
+        }
     return {
         "complete": complete,
+        "metadata_surface": "perf-script-python/perf_sample_dict.attr+sample",
+        "metadata_surface_version": "perf_event_attr-stable-prefix-v1",
+        "attr_size_values": sorted(attr_size_values),
         "channels": channels,
         "id_to_channel": id_to_channel,
+        "duplicate_event_id_configuration_count": (
+            duplicate_event_id_configuration_count
+        ),
+        "ambiguous_configuration_count": ambiguous_configuration_count,
+        "missing_channel_count": missing_channel_count,
+        "unknown_configuration_count": unknown_configuration_count,
+        "invalid_event_id_metadata_count": invalid_event_id_metadata_count,
         "ambiguous_or_missing_configuration": not complete,
     }
 
 
 def _load_channel_samples(
     path: Path,
-    header: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    raw_rows: list[dict[str, Any]] = []
+    for line in path.read_text(
+        encoding="utf-8",
+        errors="replace",
+    ).splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line)
+        if isinstance(raw, dict):
+            raw_rows.append(raw)
+    configuration = _derive_channel_configuration(raw_rows)
     samples: list[dict[str, Any]] = []
     counts = {
         label: 0
@@ -1161,15 +1267,7 @@ def _load_channel_samples(
         )
     }
     unknown_ids = 0
-    for line in path.read_text(
-        encoding="utf-8",
-        errors="replace",
-    ).splitlines():
-        if not line.strip():
-            continue
-        raw = json.loads(line)
-        if not isinstance(raw, dict):
-            continue
+    for raw in raw_rows:
         event_name = str(raw.get("event", ""))
         event = (
             event_name.split(":", 1)[1]
@@ -1183,7 +1281,7 @@ def _load_channel_samples(
         }:
             continue
         event_id = int(raw.get("id") or 0)
-        channel = header["id_to_channel"].get(event_id, "unknown")
+        channel = configuration["id_to_channel"].get(event_id, "unknown")
         if channel == "unknown":
             unknown_ids += 1
         counts[channel] += 1
@@ -1198,16 +1296,21 @@ def _load_channel_samples(
             }
         )
     times = [row["time_ns"] for row in samples if row["time_ns"] > 0]
-    complete = bool(header["complete"] and samples and unknown_ids == 0)
+    complete = bool(
+        configuration["complete"]
+        and samples
+        and unknown_ids == 0
+    )
     return samples, {
+        **configuration,
         "complete": complete,
-        "header_configuration_complete": header["complete"],
+        "recorded_configuration_complete": configuration["complete"],
+        "header_configuration_complete": configuration["complete"],
         "unknown_event_id_count": unknown_ids,
         "sample_count": len(samples),
         "first_sample_monotonic_ns": min(times) if times else None,
         "last_sample_monotonic_ns": max(times) if times else None,
         "per_channel_sample_count": counts,
-        "channels": header["channels"],
     }
 
 
@@ -1704,15 +1807,8 @@ def summarize(
     readiness = json.loads(
         args.readiness.read_text(encoding="utf-8")
     )
-    header = _parse_perf_header_text(
-        args.perf_header.read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
-    )
     channel_samples, channel_accounting = _load_channel_samples(
         args.channel_samples,
-        header,
     )
     events, stacks, decoder_accounting = _parse_perf_script(
         args.perf_script,
@@ -2412,16 +2508,91 @@ def _self_test() -> None:
     assert missing["timed_out"] is True
     assert missing["probe_release_monotonic_ns"] is None
 
-    header_text = """
-# event : name = sched:sched_switch, , id = { 10 }, type = 2, sample_type = IP|TID|TIME|ID|CPU|RAW|REGS_USER|STACK_USER,
-# event : name = sched:sched_switch, , id = { 20 }, type = 2, sample_type = IP|TID|TIME|ID|CPU|RAW,
-# event : name = sched:sched_wakeup, , id = { 30 }, type = 2, sample_type = IP|TID|TIME|ID|CPU|RAW,
-# event : name = sched:sched_wakeup_new, , id = { 40 }, type = 2, sample_type = IP|TID|TIME|ID|CPU|RAW,
-"""
-    header_model = _parse_perf_header_text(header_text)
+    base_metadata = [
+        {
+            "event": "sched:sched_switch",
+            "id": 10,
+            "stream_id": 10,
+            "attr_size": 144,
+            "attr_bytes": 144,
+            "event_type": 2,
+            "event_config": 100,
+            "sample_type": PERF_SAMPLE_REGS_USER | PERF_SAMPLE_STACK_USER,
+            "sample_regs_user": 0xFFFF,
+            "sample_stack_user": RAW_STACK_BYTES,
+        },
+        {
+            "event": "sched:sched_switch",
+            "id": 20,
+            "stream_id": 20,
+            "attr_size": 144,
+            "attr_bytes": 144,
+            "event_type": 2,
+            "event_config": 100,
+            "sample_type": 0,
+            "sample_regs_user": 0,
+            "sample_stack_user": 0,
+        },
+        {
+            "event": "sched:sched_wakeup",
+            "id": 30,
+            "stream_id": 30,
+            "attr_size": 144,
+            "attr_bytes": 144,
+            "event_type": 2,
+            "event_config": 101,
+            "sample_type": 0,
+            "sample_regs_user": 0,
+            "sample_stack_user": 0,
+        },
+        {
+            "event": "sched:sched_wakeup_new",
+            "id": 40,
+            "stream_id": 40,
+            "attr_size": 144,
+            "attr_bytes": 144,
+            "event_type": 2,
+            "event_config": 102,
+            "sample_type": 0,
+            "sample_regs_user": 0,
+            "sample_stack_user": 0,
+        },
+    ]
+    header_model = _derive_channel_configuration(base_metadata)
     assert header_model["complete"] is True
+    assert header_model["metadata_surface"].startswith("perf-script-python/")
     assert header_model["id_to_channel"][10] == "switch_out_dwarf"
     assert header_model["id_to_channel"][20] == "timeline_switch"
+    assert header_model["id_to_channel"][30] == "wakeup"
+    assert header_model["id_to_channel"][40] == "wakeup_new"
+    assert header_model["channels"]["switch_out_dwarf"]["sample_stack_user"] == RAW_STACK_BYTES
+    assert header_model["channels"]["timeline_switch"]["sample_stack_user"] == 0
+
+    conflicting_id = [dict(row) for row in base_metadata]
+    conflicting_id.append({**base_metadata[1], "id": 10})
+    assert _derive_channel_configuration(conflicting_id)["complete"] is False
+
+    missing_channel = [
+        row for row in base_metadata if row["event"] != "sched:sched_wakeup_new"
+    ]
+    assert _derive_channel_configuration(missing_channel)["complete"] is False
+
+    unknown_id = [dict(row) for row in base_metadata]
+    unknown_id.append({**base_metadata[2], "id": 0})
+    assert _derive_channel_configuration(unknown_id)["complete"] is False
+
+    ambiguous = [dict(row) for row in base_metadata]
+    ambiguous.append(
+        {
+            **base_metadata[1],
+            "id": 21,
+            "stream_id": 21,
+            "sample_type": 1,
+        }
+    )
+    ambiguous_model = _derive_channel_configuration(ambiguous)
+    assert ambiguous_model["complete"] is False
+    assert ambiguous_model["ambiguous_configuration_count"] == 1
 
     key_value_script = """
 worker 11 1.000000: sched:sched_switch: prev_comm=worker prev_pid=11 prev_prio=120 prev_state=S ==> next_comm=idle next_pid=99 next_prio=120
@@ -2862,11 +3033,10 @@ jobs:
         --probe-gate "$evidence/observed-gate" \
         --perf-executable "$perf_executable" \
         --launcher-pid "$perf_pid"
-      printf '{}\n' > "$raw_dir/perf-header.txt"
+      printf '%s\n' 'perf_sample_dict.get("attr") "sample_stack_user"' > "$raw_dir/perf-channel-meta.py"
       printf '{}\n' > "$raw_dir/perf-channel-samples.jsonl"
       python tools/issue_894_perf_preflight.py summarize \
         --readiness "$evidence/perf-readiness.json" \
-        --perf-header "$raw_dir/perf-header.txt" \
         --channel-samples "$raw_dir/perf-channel-samples.jsonl"
       trap cleanup EXIT
       rm -rf "$raw_dir"
@@ -3030,7 +3200,6 @@ def parser() -> argparse.ArgumentParser:
     for name in (
         "identity",
         "readiness",
-        "perf-header",
         "channel-samples",
         "perf-script",
         "buildids",
