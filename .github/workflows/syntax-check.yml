@@ -1199,6 +1199,8 @@ jobs:
           evidence="$GITHUB_WORKSPACE/issue-894-gdb-preflight-evidence"
           mkdir -p "$evidence"
           python tools/issue_894_gdb_capability_preflight.py observer-identity --package-identity "$package_identity" --gdb-version "$version" --binary-sha256 "$binary_sha256" --output "$evidence/gdb-observer-identity.json"
+          sudo chown "$(id -u):10001" "$evidence"
+          chmod 0770 "$evidence"
           printf 'executable=%s\n' "$executable" >> "$GITHUB_OUTPUT"
           printf 'package_identity=%s\n' "$package_identity" >> "$GITHUB_OUTPUT"
           printf 'binary_sha256=%s\n' "$binary_sha256" >> "$GITHUB_OUTPUT"
@@ -1309,7 +1311,8 @@ jobs:
           set -euo pipefail
           evidence="$GITHUB_WORKSPACE/issue-894-gdb-preflight-evidence"
           raw_dir="$(mktemp -d "$RUNNER_TEMP/rp894-gdb-control-XXXXXX")"
-          chmod 0700 "$raw_dir"
+          sudo chown "$(id -u):10001" "$raw_dir"
+          chmod 0770 "$raw_dir"
           container="rp894-gdb-control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           cleanup() {
             set +e
@@ -1340,7 +1343,8 @@ jobs:
           set -euo pipefail
           evidence="$GITHUB_WORKSPACE/issue-894-gdb-preflight-evidence"
           raw_dir="$(mktemp -d "$RUNNER_TEMP/rp894-gdb-observed-XXXXXX")"
-          chmod 0700 "$raw_dir"
+          sudo chown "$(id -u):10001" "$raw_dir"
+          chmod 0770 "$raw_dir"
           container="rp894-gdb-observed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           cleanup() {
             set +e
