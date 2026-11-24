@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 import re
+import select
+import tempfile
+import threading
 import time
 from typing import Any
 
@@ -22,6 +25,7 @@ SLEEP_SECONDS = 0.75
 ODBC_WAIT = "00:00:00.750"
 RAW_STACK_BYTES = 8192
 OBSERVED_SECONDS = 8
+ACTIVATION_TIMEOUT_SECONDS = 2.0
 PREFLIGHT_EXECUTION_BEGIN = "# RP894_PREFLIGHT_EXECUTION_BEGIN"
 PREFLIGHT_EXECUTION_END = "# RP894_PREFLIGHT_EXECUTION_END"
 FORBIDDEN_EXECUTABLE_TOKENS = (
@@ -89,6 +93,8 @@ def _validate_workflow_text(text: str) -> None:
         perf_argv(
             [11, 22],
             Path("/tmp/perf.data"),
+            control_fifo=Path("/tmp/perf-control.fifo"),
+            ack_fifo=Path("/tmp/perf-ack.fifo"),
         )
     ).casefold()
     generated_hits = [
@@ -107,6 +113,8 @@ def _validate_workflow_text(text: str) -> None:
         "sched:sched_wakeup",
         "sched:sched_wakeup_new",
         "--clockid mono",
+        "--delay -1",
+        "--control fifo:",
     )
     workflow_required = (
         'perf_executable="$(command -v perf)"',
@@ -116,9 +124,16 @@ def _validate_workflow_text(text: str) -> None:
         'test "${parser_args[0]}" = "$perf_executable"',
         'sudo "${perf_args[@]}"',
         'test "${perf_args[0]}" = "$perf_executable"',
+        'mkfifo "$raw_dir/perf-control.fifo" "$raw_dir/perf-ack.fifo"',
+        'issue_894_perf_preflight.py activate',
+        '--readiness "$evidence/perf-readiness.json"',
+        'perf-channel-samples.jsonl',
+        'perf-header.txt',
     )
     if any(token not in region for token in workflow_required):
         raise ValueError("perf gate/recorder execution context is not aligned")
+    if "sleep 0.5" in region:
+        raise ValueError("fixed-delay recorder readiness is forbidden")
     if any(token not in generated for token in generated_required):
         raise ValueError("generated perf command drifted from the authorized event model")
     if generated.count("call-graph=dwarf") != 1:
@@ -387,6 +402,8 @@ def perf_argv(
     tids: list[int],
     raw_path: Path,
     perf_executable: str = "perf",
+    control_fifo: Path | None = None,
+    ack_fifo: Path | None = None,
 ) -> list[str]:
     switch_out = _tid_filter(
         "prev_pid",
@@ -406,6 +423,16 @@ def perf_argv(
         "pid",
         tids,
     )
+    if (control_fifo is None) != (ack_fifo is None):
+        raise ValueError("perf control and acknowledgement FIFOs must be paired")
+    control_args: list[str] = []
+    if control_fifo is not None and ack_fifo is not None:
+        control_args = [
+            "--delay",
+            "-1",
+            "--control",
+            f"fifo:{control_fifo},{ack_fifo}",
+        ]
     return [
         perf_executable,
         "record",
@@ -414,6 +441,7 @@ def perf_argv(
         "-a",
         "--clockid",
         "mono",
+        *control_args,
         "-e",
         switch_out_event(),
         "--filter",
@@ -446,6 +474,8 @@ def command(args: argparse.Namespace) -> int:
         tids,
         args.raw,
         args.perf_executable,
+        args.control_fifo,
+        args.ack_fifo,
     )
     parser_argv = perf_parser_argv(
         args.perf_executable,
@@ -456,6 +486,12 @@ def command(args: argparse.Namespace) -> int:
         "raw_stack_bytes": RAW_STACK_BYTES,
         "observed_seconds": OBSERVED_SECONDS,
         "tids": sorted(set(tids)),
+        "recording_activation": {
+            "mode": "perf-control-ack",
+            "clock": "CLOCK_MONOTONIC",
+            "deadline_seconds": ACTIVATION_TIMEOUT_SECONDS,
+            "control_transport": "fifo",
+        },
         "argv": argv,
         "parser_check": {
             "argv": parser_argv,
@@ -518,6 +554,108 @@ def command(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
     return 0
+
+
+def _await_perf_activation(
+    control_fifo: Path,
+    ack_fifo: Path,
+    deadline_seconds: float,
+) -> dict[str, Any]:
+    request_ns = time.monotonic_ns()
+    deadline_ns = request_ns + int(deadline_seconds * 1_000_000_000)
+    ack_ns: int | None = None
+    ack_value = ""
+    control_fd = os.open(control_fifo, os.O_RDWR | os.O_NONBLOCK)
+    ack_fd = os.open(ack_fifo, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        os.write(control_fd, b"enable\n")
+        data = b""
+        while time.monotonic_ns() < deadline_ns:
+            remaining = max(
+                0.0,
+                (deadline_ns - time.monotonic_ns()) / 1_000_000_000,
+            )
+            readable, _, _ = select.select([ack_fd], [], [], remaining)
+            if not readable:
+                break
+            try:
+                chunk = os.read(ack_fd, 128)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                continue
+            data += chunk
+            if b"\n" in data:
+                break
+        if b"\n" in data:
+            ack_value = data.split(b"\n", 1)[0].decode(
+                "ascii",
+                errors="replace",
+            ).strip()
+            ack_ns = time.monotonic_ns()
+    finally:
+        os.close(control_fd)
+        os.close(ack_fd)
+    accepted = bool(
+        ack_value == "ack"
+        and ack_ns is not None
+        and ack_ns <= deadline_ns
+    )
+    return {
+        "activation_request_monotonic_ns": request_ns,
+        "activation_ack_monotonic_ns": ack_ns,
+        "ack_received": ack_value == "ack",
+        "accepted": accepted,
+        "deadline_seconds": deadline_seconds,
+        "timed_out": ack_ns is None,
+        "clock": "CLOCK_MONOTONIC",
+    }
+
+
+def _activate_perf_gate(
+    control_fifo: Path,
+    ack_fifo: Path,
+    output: Path,
+    probe_gate: Path,
+    perf_executable: str,
+    launcher_pid: int,
+    deadline_seconds: float = ACTIVATION_TIMEOUT_SECONDS,
+) -> bool:
+    evidence = _await_perf_activation(
+        control_fifo,
+        ack_fifo,
+        deadline_seconds,
+    )
+    evidence.update(
+        {
+            "schema": "issue-894-perf-activation-v1",
+            "perf_executable": perf_executable,
+            "perf_launcher_pid": launcher_pid,
+            "control_transport": "fifo",
+            "control_fifo_name": control_fifo.name,
+            "ack_fifo_name": ack_fifo.name,
+            "probe_released": False,
+            "probe_release_monotonic_ns": None,
+        }
+    )
+    if evidence["accepted"]:
+        release_ns = time.monotonic_ns()
+        evidence["probe_release_monotonic_ns"] = release_ns
+        probe_gate.touch()
+        evidence["probe_released"] = True
+    _write_json(output, evidence)
+    return bool(evidence["accepted"])
+
+
+def activate(args: argparse.Namespace) -> int:
+    return 0 if _activate_perf_gate(
+        args.control_fifo,
+        args.ack_fifo,
+        args.output,
+        args.probe_gate,
+        args.perf_executable,
+        args.launcher_pid,
+    ) else 1
 
 
 def identity(args: argparse.Namespace) -> int:
@@ -679,6 +817,11 @@ FRAME_RE = re.compile(
 )
 BUILDID_RE = re.compile(
     r"^([0-9a-fA-F]{40,64})\s+(.+)$"
+)
+HEADER_EVENT_RE = re.compile(
+    r"^# event : name = (?P<name>[^,]+),.*?"
+    r"id = \{(?P<ids>[^}]*)\}.*?"
+    r"sample_type = (?P<sample_type>[^,]+),"
 )
 
 
@@ -920,9 +1063,170 @@ def _empty_decoder_accounting() -> dict[str, Any]:
     }
 
 
+def _time_text_to_ns(value: str) -> int:
+    whole, dot, fraction = value.partition(".")
+    if not dot:
+        return int(whole) * 1_000_000_000
+    nanos = (fraction + "000000000")[:9]
+    return int(whole) * 1_000_000_000 + int(nanos)
+
+
+def _parse_perf_header_text(text: str) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        match = HEADER_EVENT_RE.match(line.strip())
+        if match is None:
+            continue
+        name = match.group("name").strip()
+        if name not in {
+            "sched:sched_switch",
+            "sched:sched_wakeup",
+            "sched:sched_wakeup_new",
+        }:
+            continue
+        ids = [
+            int(value.strip())
+            for value in match.group("ids").split(",")
+            if value.strip().isdigit()
+        ]
+        sample_type = {
+            token.strip()
+            for token in match.group("sample_type").split("|")
+            if token.strip()
+        }
+        entries.append(
+            {"name": name, "ids": ids, "sample_type": sorted(sample_type)}
+        )
+    switches = [row for row in entries if row["name"] == "sched:sched_switch"]
+    dwarf_switch = [
+        row
+        for row in switches
+        if {"REGS_USER", "STACK_USER"}.issubset(set(row["sample_type"]))
+    ]
+    timeline_switch = [
+        row
+        for row in switches
+        if "STACK_USER" not in set(row["sample_type"])
+        and "REGS_USER" not in set(row["sample_type"])
+    ]
+    wakeup = [row for row in entries if row["name"] == "sched:sched_wakeup"]
+    wakeup_new = [
+        row for row in entries if row["name"] == "sched:sched_wakeup_new"
+    ]
+    groups = (dwarf_switch, timeline_switch, wakeup, wakeup_new)
+    complete = all(len(group) == 1 and group[0]["ids"] for group in groups)
+    channels: dict[str, dict[str, Any]] = {}
+    if complete:
+        for label, row, stack_expected in (
+            ("switch_out_dwarf", dwarf_switch[0], True),
+            ("timeline_switch", timeline_switch[0], False),
+            ("wakeup", wakeup[0], False),
+            ("wakeup_new", wakeup_new[0], False),
+        ):
+            channels[label] = {
+                "event": row["name"],
+                "ids": sorted(row["ids"]),
+                "sample_type": row["sample_type"],
+                "stack_expected": stack_expected,
+            }
+    id_to_channel: dict[int, str] = {}
+    collision = False
+    for label, channel in channels.items():
+        for event_id in channel["ids"]:
+            if event_id in id_to_channel:
+                collision = True
+            id_to_channel[event_id] = label
+    complete = bool(complete and not collision)
+    return {
+        "complete": complete,
+        "channels": channels,
+        "id_to_channel": id_to_channel,
+        "ambiguous_or_missing_configuration": not complete,
+    }
+
+
+def _load_channel_samples(
+    path: Path,
+    header: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    counts = {
+        label: 0
+        for label in (
+            "switch_out_dwarf",
+            "timeline_switch",
+            "wakeup",
+            "wakeup_new",
+            "unknown",
+        )
+    }
+    unknown_ids = 0
+    for line in path.read_text(
+        encoding="utf-8",
+        errors="replace",
+    ).splitlines():
+        if not line.strip():
+            continue
+        raw = json.loads(line)
+        if not isinstance(raw, dict):
+            continue
+        event_name = str(raw.get("event", ""))
+        event = (
+            event_name.split(":", 1)[1]
+            if event_name.startswith("sched:")
+            else event_name.rsplit("__", 1)[-1]
+        )
+        if event not in {
+            "sched_switch",
+            "sched_wakeup",
+            "sched_wakeup_new",
+        }:
+            continue
+        event_id = int(raw.get("id") or 0)
+        channel = header["id_to_channel"].get(event_id, "unknown")
+        if channel == "unknown":
+            unknown_ids += 1
+        counts[channel] += 1
+        samples.append(
+            {
+                "event": event,
+                "id": event_id,
+                "stream_id": int(raw.get("stream_id") or 0),
+                "time_ns": int(raw.get("time_ns") or 0),
+                "tid": int(raw.get("tid") or 0),
+                "channel": channel,
+            }
+        )
+    times = [row["time_ns"] for row in samples if row["time_ns"] > 0]
+    complete = bool(header["complete"] and samples and unknown_ids == 0)
+    return samples, {
+        "complete": complete,
+        "header_configuration_complete": header["complete"],
+        "unknown_event_id_count": unknown_ids,
+        "sample_count": len(samples),
+        "first_sample_monotonic_ns": min(times) if times else None,
+        "last_sample_monotonic_ns": max(times) if times else None,
+        "per_channel_sample_count": counts,
+        "channels": header["channels"],
+    }
+
+
+def _channel_sample_queues(
+    samples: list[dict[str, Any]],
+) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    queues: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for sample in samples:
+        queues.setdefault(
+            (str(sample["event"]), int(sample["time_ns"])),
+            [],
+        ).append(sample)
+    return queues
+
+
 def _parse_perf_script_text(
     text: str,
     tids: set[int],
+    channel_samples: list[dict[str, Any]],
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -931,6 +1235,15 @@ def _parse_perf_script_text(
     events: list[dict[str, Any]] = []
     stacks: list[dict[str, Any]] = []
     accounting = _empty_decoder_accounting()
+    accounting["switch_stack_accounting"] = {
+        "target_switch_stack_records": 0,
+        "dwarf_expected_stack_records": 0,
+        "timeline_only_overlap_records": 0,
+        "unknown_channel_target_switch_records": 0,
+        "dwarf_expected_empty_stack_records": 0,
+    }
+    accounting["unknown_channel_scheduler_records"] = 0
+    channel_queues = _channel_sample_queues(channel_samples)
     current_stack: dict[str, Any] | None = None
     for raw in text.splitlines():
         match = EVENT_RE.search(raw)
@@ -962,11 +1275,29 @@ def _parse_perf_script_text(
                 target_associated = prev_pid in tids or next_pid in tids
             else:
                 target_associated = int(payload["pid"]) in tids
+            time_text = match.group("time")
+            time_ns = _time_text_to_ns(time_text)
+            queue = channel_queues.get((event, time_ns), [])
+            sample_meta = queue.pop(0) if queue else None
+            channel = (
+                str(sample_meta["channel"])
+                if sample_meta is not None
+                else "unknown"
+            )
+            if channel == "unknown":
+                accounting["unknown_channel_scheduler_records"] += 1
             row = {
-                "time_seconds": float(match.group("time")),
+                "time_seconds": float(time_text),
+                "time_ns": time_ns,
                 "event": event,
                 "payload": payload,
                 "target_associated": target_associated,
+                "channel": channel,
+                "sample_id": (
+                    int(sample_meta["id"])
+                    if sample_meta is not None
+                    else None
+                ),
             }
             events.append(row)
             accounting["decoded_scheduler_event_lines"] += 1
@@ -981,20 +1312,27 @@ def _parse_perf_script_text(
             if event == "sched_switch":
                 prev_pid = int(payload["prev_pid"])
                 if prev_pid in tids:
-                    current_stack = {
-                        "time_seconds": row["time_seconds"],
-                        "tid": prev_pid,
-                        "switch_key": (
-                            match.group("time"),
-                            payload["prev_pid"],
-                            payload["next_pid"],
-                            payload["prev_state"],
-                        ),
-                        "frames": [],
-                        "dwarf_expected": True,
-                        "timeline_only_overlap": False,
-                    }
-                    stacks.append(current_stack)
+                    switch_accounting = accounting["switch_stack_accounting"]
+                    switch_accounting["target_switch_stack_records"] += 1
+                    if channel == "switch_out_dwarf":
+                        switch_accounting["dwarf_expected_stack_records"] += 1
+                        current_stack = {
+                            "time_seconds": row["time_seconds"],
+                            "time_ns": row["time_ns"],
+                            "tid": prev_pid,
+                            "sample_id": row["sample_id"],
+                            "channel": channel,
+                            "frames": [],
+                            "dwarf_expected": True,
+                            "timeline_only_overlap": False,
+                        }
+                        stacks.append(current_stack)
+                    elif channel == "timeline_switch":
+                        switch_accounting["timeline_only_overlap_records"] += 1
+                    else:
+                        switch_accounting[
+                            "unknown_channel_target_switch_records"
+                        ] += 1
             continue
         if current_stack is not None:
             frame = FRAME_RE.match(raw)
@@ -1006,49 +1344,20 @@ def _parse_perf_script_text(
                         "module": frame.group(3).strip()[:400],
                     }
                 )
-    grouped_stacks: dict[
-        tuple[str, str, str, str],
-        list[dict[str, Any]],
-    ] = {}
-    for stack in stacks:
-        grouped_stacks.setdefault(
-            stack["switch_key"],
-            [],
-        ).append(stack)
-    timeline_only_overlap_count = 0
-    dwarf_expected_stack_count = 0
-    dwarf_expected_empty_stack_count = 0
-    for group in grouped_stacks.values():
-        expected = next(
-            (
-                stack
-                for stack in group
-                if stack.get("frames")
-            ),
-            group[0],
-        )
-        for stack in group:
-            stack["dwarf_expected"] = stack is expected
-            stack["timeline_only_overlap"] = stack is not expected
-            if stack is not expected:
-                timeline_only_overlap_count += 1
-        dwarf_expected_stack_count += 1
-        if not expected.get("frames"):
-            dwarf_expected_empty_stack_count += 1
-    accounting["switch_stack_accounting"] = {
-        "target_switch_stack_records": len(stacks),
-        "dwarf_expected_stack_records": dwarf_expected_stack_count,
-        "timeline_only_overlap_records": timeline_only_overlap_count,
-        "dwarf_expected_empty_stack_records": (
-            dwarf_expected_empty_stack_count
-        ),
-    }
+    accounting["switch_stack_accounting"][
+        "dwarf_expected_empty_stack_records"
+    ] = sum(1 for stack in stacks if not stack.get("frames"))
+    accounting["unmatched_channel_sample_count"] = sum(
+        len(values)
+        for values in channel_queues.values()
+    )
     return events, stacks, accounting
 
 
 def _parse_perf_script(
     path: Path,
     tids: set[int],
+    channel_samples: list[dict[str, Any]],
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
@@ -1060,6 +1369,7 @@ def _parse_perf_script(
             errors="replace",
         ),
         tids,
+        channel_samples,
     )
 
 
@@ -1391,12 +1701,25 @@ def summarize(
             "host_tids"
         ]
     )
-    events, stacks, decoder_accounting = (
-        _parse_perf_script(
-            args.perf_script,
-            tids,
+    readiness = json.loads(
+        args.readiness.read_text(encoding="utf-8")
+    )
+    header = _parse_perf_header_text(
+        args.perf_header.read_text(
+            encoding="utf-8",
+            errors="replace",
         )
     )
+    channel_samples, channel_accounting = _load_channel_samples(
+        args.channel_samples,
+        header,
+    )
+    events, stacks, decoder_accounting = _parse_perf_script(
+        args.perf_script,
+        tids,
+        channel_samples,
+    )
+    decoder_accounting["channel_accounting"] = channel_accounting
     control_markers = (
         _load_markers(
             args.control_markers
@@ -1430,7 +1753,7 @@ def summarize(
             row
             for row in events
             if start_ns
-            <= int(float(row["time_seconds"]) * 1_000_000_000)
+            <= int(row["time_ns"])
             <= end_ns
         ]
         phase_timeline, phase_unresolved = _transitions(
@@ -1567,7 +1890,7 @@ def summarize(
         for stack in stacks
         if stack.get("dwarf_expected") is True
         and odbc_start_ns
-        <= int(float(stack["time_seconds"]) * 1_000_000_000)
+        <= int(stack["time_ns"])
         <= odbc_end_ns
     ]
     chain = _essential_chain(
@@ -1684,6 +2007,28 @@ def summarize(
         for row in controlled_timeline
         if row["kind"] == "RUNNABLE_PREEMPTION"
     ]
+    activation_ack_ns = int(
+        readiness.get("activation_ack_monotonic_ns") or 0
+    )
+    probe_release_ns = int(
+        readiness.get("probe_release_monotonic_ns") or 0
+    )
+    activation_ok = bool(
+        readiness.get("accepted") is True
+        and readiness.get("probe_released") is True
+        and readiness.get("clock") == "CLOCK_MONOTONIC"
+        and activation_ack_ns > 0
+        and probe_release_ns >= activation_ack_ns
+        and (not first_phase_ns or probe_release_ns <= first_phase_ns)
+    )
+    channel_attribution_ok = bool(
+        channel_accounting["complete"]
+        and decoder_accounting["unknown_channel_scheduler_records"] == 0
+        and decoder_accounting["unmatched_channel_sample_count"] == 0
+        and decoder_accounting["switch_stack_accounting"][
+            "unknown_channel_target_switch_records"
+        ] == 0
+    )
     transitions_complete = bool(
         all(
             phase_scheduler[phase]["blocked_switch_out_count"] > 0
@@ -1698,6 +2043,8 @@ def summarize(
         [
             chain["complete"],
             transitions_complete,
+            activation_ok,
+            channel_attribution_ok,
             lost == 0,
             throttled == 0,
             truncated == 0,
@@ -1769,10 +2116,32 @@ def summarize(
             ),
         },
         "identity": identity_report,
+        "recording_activation": {
+            **readiness,
+            "validated_before_controlled_phase": activation_ok,
+            "controlled_phase_bounds_monotonic_ns": {
+                phase: {
+                    "start_ns": observed[phase].get("start_ns"),
+                    "end_ns": observed[phase].get("end_ns"),
+                }
+                for phase in (
+                    "libc_block",
+                    "odbc_wait_read",
+                    "runnable_control",
+                )
+            },
+            "first_scheduler_sample_monotonic_ns": (
+                channel_accounting["first_sample_monotonic_ns"]
+            ),
+            "last_scheduler_sample_monotonic_ns": (
+                channel_accounting["last_sample_monotonic_ns"]
+            ),
+        },
         "control_phases": control,
         "observed_phases": observed,
         "scheduler": {
             "decoder_accounting": decoder_accounting,
+            "channel_attribution_complete": channel_attribution_ok,
             "blocked_switch_out_count": (
                 len(blocked)
             ),
@@ -1848,6 +2217,8 @@ def _self_test() -> None:
     argv = perf_argv(
         [11, 22],
         Path("/tmp/perf.data"),
+        control_fifo=Path("/tmp/perf-control.fifo"),
+        ack_fifo=Path("/tmp/perf-ack.fifo"),
     )
     text = " ".join(argv)
     assert (
@@ -1883,6 +2254,8 @@ def _self_test() -> None:
         in text
     )
     assert "--clockid mono" in text
+    assert "--delay -1" in text
+    assert "--control fifo:/tmp/perf-control.fifo,/tmp/perf-ack.fifo" in text
     assert (
         _prev_state_kind("R")
         == "RUNNABLE_PREEMPTION"
@@ -1961,6 +2334,95 @@ def _self_test() -> None:
     assert _essential_chain([], [])["complete"] is False
     assert RAW_STACK_BYTES == 8192
     assert REFERENCE_HEAD == "1cb01861ddba17babb0b6b3b09d062bd15107f20"
+
+    def readiness_case(
+        delay_seconds: float | None,
+        expect_success: bool,
+    ) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            control_fifo = root / "control"
+            ack_fifo = root / "ack"
+            gate = root / "gate"
+            output = root / "readiness.json"
+            os.mkfifo(control_fifo)
+            os.mkfifo(ack_fifo)
+            worker: threading.Thread | None = None
+            if delay_seconds is not None:
+                def responder() -> None:
+                    control_fd = os.open(
+                        control_fifo,
+                        os.O_RDWR | os.O_NONBLOCK,
+                    )
+                    ack_fd = os.open(
+                        ack_fifo,
+                        os.O_RDWR | os.O_NONBLOCK,
+                    )
+                    try:
+                        deadline = time.monotonic() + 1.0
+                        data = b""
+                        while time.monotonic() < deadline:
+                            readable, _, _ = select.select(
+                                [control_fd],
+                                [],
+                                [],
+                                0.05,
+                            )
+                            if not readable:
+                                continue
+                            try:
+                                data += os.read(control_fd, 128)
+                            except BlockingIOError:
+                                continue
+                            if b"enable\n" in data:
+                                time.sleep(delay_seconds)
+                                os.write(ack_fd, b"ack\n")
+                                return
+                    finally:
+                        os.close(control_fd)
+                        os.close(ack_fd)
+                worker = threading.Thread(target=responder, daemon=True)
+                worker.start()
+            accepted = _activate_perf_gate(
+                control_fifo,
+                ack_fifo,
+                output,
+                gate,
+                "/usr/bin/perf",
+                1234,
+                deadline_seconds=0.15,
+            )
+            if worker is not None:
+                worker.join(timeout=1.0)
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+            assert accepted is expect_success
+            assert gate.exists() is expect_success
+            assert evidence["probe_released"] is expect_success
+            return evidence
+
+    immediate = readiness_case(0.0, True)
+    delayed = readiness_case(0.03, True)
+    missing = readiness_case(None, False)
+    assert immediate["activation_ack_monotonic_ns"] <= immediate[
+        "probe_release_monotonic_ns"
+    ]
+    assert delayed["activation_ack_monotonic_ns"] <= delayed[
+        "probe_release_monotonic_ns"
+    ]
+    assert missing["timed_out"] is True
+    assert missing["probe_release_monotonic_ns"] is None
+
+    header_text = """
+# event : name = sched:sched_switch, , id = { 10 }, type = 2, sample_type = IP|TID|TIME|ID|CPU|RAW|REGS_USER|STACK_USER,
+# event : name = sched:sched_switch, , id = { 20 }, type = 2, sample_type = IP|TID|TIME|ID|CPU|RAW,
+# event : name = sched:sched_wakeup, , id = { 30 }, type = 2, sample_type = IP|TID|TIME|ID|CPU|RAW,
+# event : name = sched:sched_wakeup_new, , id = { 40 }, type = 2, sample_type = IP|TID|TIME|ID|CPU|RAW,
+"""
+    header_model = _parse_perf_header_text(header_text)
+    assert header_model["complete"] is True
+    assert header_model["id_to_channel"][10] == "switch_out_dwarf"
+    assert header_model["id_to_channel"][20] == "timeline_switch"
+
     key_value_script = """
 worker 11 1.000000: sched:sched_switch: prev_comm=worker prev_pid=11 prev_prio=120 prev_state=S ==> next_comm=idle next_pid=99 next_prio=120
   7fff0000 blocked_call (/lib/libc.so.6)
@@ -2074,13 +2536,41 @@ worker 11 1.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
 worker 11 1.100000: sched:sched_wakeup: worker:11 [120] CPU:001
 idle 99 1.150000: sched:sched_switch: idle:99 [120] R ==> worker:11 [120]
 """
+    base_channel_samples = [
+        {
+            "event": "sched_switch",
+            "id": 10,
+            "stream_id": 10,
+            "time_ns": 1_000_000_000,
+            "tid": 11,
+            "channel": "switch_out_dwarf",
+        },
+        {
+            "event": "sched_wakeup",
+            "id": 30,
+            "stream_id": 30,
+            "time_ns": 1_100_000_000,
+            "tid": 11,
+            "channel": "wakeup",
+        },
+        {
+            "event": "sched_switch",
+            "id": 20,
+            "stream_id": 20,
+            "time_ns": 1_150_000_000,
+            "tid": 99,
+            "channel": "timeline_switch",
+        },
+    ]
     key_events, key_stacks, key_accounting = _parse_perf_script_text(
         key_value_script,
         {11},
+        base_channel_samples,
     )
     compact_events, compact_stacks, compact_accounting = _parse_perf_script_text(
         compact_script,
         {11},
+        base_channel_samples,
     )
     assert [row["kind"] for row in _transitions(key_events, {11})[0]] == [
         "BLOCKED_SWITCH_OUT",
@@ -2132,6 +2622,7 @@ idle 99 1.150000: sched:sched_switch: idle:99 [120] R ==> worker:11 [120] 7fff00
         _parse_perf_script_text(
             annotated_compact_script,
             {11},
+            base_channel_samples,
         )
     )
     assert [
@@ -2152,36 +2643,97 @@ idle 99 1.150000: sched:sched_switch: idle:99 [120] R ==> worker:11 [120] 7fff00
     assert len(annotated_stacks[0]["frames"]) == 1
 
     overlap_script = """
-worker 11 2.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
-worker 11 2.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
+worker 11 2.000000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
+worker 11 2.000000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
   7fff0010 blocked_call (/lib/libc.so.6)
 """
+    overlap_samples = [
+        {
+            "event": "sched_switch",
+            "id": 20,
+            "stream_id": 20,
+            "time_ns": 2_000_000_000,
+            "tid": 11,
+            "channel": "timeline_switch",
+        },
+        {
+            "event": "sched_switch",
+            "id": 10,
+            "stream_id": 10,
+            "time_ns": 2_000_000_000,
+            "tid": 11,
+            "channel": "switch_out_dwarf",
+        },
+    ]
     _, overlap_stacks, overlap_accounting = _parse_perf_script_text(
         overlap_script,
         {11},
+        overlap_samples,
     )
-    assert len(overlap_stacks) == 2
-    assert sum(
-        stack["dwarf_expected"] is True
-        for stack in overlap_stacks
-    ) == 1
-    assert sum(
-        stack["timeline_only_overlap"] is True
-        for stack in overlap_stacks
-    ) == 1
+    assert len(overlap_stacks) == 1
+    assert overlap_stacks[0]["dwarf_expected"] is True
     assert overlap_accounting["switch_stack_accounting"] == {
         "target_switch_stack_records": 2,
         "dwarf_expected_stack_records": 1,
         "timeline_only_overlap_records": 1,
+        "unknown_channel_target_switch_records": 0,
         "dwarf_expected_empty_stack_records": 0,
     }
+
+    separated_script = """
+worker 11 2.000000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
+worker 11 2.000000100: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
+  7fff0010 blocked_call (/lib/libc.so.6)
+"""
+    separated_samples = [
+        {
+            "event": "sched_switch",
+            "id": 20,
+            "stream_id": 20,
+            "time_ns": 2_000_000_000,
+            "tid": 11,
+            "channel": "timeline_switch",
+        },
+        {
+            "event": "sched_switch",
+            "id": 10,
+            "stream_id": 10,
+            "time_ns": 2_000_000_100,
+            "tid": 11,
+            "channel": "switch_out_dwarf",
+        },
+    ]
+    _, separated_stacks, separated_accounting = _parse_perf_script_text(
+        separated_script,
+        {11},
+        separated_samples,
+    )
+    assert len(separated_stacks) == 1
+    assert separated_stacks[0]["time_ns"] == 2_000_000_100
+    assert separated_accounting["switch_stack_accounting"][
+        "timeline_only_overlap_records"
+    ] == 1
+    assert separated_accounting["switch_stack_accounting"][
+        "dwarf_expected_stack_records"
+    ] == 1
 
     empty_expected_script = """
 worker 11 3.000000: sched:sched_switch: worker:11 [120] S ==> idle:99 [120]
 """
+    empty_samples = [
+        {
+            "event": "sched_switch",
+            "id": 10,
+            "stream_id": 10,
+            "time_ns": 3_000_000_000,
+            "tid": 11,
+            "channel": "switch_out_dwarf",
+        },
+    ]
     _, empty_stacks, empty_accounting = _parse_perf_script_text(
         empty_expected_script,
         {11},
+        empty_samples,
     )
     assert len(empty_stacks) == 1
     assert empty_stacks[0]["dwarf_expected"] is True
@@ -2197,6 +2749,7 @@ worker 11 1.100000: sched:sched_wakeup: worker [120] CPU:001
         _parse_perf_script_text(
             malformed_script,
             {11},
+            [],
         )
     )
     assert malformed_events == []
@@ -2283,10 +2836,14 @@ jobs:
     run: |
       docker load
       raw_dir="$RUNNER_TEMP/raw"
+      evidence="$GITHUB_WORKSPACE/issue-894-perf-preflight-evidence"
       perf_executable="$(command -v perf)"
+      mkfifo "$raw_dir/perf-control.fifo" "$raw_dir/perf-ack.fifo"
       python tools/issue_894_perf_preflight.py command \
         --tids 11,22 \
         --perf-executable "$perf_executable" \
+        --control-fifo "$raw_dir/perf-control.fifo" \
+        --ack-fifo "$raw_dir/perf-ack.fifo" \
         --raw "$raw_dir/perf.data" \
         --output out.json \
         --argv-lines "$raw_dir/perf-argv.txt" \
@@ -2296,7 +2853,21 @@ jobs:
       sudo "${parser_args[@]}"
       mapfile -t perf_args < "$raw_dir/perf-argv.txt"
       test "${perf_args[0]}" = "$perf_executable"
-      sudo "${perf_args[@]}"
+      sudo "${perf_args[@]}" &
+      perf_pid=$!
+      python tools/issue_894_perf_preflight.py activate \
+        --control-fifo "$raw_dir/perf-control.fifo" \
+        --ack-fifo "$raw_dir/perf-ack.fifo" \
+        --output "$evidence/perf-readiness.json" \
+        --probe-gate "$evidence/observed-gate" \
+        --perf-executable "$perf_executable" \
+        --launcher-pid "$perf_pid"
+      printf '{}\n' > "$raw_dir/perf-header.txt"
+      printf '{}\n' > "$raw_dir/perf-channel-samples.jsonl"
+      python tools/issue_894_perf_preflight.py summarize \
+        --readiness "$evidence/perf-readiness.json" \
+        --perf-header "$raw_dir/perf-header.txt" \
+        --channel-samples "$raw_dir/perf-channel-samples.jsonl"
       trap cleanup EXIT
       rm -rf "$raw_dir"
     uses: actions/upload-artifact@v4
@@ -2403,6 +2974,16 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
     command_p.add_argument(
+        "--control-fifo",
+        type=Path,
+        required=True,
+    )
+    command_p.add_argument(
+        "--ack-fifo",
+        type=Path,
+        required=True,
+    )
+    command_p.add_argument(
         "--raw",
         type=Path,
         required=True,
@@ -2420,6 +3001,14 @@ def parser() -> argparse.ArgumentParser:
         "--parser-argv-lines",
         type=Path,
     )
+
+    activate_p = sub.add_parser("activate")
+    activate_p.add_argument("--control-fifo", type=Path, required=True)
+    activate_p.add_argument("--ack-fifo", type=Path, required=True)
+    activate_p.add_argument("--output", type=Path, required=True)
+    activate_p.add_argument("--probe-gate", type=Path, required=True)
+    activate_p.add_argument("--perf-executable", required=True)
+    activate_p.add_argument("--launcher-pid", type=int, required=True)
 
     identity_p = sub.add_parser(
         "identity"
@@ -2440,6 +3029,9 @@ def parser() -> argparse.ArgumentParser:
     )
     for name in (
         "identity",
+        "readiness",
+        "perf-header",
+        "channel-samples",
         "perf-script",
         "buildids",
         "control-markers",
@@ -2484,6 +3076,8 @@ def main() -> int:
         return probe(args)
     if args.command == "command":
         return command(args)
+    if args.command == "activate":
+        return activate(args)
     if args.command == "identity":
         return identity(args)
     if args.command == "summarize":

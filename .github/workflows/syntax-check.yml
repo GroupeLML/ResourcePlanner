@@ -931,9 +931,12 @@ jobs:
             --output "$evidence/identity.json"
           tids="$(python -c 'import json,sys; print(",".join(str(v) for v in json.load(open(sys.argv[1]))["host_tids"]))' "$evidence/identity.json")"
           perf_executable="$(command -v perf)"
+          mkfifo "$raw_dir/perf-control.fifo" "$raw_dir/perf-ack.fifo"
           python tools/issue_894_perf_preflight.py command \
             --tids "$tids" \
             --perf-executable "$perf_executable" \
+            --control-fifo "$raw_dir/perf-control.fifo" \
+            --ack-fifo "$raw_dir/perf-ack.fifo" \
             --raw "$raw_dir/perf.data" \
             --output "$evidence/perf-command.json" \
             --argv-lines "$raw_dir/perf-argv.txt" \
@@ -978,15 +981,28 @@ jobs:
             sudo "${perf_args[@]}" \
             >"$raw_dir/perf-stdout.txt" 2>"$raw_dir/perf-stderr.txt" &
           perf_pid=$!
-          sleep 0.5
-          observed_start="$(date +%s%N)"
-          touch "$evidence/observed-gate"
+          python tools/issue_894_perf_preflight.py activate \
+            --control-fifo "$raw_dir/perf-control.fifo" \
+            --ack-fifo "$raw_dir/perf-ack.fifo" \
+            --output "$evidence/perf-readiness.json" \
+            --probe-gate "$evidence/observed-gate" \
+            --perf-executable "$perf_executable" \
+            --launcher-pid "$perf_pid"
+          activation_status=$?
+          if [ "$activation_status" != "0" ]; then
+            printf 'stop\n' > "$raw_dir/perf-control.fifo" || true
+            kill "$perf_pid" >/dev/null 2>&1 || true
+            wait "$perf_pid" >/dev/null 2>&1 || true
+            set -e
+            exit 1
+          fi
+          observed_start="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["probe_release_monotonic_ns"])' "$evidence/perf-readiness.json")"
           for attempt in $(seq 1 200); do
             test -f "$evidence/observed-done" && break
             test "$attempt" != "200"
             sleep 0.05
           done
-          observed_end="$(date +%s%N)"
+          observed_end="$(python -c 'import time; print(time.monotonic_ns())')"
           wait "$perf_pid"
           perf_status=$?
           set -e
@@ -1014,17 +1030,51 @@ jobs:
             exit 1
           fi
           test -s "$raw_dir/perf.data"
-          sudo perf script \
+          sudo "$perf_executable" script \
+            --header-only \
+            -i "$raw_dir/perf.data" \
+            > "$raw_dir/perf-header.txt"
+          cat > "$raw_dir/perf-channel-meta.py" <<'PY'
+          import json
+
+          ALLOWED = {
+              "sched:sched_switch",
+              "sched:sched_wakeup",
+              "sched:sched_wakeup_new",
+          }
+
+          def trace_unhandled(event_name, context, event_fields_dict, perf_sample_dict):
+              ev_name = str(perf_sample_dict.get("ev_name", event_name))
+              if ev_name not in ALLOWED:
+                  return
+              sample = perf_sample_dict.get("sample") or {}
+              row = {
+                  "event": ev_name,
+                  "id": int(sample.get("id") or 0),
+                  "stream_id": int(sample.get("stream_id") or 0),
+                  "time_ns": int(sample.get("time") or 0),
+                  "tid": int(sample.get("tid") or 0),
+              }
+              print(json.dumps(row, sort_keys=True))
+          PY
+          sudo "$perf_executable" script \
+            -s "python:$raw_dir/perf-channel-meta.py" \
+            -i "$raw_dir/perf.data" \
+            > "$raw_dir/perf-channel-samples.jsonl"
+          sudo "$perf_executable" script \
             --ns \
             --show-lost-events \
             --symfs "/proc/$host_pid/root" \
             -i "$raw_dir/perf.data" \
             > "$raw_dir/perf-script.txt"
-          sudo perf buildid-list \
+          sudo "$perf_executable" buildid-list \
             -i "$raw_dir/perf.data" \
             > "$raw_dir/buildids.txt"
           python tools/issue_894_perf_preflight.py summarize \
             --identity "$evidence/identity.json" \
+            --readiness "$evidence/perf-readiness.json" \
+            --perf-header "$raw_dir/perf-header.txt" \
+            --channel-samples "$raw_dir/perf-channel-samples.jsonl" \
             --perf-script "$raw_dir/perf-script.txt" \
             --buildids "$raw_dir/buildids.txt" \
             --control-markers "$evidence/control-markers.jsonl" \
