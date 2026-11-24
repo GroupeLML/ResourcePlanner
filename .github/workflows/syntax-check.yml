@@ -720,6 +720,8 @@ jobs:
       RP894_REFERENCE_IMAGE_ID: "sha256:194211a0c3a5a5113388ff876b7154edfb297cac0ebb4be6d11c4aa431bd51db"
       RP894_REFERENCE_PLATFORM: "sha256:40e271b9ec31384a0b2289906a5b8d7e888faced3c626ab538871b3ad5dfba7d"
       RP894_REFERENCE_CONFIG: "sha256:799bad6afa00d775059d3d6d43f2e1fa7defe34e56074686e53c4101bf3e2768"
+      RP894_REFERENCE_PLATFORM: "sha256:40e271b9ec31384a0b2289906a5b8d7e888faced3c626ab538871b3ad5dfba7d"
+      RP894_REFERENCE_CONFIG: "sha256:799bad6afa00d775059d3d6d43f2e1fa7defe34e56074686e53c4101bf3e2768"
     steps:
       - name: Checkout exact preflight head
         uses: actions/checkout@v4
@@ -1201,6 +1203,27 @@ jobs:
           printf 'package_identity=%s\n' "$package_identity" >> "$GITHUB_OUTPUT"
           printf 'binary_sha256=%s\n' "$binary_sha256" >> "$GITHUB_OUTPUT"
 
+      - name: Align Docker image store with retained OCI identity semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("/etc/docker/daemon.json")
+          data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+          features = dict(data.get("features") or {})
+          features["containerd-snapshotter"] = True
+          data["features"] = features
+          path.write_text(
+              json.dumps(data, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          sudo systemctl restart docker
+          docker info -f '{{ .DriverStatus }}' | grep -Fq 'io.containerd.snapshotter.v1'
+
       - name: Restore immutable diagnostic reference runtime
         id: reference
         shell: bash
@@ -1215,15 +1238,38 @@ jobs:
           printf '%s  %s\n' "$RP894_REFERENCE_ARTIFACT_DIGEST" "$reference/artifact.zip" | sha256sum -c -
           unzip -q "$reference/artifact.zip" -d "$reference/extracted"
           archive="$reference/extracted/resourceplanner-894-inventory-backend.tar.gz"
-          printf '%s  %s\n' "$RP894_REFERENCE_ARCHIVE_SHA256" "$archive" | sha256sum -c -
-          gunzip -c "$archive" | docker load >/dev/null
           manifest="$reference/extracted/manifest.json"
+          printf '%s  %s\n' "$RP894_REFERENCE_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          python tools/issue_894_environment_inventory.py validate-reference --input "$manifest"
+          python - "$manifest" <<'PY'
+          import json
+          import os
+          import sys
+
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = {
+              "pr_head": os.environ["RP894_REFERENCE_HEAD"],
+              "live_image_id": os.environ["RP894_REFERENCE_IMAGE_ID"],
+              "archive_platform_manifest_digest": os.environ["RP894_REFERENCE_PLATFORM"],
+              "archive_config_digest": os.environ["RP894_REFERENCE_CONFIG"],
+              "archive_sha256": os.environ["RP894_REFERENCE_ARCHIVE_SHA256"],
+              "live_revision_label": os.environ["RP894_REFERENCE_HEAD"],
+              "archive_revision_label": os.environ["RP894_REFERENCE_HEAD"],
+          }
+          for key, value in expected.items():
+              if manifest.get(key) != value:
+                  raise SystemExit(f"retained reference mismatch: {key}")
+          if not all(manifest.get("identity_chain", {}).values()):
+              raise SystemExit("retained OCI identity chain is incomplete")
+          PY
+          gunzip -c "$archive" | docker load >/dev/null
           image_ref="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_ref"])' "$manifest")"
           image_id="$(docker image inspect "$image_ref" --format '{{.Id}}')"
           revision="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
           test "$image_id" = "$RP894_REFERENCE_IMAGE_ID"
           test "$revision" = "$RP894_REFERENCE_HEAD"
           printf 'image_ref=%s\n' "$image_ref" >> "$GITHUB_OUTPUT"
+          printf 'reference_manifest=%s\n' "$manifest" >> "$GITHUB_OUTPUT"
 
       - name: Start disposable SQL fixture
         shell: bash
