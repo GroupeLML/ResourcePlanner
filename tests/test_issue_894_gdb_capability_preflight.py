@@ -269,6 +269,311 @@ class GdbCapabilityPreflightTests(unittest.TestCase):
         self.assertNotIn("_write_json", source)
         self.assertNotIn("transcript", source)
 
+    def test_mi_async_parser_requires_protocol_thread_id(self):
+        self.assertEqual(
+            mod._mi_async_event('*stopped,reason="signal-received",thread-id="7"'),
+            {"kind": "stopped", "thread_id": "7"},
+        )
+        self.assertTrue(
+            mod._mi_async_matches('*running,thread-id="7"', "running", "7")
+        )
+        self.assertFalse(
+            mod._mi_async_matches('*stopped,thread-id="8"', "stopped", "7")
+        )
+
+    def test_stale_attachment_stop_cannot_satisfy_later_interrupt(self):
+        pipe = ReceiverPipe(b'*stopped,thread-id="7"\n', keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            with self.assertRaises(TimeoutError):
+                pipe.receiver.wait_for(
+                    lambda line: mod._mi_async_matches(line, "stopped", "7"),
+                    deadline=mod.time.monotonic() + 0.02,
+                    description="target stop",
+                    after_sequence=boundary,
+                )
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('*stopped,thread-id="7"',),
+            )
+        finally:
+            pipe.close()
+
+    def test_wrong_thread_stop_remains_queued_until_fresh_target_stop(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(
+                pipe.write_fd,
+                b'*stopped,thread-id="8"\n*stopped,thread-id="7"\n',
+            )
+            matched = pipe.receiver.wait_for(
+                lambda line: mod._mi_async_matches(line, "stopped", "7"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="target stop",
+                after_sequence=boundary,
+            )
+            self.assertEqual(matched, '*stopped,thread-id="7"')
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('*stopped,thread-id="8"',),
+            )
+        finally:
+            pipe.close()
+
+    def test_fresh_target_stop_before_result_is_preserved(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(pipe.write_fd, b'*stopped,thread-id="7"\n12^done\n')
+            result = pipe.receiver.wait_for(
+                lambda line: line.startswith("12^"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="command",
+                after_sequence=boundary,
+            )
+            event = pipe.receiver.wait_for(
+                lambda line: mod._mi_async_matches(line, "stopped", "7"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="target stop",
+                after_sequence=boundary,
+            )
+            self.assertEqual(result, "12^done")
+            self.assertEqual(event, '*stopped,thread-id="7"')
+        finally:
+            pipe.close()
+
+    def test_fresh_target_stop_after_result_is_preserved(self):
+        pipe = ReceiverPipe(keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(pipe.write_fd, b'13^done\n*stopped,thread-id="7"\n')
+            event = pipe.receiver.wait_for(
+                lambda line: mod._mi_async_matches(line, "stopped", "7"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="target stop",
+                after_sequence=boundary,
+            )
+            result = pipe.receiver.wait_for(
+                lambda line: line.startswith("13^"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="command",
+                after_sequence=boundary,
+            )
+            self.assertEqual(event, '*stopped,thread-id="7"')
+            self.assertEqual(result, "13^done")
+        finally:
+            pipe.close()
+
+    def test_fragmented_and_coalesced_target_events_correlate(self):
+        fragmented = ReceiverPipe(keep_open=True, read_size=3)
+        try:
+            boundary = fragmented.receiver.operation_boundary()
+            os.write(fragmented.write_fd, b'*stopped,thread-id="7"\n')
+            self.assertEqual(
+                fragmented.receiver.wait_for(
+                    lambda line: mod._mi_async_matches(line, "stopped", "7"),
+                    deadline=mod.time.monotonic() + 0.2,
+                    description="target stop",
+                    after_sequence=boundary,
+                ),
+                '*stopped,thread-id="7"',
+            )
+        finally:
+            fragmented.close()
+        coalesced = ReceiverPipe(keep_open=True)
+        try:
+            boundary = coalesced.receiver.operation_boundary()
+            os.write(
+                coalesced.write_fd,
+                b'=library-loaded,id="x"\n*running,thread-id="7"\n',
+            )
+            self.assertEqual(
+                coalesced.receiver.wait_for(
+                    lambda line: mod._mi_async_matches(line, "running", "7"),
+                    deadline=mod.time.monotonic() + 0.2,
+                    description="target resume",
+                    after_sequence=boundary,
+                ),
+                '*running,thread-id="7"',
+            )
+            self.assertEqual(
+                coalesced.receiver.queued_records,
+                ('=library-loaded,id="x"',),
+            )
+        finally:
+            coalesced.close()
+
+    def test_attachment_stop_accounting_removes_only_attachment_stops(self):
+        pipe = ReceiverPipe(
+            b'=thread-created,id="7"\n*stopped,thread-id="7"\n'
+            b'*stopped,thread-id="8"\n',
+            keep_open=True,
+        )
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            count = pipe.receiver.account_matching(
+                lambda line: mod._mi_async_matches(line, "stopped", None),
+                through_sequence=boundary,
+            )
+            self.assertEqual(count, 2)
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('=thread-created,id="7"',),
+            )
+        finally:
+            pipe.close()
+
+    def test_stale_and_wrong_thread_running_cannot_satisfy_resume(self):
+        pipe = ReceiverPipe(b'*running,thread-id="7"\n', keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(pipe.write_fd, b'*running,thread-id="8"\n')
+            with self.assertRaises(TimeoutError):
+                pipe.receiver.wait_for(
+                    lambda line: mod._mi_async_matches(line, "running", "7"),
+                    deadline=mod.time.monotonic() + 0.02,
+                    description="target resume",
+                    after_sequence=boundary,
+                )
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('*running,thread-id="7"', '*running,thread-id="8"'),
+            )
+        finally:
+            pipe.close()
+
+    def test_fresh_selected_target_running_is_required(self):
+        pipe = ReceiverPipe(b'*running,thread-id="7"\n', keep_open=True)
+        try:
+            boundary = pipe.receiver.operation_boundary()
+            os.write(pipe.write_fd, b'*running,thread-id="7"\n')
+            matched = pipe.receiver.wait_for(
+                lambda line: mod._mi_async_matches(line, "running", "7"),
+                deadline=mod.time.monotonic() + 0.2,
+                description="target resume",
+                after_sequence=boundary,
+            )
+            self.assertEqual(matched, '*running,thread-id="7"')
+            self.assertEqual(
+                pipe.receiver.queued_records,
+                ('*running,thread-id="7"',),
+            )
+        finally:
+            pipe.close()
+
+    def test_matching_stop_and_resume_deadlines_fail_closed(self):
+        for kind in ("stopped", "running"):
+            pipe = ReceiverPipe(keep_open=True)
+            try:
+                boundary = pipe.receiver.operation_boundary()
+                os.write(pipe.write_fd, f'*{kind},thread-id="8"\n'.encode())
+                with self.assertRaises(TimeoutError):
+                    pipe.receiver.wait_for(
+                        lambda line, current=kind: mod._mi_async_matches(
+                            line, current, "7"
+                        ),
+                        deadline=mod.time.monotonic() + 0.02,
+                        description=f"target {kind}",
+                        after_sequence=boundary,
+                    )
+            finally:
+                pipe.close()
+
+    def test_snapshot_rejects_running_target_before_frame_collection(self):
+        class FakeMI:
+            def __init__(self):
+                self.commands = []
+                self.boundary = 10
+
+            def operation_boundary(self):
+                self.boundary += 10
+                return self.boundary
+
+            def command(self, command, timeout=mod.READINESS_SECONDS, **kwargs):
+                self.commands.append(command)
+                if command == "-thread-info":
+                    return (
+                        '^done,threads=['
+                        '{id="7",target-id="Thread 0x1 (LWP 42)",state="running"},'
+                        '{id="8",target-id="Thread 0x2 (LWP 43)",state="running"}]',
+                        [],
+                    )
+                return "^done", []
+
+            def wait_async_event(self, kind, thread_id, **kwargs):
+                return f'*{kind},thread-id="{thread_id}"'
+
+        mi = FakeMI()
+        with mock.patch.object(
+            mod, "_wait_phase_start",
+            return_value={"monotonic_ns": 1},
+        ), mock.patch.object(
+            mod, "_wait_blocked_state",
+            return_value=("D", 2),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not stopped"):
+                mod._snapshot(
+                    mi, 7, 8, 1, 42, "libc_block",
+                    Path("/tmp/markers"), Path("/tmp/sentinel"),
+                )
+        self.assertFalse(
+            any(command.startswith("-stack-list-frames") for command in mi.commands)
+        )
+
+    def test_snapshot_rejects_stopped_sentinel_before_frame_collection(self):
+        class FakeMI:
+            def __init__(self):
+                self.commands = []
+                self.boundary = 10
+
+            def operation_boundary(self):
+                self.boundary += 10
+                return self.boundary
+
+            def command(self, command, timeout=mod.READINESS_SECONDS, **kwargs):
+                self.commands.append(command)
+                if command == "-thread-info":
+                    return (
+                        '^done,threads=['
+                        '{id="7",target-id="Thread 0x1 (LWP 42)",state="stopped"},'
+                        '{id="8",target-id="Thread 0x2 (LWP 43)",state="stopped"}]',
+                        [],
+                    )
+                return "^done", []
+
+            def wait_async_event(self, kind, thread_id, **kwargs):
+                return f'*{kind},thread-id="{thread_id}"'
+
+        mi = FakeMI()
+        with mock.patch.object(
+            mod, "_wait_phase_start",
+            return_value={"monotonic_ns": 1},
+        ), mock.patch.object(
+            mod, "_wait_blocked_state",
+            return_value=("D", 2),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sentinel"):
+                mod._snapshot(
+                    mi, 7, 8, 1, 42, "libc_block",
+                    Path("/tmp/markers"), Path("/tmp/sentinel"),
+                )
+        self.assertFalse(
+            any(command.startswith("-stack-list-frames") for command in mi.commands)
+        )
+
+    def test_event_correlation_preserves_existing_deadlines_and_pause_limit(self):
+        self.assertEqual(mod.READINESS_SECONDS, 2.0)
+        self.assertEqual(mod.MAX_DEBUGGER_PAUSE_MS, 100.0)
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn('after_sequence=interrupt_boundary', source)
+        self.assertIn('"stopped",\n        str(gdb_thread_id)', source)
+        self.assertIn('"running",\n        str(gdb_thread_id)', source)
+        self.assertLess(
+            source.index('if target_state != "stopped"'),
+            source.index('f"-stack-list-frames --thread {gdb_thread_id} 0 64"'),
+        )
+
     def test_native_chain_requires_complete_order_without_gap(self):
         frames = [
             {"module": "libc.so.6"},

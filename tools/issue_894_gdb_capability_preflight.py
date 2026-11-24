@@ -38,6 +38,7 @@ WAKE_RE = re.compile(
 )
 BUILD_ID_RE = re.compile(r"Build ID:\s*([0-9a-fA-F]{16,64})")
 MI_FIELD_RE = re.compile(r'(\w+)="((?:\\.|[^"])*)"')
+MI_ASYNC_FIELD_RE = re.compile(r'([A-Za-z0-9_-]+)="((?:\\.|[^"])*)"')
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -276,17 +277,45 @@ def _is_mi_prompt(record: str) -> bool:
     return record.strip() == "(gdb)"
 
 
+def _mi_async_event(record: str) -> dict[str, str] | None:
+    if not record.startswith("*"):
+        return None
+    kind, separator, payload = record[1:].partition(",")
+    if kind not in {"stopped", "running"}:
+        return None
+    fields = {
+        key: _decode_mi(value)
+        for key, value in MI_ASYNC_FIELD_RE.findall(payload if separator else "")
+    }
+    return {
+        "kind": kind,
+        "thread_id": fields.get("thread-id", ""),
+    }
+
+
+def _mi_async_matches(record: str, kind: str, thread_id: str | None) -> bool:
+    event = _mi_async_event(record)
+    if event is None or event["kind"] != kind:
+        return False
+    return thread_id is None or event["thread_id"] == thread_id
+
+
 class MIRecordReceiver:
     def __init__(self, fd: int, *, read_size: int = 4096):
         self.fd = fd
         self.read_size = read_size
         self._partial = bytearray()
-        self._records: list[str] = []
+        self._records: list[tuple[int, str]] = []
+        self._next_sequence = 1
         self._eof = False
 
     @property
     def queued_records(self) -> tuple[str, ...]:
-        return tuple(self._records)
+        return tuple(record for _, record in self._records)
+
+    def _queue_record(self, record: str) -> None:
+        self._records.append((self._next_sequence, record))
+        self._next_sequence += 1
 
     def _decode_record(self, raw: bytes) -> str:
         return raw.decode("utf-8", errors="replace").rstrip("\r")
@@ -298,20 +327,60 @@ class MIRecordReceiver:
                 break
             raw = bytes(self._partial[:newline])
             del self._partial[: newline + 1]
-            self._records.append(self._decode_record(raw))
+            self._queue_record(self._decode_record(raw))
         if self._partial:
             stripped = bytes(self._partial).rstrip(b" \t\r")
             if stripped == b"(gdb)":
-                self._records.append(
+                self._queue_record(
                     self._decode_record(bytes(self._partial)).rstrip()
                 )
                 self._partial.clear()
 
-    def _pop_matching(self, predicate) -> str | None:
-        for index, record in enumerate(self._records):
-            if predicate(record):
-                return self._records.pop(index)
+    def _read_once(self, timeout: float) -> bool:
+        ready, _, _ = select.select([self.fd], [], [], timeout)
+        if not ready:
+            return False
+        chunk = os.read(self.fd, self.read_size)
+        if not chunk:
+            self._eof = True
+            return False
+        self._partial.extend(chunk)
+        self._extract_records()
+        return True
+
+    def operation_boundary(self) -> int:
+        while self._read_once(0.0):
+            pass
+        if self._partial:
+            raise MIError("partial MI record at operation boundary")
+        return self._next_sequence - 1
+
+    def _pop_matching(self, predicate, after_sequence: int) -> str | None:
+        for index, (sequence, record) in enumerate(self._records):
+            if sequence > after_sequence and predicate(record):
+                _, matched = self._records.pop(index)
+                return matched
         return None
+
+    def account_matching(
+        self,
+        predicate,
+        *,
+        through_sequence: int,
+        after_sequence: int = 0,
+    ) -> int:
+        retained: list[tuple[int, str]] = []
+        count = 0
+        for sequence, record in self._records:
+            if (
+                after_sequence < sequence <= through_sequence
+                and predicate(record)
+            ):
+                count += 1
+            else:
+                retained.append((sequence, record))
+        self._records = retained
+        return count
 
     def _deadline_error(self, description: str) -> TimeoutError:
         if self._partial:
@@ -326,9 +395,10 @@ class MIRecordReceiver:
         *,
         deadline: float,
         description: str,
+        after_sequence: int = 0,
     ) -> str:
         while True:
-            matched = self._pop_matching(predicate)
+            matched = self._pop_matching(predicate, after_sequence)
             if matched is not None:
                 return matched
             if self._eof:
@@ -338,16 +408,10 @@ class MIRecordReceiver:
             if remaining <= 0:
                 raise self._deadline_error(description)
 
-            ready, _, _ = select.select([self.fd], [], [], remaining)
-            if not ready:
+            if not self._read_once(remaining):
+                if self._eof:
+                    continue
                 raise self._deadline_error(description)
-
-            chunk = os.read(self.fd, self.read_size)
-            if not chunk:
-                self._eof = True
-                continue
-            self._partial.extend(chunk)
-            self._extract_records()
 
 
 class GdbMI:
@@ -409,13 +473,23 @@ class GdbMI:
         )
         return []
 
+    def operation_boundary(self) -> int:
+        return self.receiver.operation_boundary()
+
     def command(
         self,
         command: str,
         timeout: float = READINESS_SECONDS,
+        *,
+        after_sequence: int | None = None,
     ) -> tuple[str, list[str]]:
         if self.proc.stdin is None:
             raise MIError("GDB stdin unavailable")
+        boundary = (
+            self.operation_boundary()
+            if after_sequence is None
+            else after_sequence
+        )
         token = self.token
         self.token += 1
         self.proc.stdin.write(f"{token}{command}\n".encode("utf-8"))
@@ -425,18 +499,40 @@ class GdbMI:
             lambda line: line.startswith(f"{token}^"),
             deadline=deadline,
             description=f"GDB command {command.split()[0]}",
+            after_sequence=boundary,
         )
         result = record[len(str(token)) :]
         if result.startswith("^error"):
             raise MIError("GDB command failed")
         return result, []
 
-    def wait_async(self, prefix: str, timeout: float) -> str:
+    def wait_async_event(
+        self,
+        kind: str,
+        thread_id: str | None,
+        *,
+        after_sequence: int,
+        timeout: float,
+    ) -> str:
         deadline = time.monotonic() + timeout
         return self.receiver.wait_for(
-            lambda line: line.startswith(prefix),
+            lambda line: _mi_async_matches(line, kind, thread_id),
             deadline=deadline,
-            description=f"GDB async {prefix}",
+            description=f"GDB async {kind} thread {thread_id or 'any'}",
+            after_sequence=after_sequence,
+        )
+
+    def account_async_events(
+        self,
+        kind: str,
+        *,
+        through_sequence: int,
+        after_sequence: int = 0,
+    ) -> int:
+        return self.receiver.account_matching(
+            lambda line: _mi_async_matches(line, kind, None),
+            through_sequence=through_sequence,
+            after_sequence=after_sequence,
         )
 
     def close(self) -> None:
@@ -580,12 +676,21 @@ def _snapshot(
 ) -> dict[str, Any]:
     phase_marker = _wait_phase_start(markers, phase, READINESS_SECONDS)
     state, state_ns = _wait_blocked_state(pid, tid, READINESS_SECONDS)
+
+    interrupt_boundary = mi.operation_boundary()
     interrupt_request_ns = time.monotonic_ns()
     mi.command(
         f"-exec-interrupt --thread {gdb_thread_id}",
         timeout=0.1,
+        after_sequence=interrupt_boundary,
     )
-    mi.wait_async("*stopped", 0.1)
+    mi.wait_async_event(
+        "stopped",
+        str(gdb_thread_id),
+        after_sequence=interrupt_boundary,
+        timeout=0.1,
+    )
+
     info, _ = mi.command("-thread-info", timeout=0.1)
     threads = _thread_rows(info)
     target_state = next(
@@ -596,16 +701,29 @@ def _snapshot(
         (row["state"] for row in threads if row["gdb_thread_id"] == sentinel_gdb_thread_id),
         None,
     )
+    if target_state != "stopped":
+        raise RuntimeError("selected target thread was not stopped after matching MI stop")
+    if sentinel_state != "running":
+        raise RuntimeError("sentinel thread was not running during isolation check")
+
     frames_result, _ = mi.command(
         f"-stack-list-frames --thread {gdb_thread_id} 0 64",
         timeout=0.1,
     )
     frames = _frame_rows(frames_result)
+
+    resume_boundary = mi.operation_boundary()
     mi.command(
         f"-exec-continue --thread {gdb_thread_id}",
         timeout=0.1,
+        after_sequence=resume_boundary,
     )
-    mi.wait_async("*running", 0.1)
+    mi.wait_async_event(
+        "running",
+        str(gdb_thread_id),
+        after_sequence=resume_boundary,
+        timeout=0.1,
+    )
     resume_ns = time.monotonic_ns()
     pause_ms = (resume_ns - interrupt_request_ns) / 1_000_000.0
     time.sleep(0.015)
@@ -634,7 +752,6 @@ def _snapshot(
         "frames": frames,
         "frame_count": len(frames),
     }
-
 
 def _privacy_safe(value: Any) -> bool:
     if isinstance(value, dict):
@@ -679,16 +796,43 @@ def observe(args: argparse.Namespace) -> int:
             raise ValueError("invalid PID/TID identity")
         report["module_build_identities"] = _module_identities(args.pid)
         mi = GdbMI(args.gdb)
+        attach_boundary = mi.operation_boundary()
         attach_start = time.monotonic_ns()
-        mi.command(f"-target-attach {args.pid}", timeout=READINESS_SECONDS)
+        mi.command(
+            f"-target-attach {args.pid}",
+            timeout=READINESS_SECONDS,
+            after_sequence=attach_boundary,
+        )
+        mi.wait_async_event(
+            "stopped",
+            None,
+            after_sequence=attach_boundary,
+            timeout=READINESS_SECONDS,
+        )
         info, _ = mi.command("-thread-info", timeout=0.1)
         threads = _thread_rows(info)
         target_row = next((row for row in threads if row["host_tid"] == args.tid), None)
         sentinel_row = next((row for row in threads if row["host_tid"] == args.sentinel_tid), None)
         if target_row is None or sentinel_row is None:
             raise ValueError("GDB thread identity does not match host TIDs")
-        mi.command("-exec-continue --all", timeout=0.1)
-        mi.wait_async("*running", 0.1)
+
+        resume_boundary = mi.operation_boundary()
+        attachment_stops_accounted = 1 + mi.account_async_events(
+            "stopped",
+            through_sequence=resume_boundary,
+            after_sequence=attach_boundary,
+        )
+        mi.command(
+            "-exec-continue --all",
+            timeout=0.1,
+            after_sequence=resume_boundary,
+        )
+        mi.wait_async_event(
+            "running",
+            "all",
+            after_sequence=resume_boundary,
+            timeout=0.1,
+        )
         attach_resume = time.monotonic_ns()
         attach_pause_ms = (attach_resume - attach_start) / 1_000_000.0
         report["attachment"] = {
@@ -698,6 +842,7 @@ def observe(args: argparse.Namespace) -> int:
             "debugger_pause_ms": attach_pause_ms,
             "pause_within_limit": attach_pause_ms <= MAX_DEBUGGER_PAUSE_MS,
             "probe_released_after_resume": True,
+            "attachment_stop_notifications_accounted": attachment_stops_accounted,
         }
         if attach_pause_ms > MAX_DEBUGGER_PAUSE_MS:
             raise RuntimeError("initial GDB attachment exceeded debugger pause limit")
