@@ -1363,7 +1363,7 @@ def _project_shift_deltas(
             new,
             previous_version=previous_version,
         )
-        refresh = previous_version < 4 and current_version == 4
+        refresh = previous_version < 4 and current_version in (4, 5)
         if "resource" in changed_fields:
             kind = "replaced"
         elif "day" in changed_fields:
@@ -2115,8 +2115,6 @@ def compare_project_communication_projections(
     previous: ProjectCommunicationProjection,
     current: ProjectCommunicationProjection,
 ) -> tuple[ProjectCommunicationChange, ...]:
-    if 5 in (previous.request_provenance_version, current.request_provenance_version):
-        raise ValueError("Comparaison v5/P5 non prise en charge")
     if (
         previous.week_start != current.week_start
         or previous.week_end != current.week_end
@@ -2129,14 +2127,14 @@ def compare_project_communication_projections(
     previous_version = previous.request_provenance_version
     if (
         type(current_version) is not int
-        or current_version not in (1, 2, 3, 4)
+        or current_version not in (1, 2, 3, 4, 5)
         or current.request_provenance_complete is not True
     ):
         raise ValueError("Projection courante sans provenance chantier complète")
     _validate_provenance(current)
     if previous_version is not None and (
         type(previous_version) is not int
-        or previous_version not in (1, 2, 3, 4)
+        or previous_version not in (1, 2, 3, 4, 5)
     ):
         raise ValueError("Version historique de provenance chantier non supportée")
     if previous_version is not None:
@@ -2157,10 +2155,10 @@ def compare_project_communication_projections(
             changes.append(ProjectCommunicationChange(project_id, "added", None, new))
         elif new is None:
             changes.append(ProjectCommunicationChange(project_id, "removed", old, None))
-        elif current_version == 4 and previous_version in (None, 1, 2, 3):
+        elif current_version in (4, 5) and previous_version in (None, 1, 2, 3):
             # Historical capability cannot prove all v4 per-Shift facts.
             changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
-        elif current_version == 4:
+        elif current_version in (4, 5):
             if _project_v4_semantic_payload(old) != _project_v4_semantic_payload(new):
                 changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
         elif current_version == 3 and previous_version in (None, 1, 2):
@@ -2191,6 +2189,8 @@ def build_project_delta_batch(
     previous: ProjectCommunicationProjection,
     current: ProjectCommunicationProjection,
 ) -> ProjectCommunicationMessageBatch:
+    if 5 in (previous.request_provenance_version, current.request_provenance_version):
+        raise ValueError("Génération opérationnelle v5/P5 non prise en charge")
     changes = compare_project_communication_projections(previous, current)
     current_version = current.request_provenance_version
     previous_version = previous.request_provenance_version

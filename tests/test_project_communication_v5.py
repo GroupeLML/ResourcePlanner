@@ -20,7 +20,7 @@ from app.domain.project_communication import (
 from app.domain.project_communication_messages import (
     build_project_confirmation_batch, build_project_delta_batch,
     compare_project_communication_projections, deserialize_project_projection,
-    project_projection_fingerprint, serialize_project_projection,
+    project_projection_fingerprint, serialize_project_projection, _project_shift_deltas,
 )
 from app.domain.superintendent_population import SuperintendentEmployee, SuperintendentPopulation
 from app.domain.superintendent_recipient_resolution import AddressFailure
@@ -168,14 +168,16 @@ class ProjectCommunicationV5Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             deserialize_project_projection(json.dumps(older))
 
-    def test_operational_v5_unsupported_until_p5_and_delta_integration(self):
+    def test_operational_v5_remains_unsupported_after_p5_and_pure_comparison(self):
         self.assertNotEqual(project_projection_fingerprint(self.v5), project_projection_fingerprint(self.v4))
-        for previous, current in ((self.v4, self.v5), (self.v5, self.v4), (self.v5, self.v5)):
-            with self.assertRaisesRegex(ValueError, "v5/P5"):
-                compare_project_communication_projections(previous, current)
-            with self.assertRaisesRegex(ValueError, "v5/P5"):
-                build_project_delta_batch(previous, current)
+        self.assertEqual(compare_project_communication_projections(self.v4, self.v5), ())
+        self.assertEqual(compare_project_communication_projections(self.v5, self.v5), ())
+        with self.assertRaisesRegex(ValueError, "Régression"):
+            compare_project_communication_projections(self.v5, self.v4)
         with patch("app.domain.project_communication_messages._build_draft") as draft:
+            for previous, current in ((self.v4, self.v5), (self.v5, self.v4), (self.v5, self.v5)):
+                with self.assertRaisesRegex(ValueError, "v5/P5"):
+                    build_project_delta_batch(previous, current)
             with self.assertRaisesRegex(ValueError, "v5/P5"):
                 build_project_confirmation_batch(self.v5)
             draft.assert_not_called()
@@ -246,3 +248,87 @@ class ProjectCommunicationV5Tests(unittest.TestCase):
             object.__setattr__(malformed, field, value)
             with self.subTest(field=field), self.assertRaises(ValueError):
                 project_projection_fingerprint(malformed)
+
+    def test_v5_policy_only_changes_do_not_select_business_deltas(self):
+        source = self.population.to_population()
+        for population in (
+            replace(source, competency_id="COMP-2"),
+            replace(source, employees=source.employees[:1]),
+            replace(source, employees=(source.employees[0], replace(source.employees[1], email=mailbox("new")))),
+            SuperintendentPopulation(None, diagnostic="SUPERINTENDENT_BINDING_MISSING"),
+        ):
+            context = RecipientPolicyContext.capture(RecipientPolicyPopulation.capture(population), self.identities, (self.inputs,))
+            changed = self.build(5, context)
+            self.assertNotEqual(project_projection_fingerprint(self.v5), project_projection_fingerprint(changed))
+            self.assertEqual(compare_project_communication_projections(self.v5, changed), ())
+
+    def test_v5_preserves_historical_refresh_and_week_boundaries(self):
+        p0 = deserialize_project_projection(serialize_project_projection(replace(
+            self.build(1), request_provenance_version=None, request_provenance_complete=False,
+        )))
+        for baseline in (p0, self.build(1), self.build(2), self.build(3)):
+            changes = compare_project_communication_projections(baseline, self.v5)
+            self.assertEqual([(row.project_id, row.kind) for row in changes], [("P-1", "modified")])
+            deltas = _project_shift_deltas(changes[0].before, changes[0].after,
+                previous_version=baseline.request_provenance_version, current_version=5)
+            self.assertEqual([row.kind for row in deltas], ["refresh"])
+            self.assertTrue(deltas[0].historical_refresh)
+        self.assertEqual(_project_shift_deltas(self.v4.projects[0], self.v5.projects[0],
+            previous_version=4, current_version=5), ())
+        with self.assertRaises(ValueError):
+            compare_project_communication_projections(self.v5, replace(self.v5, week_start=date(2026, 9, 14)))
+
+    def test_v5_genuine_shift_and_header_changes(self):
+        for changes, expected in (
+            ({"hours": 7.0}, ["modified"]),
+            ({"day": date(2026, 9, 22)}, ["moved"]),
+            ({"shift_id": "S-2"}, ["removed", "added"]),
+            ({"project_name": "Demo changed"}, []),
+        ):
+            current = build_project_communication_projection(week_start=WEEK, week_end=END,
+                assignments=(replace(self.assignment, **changes),), request_provenance_version=5,
+                recipient_policy_context=self.context)
+            result = compare_project_communication_projections(self.v5, current)
+            self.assertEqual([(row.project_id, row.kind) for row in result], [("P-1", "modified")])
+            deltas = _project_shift_deltas(result[0].before, result[0].after, previous_version=5, current_version=5)
+            self.assertEqual([row.kind for row in deltas], expected)
+
+    def test_v5_assigned_superintendent_address_change_is_business_change(self):
+        address = mailbox("changed-assigned")
+        source = self.population.to_population()
+        population = RecipientPolicyPopulation.capture(replace(source, employees=(
+            replace(source.employees[0], email=address), source.employees[1],
+        )))
+        inputs = replace(self.inputs, candidates=(
+            *self.inputs.candidates[:-1],
+            replace(self.inputs.candidates[-1], primary=replace(self.inputs.candidates[-1].primary, email=address)),
+        ))
+        context = RecipientPolicyContext.capture(population, self.identities, (inputs,))
+        current = build_project_communication_projection(week_start=WEEK, week_end=END,
+            assignments=(replace(self.assignment, resource_contact=replace(self.assignment.resource_contact, email=address)),),
+            request_provenance_version=5, recipient_policy_context=context)
+        result = compare_project_communication_projections(self.v5, current)
+        self.assertEqual([row.kind for row in result], ["modified"])
+        deltas = _project_shift_deltas(result[0].before, result[0].after, previous_version=5, current_version=5)
+        self.assertEqual([row.kind for row in deltas], ["modified"])
+        self.assertIn("resource_contact", deltas[0].changed_fields)
+
+    def test_v5_replacement_and_project_addition_removal(self):
+        inputs = replace(self.inputs, candidates=(
+            *self.inputs.candidates[:-1],
+            authority("RESOURCE", "R-2", "ASSIGNED", "CC", None),
+        ))
+        context = RecipientPolicyContext.capture(self.population, self.identities, (inputs,))
+        replacement = build_project_communication_projection(week_start=WEEK, week_end=END,
+            assignments=(replace(self.assignment, resource_id="R-2", resource_name="Demo R-2",
+                resource_contact=replace(participant("R-2", contact=False, user=False), email=None)),),
+            request_provenance_version=5, recipient_policy_context=context)
+        changes = compare_project_communication_projections(self.v5, replacement)
+        self.assertEqual([row.kind for row in changes], ["modified"])
+        self.assertEqual([row.kind for row in _project_shift_deltas(changes[0].before, changes[0].after,
+            previous_version=5, current_version=5)], ["replaced"])
+        empty_context = RecipientPolicyContext.capture(self.population, self.identities, ())
+        empty = build_project_communication_projection(week_start=WEEK, week_end=END, assignments=(),
+            request_provenance_version=5, recipient_policy_context=empty_context)
+        self.assertEqual([row.kind for row in compare_project_communication_projections(empty, self.v5)], ["added"])
+        self.assertEqual([row.kind for row in compare_project_communication_projections(self.v5, empty)], ["removed"])
