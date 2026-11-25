@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from types import MappingProxyType
 from typing import Iterable, Mapping
@@ -108,6 +108,10 @@ def _employee_key(value: str | None) -> str | None:
 class RecipientIdentityIndex:
     aliases: Mapping[RecipientIdentity, RecipientIdentity]
     ambiguous: frozenset[RecipientIdentity]
+    # Includes ambiguous components: aliases alone cannot prove closure.
+    components: Mapping[RecipientIdentity, frozenset[RecipientIdentity]] = field(
+        default_factory=lambda: MappingProxyType({}), compare=False, repr=False,
+    )
 
     def canonical(self, identity: RecipientIdentity) -> RecipientIdentity:
         return self.aliases.get(identity, identity)
@@ -191,6 +195,7 @@ def build_recipient_identity_index_v1(
 
     aliases: dict[RecipientIdentity, RecipientIdentity] = {}
     ambiguous: set[RecipientIdentity] = set()
+    components: dict[RecipientIdentity, frozenset[RecipientIdentity]] = {}
     remaining = set(graph)
     for root in sorted(graph):
         if root not in remaining:
@@ -203,6 +208,8 @@ def build_recipient_identity_index_v1(
                 component.add(node)
                 stack.extend(graph[node] - component)
         remaining.difference_update(component)
+        members = frozenset(component)
+        components.update((member, members) for member in members)
         external_ids = {key for member in component for key in employee_ids.get(member, ())}
         if len(external_ids) > 1 or len({member.kind for member in component}) != len(component):
             ambiguous.update(component)
@@ -211,7 +218,7 @@ def build_recipient_identity_index_v1(
                     "ERP_EMPLOYEE": 3, "AUTHENTICATED_PRINCIPAL": 4}
         canonical = min(component, key=lambda member: (priority[member.kind], member.id))
         aliases.update((member, canonical) for member in component)
-    return RecipientIdentityIndex(MappingProxyType(aliases), frozenset(ambiguous))
+    return RecipientIdentityIndex(MappingProxyType(aliases), frozenset(ambiguous), MappingProxyType(components))
 
 
 # Preserve the historical v1 identity authority for frozen recipient contexts.

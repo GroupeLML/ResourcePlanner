@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
+import hashlib
 import json
 
 from .communication_recipient_authority import (
@@ -222,16 +223,19 @@ class MessageRecipientProvenance:
 
 @dataclass(frozen=True, slots=True)
 class RecipientPolicyContext:
-    """One global roster and identity evidence; one immutable result per project.
+    """Current project source authority and provisional composition evidence.
 
-    Candidate order is authority order (including same-channel precedence), not
-    incidental input order. Global identities and project IDs are canonical sets.
-    Reconstruct with the frozen v1 primitives, never current master data.
+    Current project inputs cover the entire snapshot, not actual generated messages.
+    Generator-only stable-link evidence is captured separately. The provisional
+    per-project envelope is not evidence that a message was generated.
+    Reconstruct with frozen v1 primitives, never current master data.
     """
     population: RecipientPolicyPopulation
     identities: RecipientIdentityEvidence
     message_inputs: tuple[MessageRecipientInputs, ...]
     generator: AuthenticatedGeneratorAuthority | None = None
+    composition_identities: RecipientIdentityEvidence | None = None
+    current_resolution: tuple[MessageRecipientProvenance, ...] = field(init=False)
     messages: tuple[MessageRecipientProvenance, ...] = field(init=False)
 
     def __post_init__(self):
@@ -245,11 +249,16 @@ class RecipientPolicyContext:
         ids = [row.project_id for row in self.message_inputs]
         if ids != sorted(set(ids)):
             raise ValueError("Message coverage must be unique and ordered")
-        index = self.index()
+        if self.composition_identities is not None and (
+                type(self.composition_identities) is not RecipientIdentityEvidence or self.generator is None):
+            raise ValueError("Invalid composition-only identity evidence")
+        index = self.current_index()
+        composition_index = index if self.generator is None else self.index()
         roots = set(index.aliases) | index.ambiguous
         employees = {row.employee.resource_id: row.employee for row in self.population.employees}
         if any(RecipientIdentity("RESOURCE", key) not in roots for key in employees):
             raise ValueError("Missing eligible employee identity evidence")
+        current_resolution = []
         messages = []
         address_facts = {}
         for employee in employees.values():
@@ -328,31 +337,68 @@ class RecipientPolicyContext:
                     raise ValueError("Unproven contact fallback")
                 candidates.append(contact_rooted_candidate_v1(primary, fallback, index)
                                   if primary.identity.kind == "CONTACT" else primary)
-            if self.generator is not None:
-                candidates.append(self.generator.candidate)
-            result = compose_mandatory_recipients_v1(self.population.to_population(), candidates, index)
-            messages.append(MessageRecipientProvenance(
-                message.project_id, result.recipients,
-                tuple(MandatoryRecipientFact(row.employee.employee.resource_id, row.effective_address,
-                                             row.fulfilled_by_existing, row.blocker.reason if row.blocker else None)
-                      for row in result.mandatory),
-                result.unusable_existing, result.mandatory_complete,
-            ))
+            def resolve(rows, identity_index):
+                result = compose_mandatory_recipients_v1(self.population.to_population(), rows, identity_index)
+                return MessageRecipientProvenance(
+                    message.project_id, result.recipients,
+                    tuple(MandatoryRecipientFact(row.employee.employee.resource_id, row.effective_address,
+                                                 row.fulfilled_by_existing, row.blocker.reason if row.blocker else None)
+                          for row in result.mandatory),
+                    result.unusable_existing, result.mandatory_complete,
+                )
+
+            current = resolve(candidates, index)
+            current_resolution.append(current)
+            messages.append(current if self.generator is None else
+                            resolve((*candidates, self.generator.candidate), composition_index))
+        object.__setattr__(self, "current_resolution", tuple(current_resolution))
         object.__setattr__(self, "messages", tuple(messages))
 
     @classmethod
-    def capture(cls, population, identities, message_inputs, *, generator=None):
-        return cls(population, identities, tuple(sorted(message_inputs, key=lambda row: row.project_id)), generator)
+    def capture(cls, population, identities, message_inputs, *, generator=None, composition_identities=None):
+        return cls(population, identities, tuple(sorted(message_inputs, key=lambda row: row.project_id)),
+                   generator, composition_identities)
+
+    def _erp_principals(self):
+        return tuple(row.principal for message in self.message_inputs
+                     for row in message.candidates if type(row) is ERPManagerAuthority)
+
+    def current_index(self):
+        """Resolve current source authority without the authenticated generator."""
+        return self.identities.index(erp_principals=self._erp_principals())
+
+    def _composition_evidence(self):
+        extension = self.composition_identities
+        if extension is None:
+            return self.identities
+        if self.generator is None or self.generator.principal.local_user_id is None:
+            raise ValueError("Composition-only evidence requires a proven generator user link")
+        merged = RecipientIdentityEvidence.capture(
+            self.identities.resources + extension.resources,
+            self.identities.contacts + extension.contacts,
+            self.identities.users + extension.users,
+        )
+        # Current evidence must already include every competing stable link,
+        # including ambiguous components. An extension cannot repair or widen it.
+        current = self.current_index()
+        extended = merged.index(erp_principals=self._erp_principals())
+        if any(extended.components.get(root) != members for root, members in current.components.items()):
+            raise ValueError("Composition evidence contradicts complete current identity closure")
+        generator_root = RecipientIdentity("USER", self.generator.principal.local_user_id)
+        extension_roots = frozenset(extension.index().components)
+        if not extension_roots or extended.components.get(generator_root) != extension_roots:
+            raise ValueError("Unrelated or incomplete composition-only identity evidence")
+        return merged
 
     def index(self):
-        return self.identities.index(
-            erp_principals=(row.principal for message in self.message_inputs
-                            for row in message.candidates if type(row) is ERPManagerAuthority),
+        """Resolve provisional composition, including the original generator."""
+        return self._composition_evidence().index(
+            erp_principals=self._erp_principals(),
             authenticated_principals=() if self.generator is None else (self.generator.principal,),
         )
 
-    def to_payload(self):
-        index = self.index()
+    @staticmethod
+    def _messages_payload(messages, index):
 
         def contribution(row):
             return {**asdict(row), "canonical_identity": asdict(index.canonical(row.identity))}
@@ -369,20 +415,54 @@ class RecipientPolicyContext:
                 "mandatory_complete": row.mandatory_complete,
             }
 
-        return _json_value({"population": self.population.to_payload(), "identities": asdict(self.identities),
-                            "message_inputs": [row.to_payload() for row in self.message_inputs],
-                            "generator": None if self.generator is None else self.generator.to_payload(),
-                            "generator_identity_fingerprint": None if self.generator is None else self.generator.identity_fingerprint,
-                            "messages": [message(row) for row in self.messages]})
+        return [message(row) for row in messages]
+
+    def current_state_payload(self):
+        """P5 source authority: no generator, composition extension or envelope selection."""
+        return _json_value({
+            "population": self.population.to_payload(),
+            "identities": asdict(self.identities),
+            "message_inputs": [row.to_payload() for row in self.message_inputs],
+            "current_resolution": self._messages_payload(self.current_resolution, self.current_index()),
+        })
+
+    def _composition_payload(self):
+        return _json_value({
+            "composition_identities": None if self.composition_identities is None else asdict(self.composition_identities),
+            "generator": None if self.generator is None else self.generator.to_payload(),
+            "generator_identity_fingerprint": None if self.generator is None else self.generator.identity_fingerprint,
+            "messages": self._messages_payload(self.messages, self.index()),
+        })
+
+    @staticmethod
+    def _composition_digest(current, composition):
+        payload = ("project_recipient_provisional_composition_v1", current, composition)
+        return hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+
+    @property
+    def provisional_composition_fingerprint(self):
+        """Integrity of provisional source composition, not a reviewed message fingerprint."""
+        return self._composition_digest(self.current_state_payload(), self._composition_payload())
+
+    def to_payload(self):
+        current = self.current_state_payload()
+        composition = self._composition_payload()
+        return {**current, **composition,
+                "provisional_composition_fingerprint": self._composition_digest(current, composition)}
 
     @classmethod
     def from_payload(cls, payload):
-        data = _require_keys(payload, {"population", "identities", "message_inputs", "messages",
-                                       "generator", "generator_identity_fingerprint"})
+        data = _require_keys(payload, {"population", "identities", "message_inputs", "current_resolution",
+                                       "messages", "generator", "generator_identity_fingerprint",
+                                       "composition_identities", "provisional_composition_fingerprint"})
         context = cls(RecipientPolicyPopulation.from_payload(data["population"]),
                       RecipientIdentityEvidence.from_payload(data["identities"]),
                       _read_list(data["message_inputs"], MessageRecipientInputs.from_payload),
-                      None if data["generator"] is None else AuthenticatedGeneratorAuthority.from_payload(data["generator"]))
+                      None if data["generator"] is None else AuthenticatedGeneratorAuthority.from_payload(data["generator"]),
+                      None if data["composition_identities"] is None else RecipientIdentityEvidence.from_payload(
+                          data["composition_identities"]))
         # Compare canonical JSON rather than Python's bool/int-coercing equality.
         if json.dumps(context.to_payload(), sort_keys=True, allow_nan=False) != json.dumps(data, sort_keys=True, allow_nan=False):
             raise ValueError("Contradictory or incomplete recipient provenance claims")

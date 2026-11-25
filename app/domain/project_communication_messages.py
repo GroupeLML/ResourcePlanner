@@ -555,7 +555,7 @@ def project_projection_fingerprint(
                 for project in sorted(projection.projects, key=lambda row: row.project_id)
             ),
             tuple(projection.diagnostics),
-            context.to_payload(),
+            context.current_state_payload(),
         )
     elif version == 4:
         payload = (

@@ -203,10 +203,10 @@ def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
     ]:
         raise ValueError("Couverture de provenance destinataires v5 incomplète")
 
-    # Bind captured source roles to this snapshot, without generating messages.
-    # The generator is optional; all known project participant identities are required.
+    # Bind current source roles to this snapshot, independently of composition.
+    # All known project participant identities are required; no generator authority.
     by_project = {row.project_id: row for row in context.message_inputs}
-    index = context.index()
+    index = context.current_index()
     for project in projection.projects:
         expected: set[tuple[str, str, RecipientIdentity]] = set()
 

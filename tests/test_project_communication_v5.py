@@ -201,6 +201,117 @@ class ProjectCommunicationV5Tests(unittest.TestCase):
         self.assertEqual(context, self.context)
         self.assertEqual(project_projection_fingerprint(self.build(5, context)), fingerprint)
 
+
+    def _generator(self, subject, email, local_user=None):
+        principal = AuthenticatedPrincipalIdentityFact("urn:test", subject, local_user)
+        return AuthenticatedGeneratorAuthority(principal, "Demo generator",
+            RecipientAddressObservation("AUTHENTICATED_EMAIL", principal.identity,
+                                        "AUTHENTICATED", email))
+
+    def test_p5_is_independent_of_generator_option_and_authenticated_identity(self):
+        current = self.context.current_state_payload()
+        original = project_projection_fingerprint(self.v5)
+        contexts = [self.context]
+        for generator in (
+            self._generator("first", mailbox("first")),
+            self._generator("second", mailbox("second")),
+            self._generator("first", mailbox("different")),
+            self._generator("linked", mailbox("authenticated"), "U-RQ"),
+        ):
+            context = RecipientPolicyContext.capture(self.population, self.identities, (self.inputs,),
+                                                     generator=generator)
+            contexts.append(context)
+            projection = self.build(5, context)
+            self.assertEqual(project_projection_fingerprint(projection), original)
+            self.assertEqual(context.current_state_payload(), current)
+            self.assertEqual(context.current_resolution, self.context.current_resolution)
+            self.assertEqual(deserialize_project_projection(serialize_project_projection(projection)), projection)
+        self.assertEqual(len({c.provisional_composition_fingerprint for c in contexts}), len(contexts))
+
+    def test_p5_is_independent_of_disjoint_generator_identity_closure(self):
+        extension = RecipientIdentityEvidence.capture(
+            (ResourceIdentityFact("R-G", "E-G"),),
+            (ContactIdentityFact("C-G", "RESOURCEPLANNER", "EMPLOYEE", "E-G"),),
+            (UserIdentityFact("U-G", "E-G", "C-G"),),
+        )
+        generator = self._generator("linked", mailbox("authenticated"), "U-G")
+        context = RecipientPolicyContext.capture(self.population, self.identities, (self.inputs,),
+                                                 generator=generator, composition_identities=extension)
+        self.assertEqual(context.current_state_payload(), self.context.current_state_payload())
+        self.assertEqual(project_projection_fingerprint(self.build(5, context)), project_projection_fingerprint(self.v5))
+        self.assertEqual(context.index().canonical(generator.principal.identity), RecipientIdentity("RESOURCE", "R-G"))
+        self.assertNotIn(RecipientIdentity("RESOURCE", "R-G"), context.current_index().components)
+        self.assertNotEqual(context.provisional_composition_fingerprint, self.context.provisional_composition_fingerprint)
+        self.assertEqual(RecipientPolicyContext.from_payload(context.to_payload()), context)
+
+        for invalid in (
+            RecipientIdentityEvidence.capture((), (), (UserIdentityFact("U-G", "E-1", None),)),
+            RecipientIdentityEvidence.capture((), (), (UserIdentityFact("U-G", None, "C-PM"),)),
+            RecipientIdentityEvidence.capture((), (), (UserIdentityFact("U-G", None, None),
+                                                       UserIdentityFact("U-UNRELATED", None, None))),
+            RecipientIdentityEvidence.capture((), (), (UserIdentityFact("U-PM", None, "C-PM"),)),
+            RecipientIdentityEvidence((), (), ()),
+        ):
+            with self.subTest(extension=invalid), self.assertRaises(ValueError):
+                RecipientPolicyContext.capture(self.population, self.identities, (self.inputs,),
+                                               generator=generator, composition_identities=invalid)
+        with self.assertRaises(ValueError):
+            RecipientPolicyContext.capture(self.population, self.identities, (self.inputs,),
+                                           composition_identities=extension)
+
+    def test_generator_fulfillment_does_not_change_current_policy_resolution(self):
+        identities = RecipientIdentityEvidence.capture(
+            self.identities.resources, self.identities.contacts,
+            self.identities.users + (UserIdentityFact("U-R2", "E-2", None),),
+        )
+        off = RecipientPolicyContext.capture(self.population, identities, (self.inputs,))
+        on = RecipientPolicyContext.capture(self.population, identities, (self.inputs,),
+            generator=self._generator("superintendent", mailbox("authenticated"), "U-R2"))
+        self.assertFalse(off.current_resolution[0].mandatory_complete)
+        self.assertEqual(on.current_resolution, off.current_resolution)
+        self.assertTrue(on.messages[0].mandatory_complete)
+        self.assertTrue(on.messages[0].mandatory[1].fulfilled_by_existing)
+        self.assertEqual(project_projection_fingerprint(self.build(5, off)),
+                         project_projection_fingerprint(self.build(5, on)))
+        self.assertNotEqual(off.provisional_composition_fingerprint, on.provisional_composition_fingerprint)
+
+    def test_p5_separate_evidence_claims_and_composition_digest_fail_closed(self):
+        generator = self._generator("first", mailbox("first"))
+        context = RecipientPolicyContext.capture(self.population, self.identities, (self.inputs,), generator=generator)
+        payload = serialize_project_projection(self.build(5, context))
+        for mutate in (
+            lambda row: row.pop("current_resolution"),
+            lambda row: row["current_resolution"][0].update(mandatory_complete=True),
+            lambda row: row.pop("composition_identities"),
+            lambda row: row.pop("provisional_composition_fingerprint"),
+            lambda row: row.update(provisional_composition_fingerprint="0" * 64),
+            lambda row: row["generator"].update(display_name="Changed"),
+            lambda row: row["messages"][0]["recipients"].pop(),
+        ):
+            data = json.loads(payload)
+            mutate(data["recipient_policy_context"])
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                deserialize_project_projection(json.dumps(data))
+
+    def test_p5_canonical_erp_principal_change_without_display_change(self):
+        participant = replace(self.assignment.project_manager, contact_id=None, user_id=None,
+                              email=None, active=False)
+        fingerprints = []
+        for employee_id in ("E-MANAGER-1", "E-MANAGER-2"):
+            manager = ERPManagerAuthority(
+                ERPPrincipalIdentityFact("P-1", employee_id), participant.display_name,
+                None, None, None, "ABSENT", None, None, None,
+            )
+            inputs = replace(self.inputs, candidates=(manager, *self.inputs.candidates[1:]))
+            context = RecipientPolicyContext.capture(self.population, self.identities, (inputs,))
+            projection = build_project_communication_projection(
+                week_start=WEEK, week_end=END,
+                assignments=(replace(self.assignment, project_manager=participant),),
+                request_provenance_version=5, recipient_policy_context=context,
+            )
+            fingerprints.append(project_projection_fingerprint(projection))
+        self.assertNotEqual(*fingerprints)
+
     def test_p5_policy_changes_are_fingerprint_sensitive(self):
         original = project_projection_fingerprint(self.v5)
         source = self.population.to_population()
