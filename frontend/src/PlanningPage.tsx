@@ -82,7 +82,7 @@ import {
   splitAllocationAtomic,
 } from "./manualOverallocationApi";
 import AssetPlanningPanel from "./AssetPlanningPanel";
-import AssetUnitOccupancyPanel from "./AssetUnitOccupancyPanel";
+import AssetUnitOccupancyPanel, { AssetUnitOccupancySectionsProvider } from "./AssetUnitOccupancyPanel";
 import DemandDetail from "./DemandDetail";
 import DemandWorkflowPage from "./DemandWorkflowPage";
 import ManualAllocationEditor from "./ManualAllocationEditor";
@@ -2401,18 +2401,20 @@ export default function PlanningPage({
         </aside>
       </div>
 
-      {!detached && snapshot && (
-        <AssetPlanningPanel
-          snapshot={snapshot}
-          canManage={canManagePlanning && !loading}
-          onRefresh={() => setRefreshKey((value) => value + 1)}
-          onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
-        />
-      )}
+      <AssetUnitOccupancySectionsProvider key={planningIdentityKey}>
+        {!detached && snapshot && (
+          <AssetPlanningPanel
+            snapshot={snapshot}
+            canManage={canManagePlanning && !loading}
+            onRefresh={() => setRefreshKey((value) => value + 1)}
+            onOpenDemand={canReadDemands ? setDetailDemandNumber : undefined}
+          />
+        )}
 
-      {detached && snapshot && (
-        <AssetUnitOccupancyPanel snapshot={snapshot} />
-      )}
+        {detached && snapshot && (
+          <AssetUnitOccupancyPanel snapshot={snapshot} />
+        )}
+      </AssetUnitOccupancySectionsProvider>
 
       {assetAssignment && snapshot && (
         <ShiftAssetAssignmentDialog

@@ -76,6 +76,16 @@ async function createAssetFixture(page: Page, typeId: string, code: string, labe
   return response.json() as Promise<{ id: string; code: string }>;
 }
 
+async function expandOccupancySections(page: Page) {
+  const sections = page.getByTestId("asset-unit-occupancy-content")
+    .locator('button[data-testid^="asset-unit-section-"]');
+  await expect(sections).toHaveCount(8);
+  for (const section of await sections.all()) {
+    if (await section.getAttribute("aria-expanded") === "false") await section.click();
+    await expect(section).toHaveAttribute("aria-expanded", "true");
+  }
+}
+
 async function occupancyAssetLabels(page: Page) {
   return page
     .getByTestId("asset-unit-occupancy-content")
@@ -339,6 +349,7 @@ test("796 réutilise Occupation par unité dans la vraie fenêtre détachée", a
       await page.getByLabel("Recherche").fill("Alice");
 
       const mainOccupancy = page.getByTestId("asset-unit-occupancy-content");
+      await expandOccupancySections(page);
       await expect(mainOccupancy).toContainText("VEH-796-ORD");
       await expect(mainOccupancy).not.toContainText("VEH-796-ACT");
       await expect(mainOccupancy).toContainText("VEH-796-SCH");
@@ -358,6 +369,7 @@ test("796 réutilise Occupation par unité dans la vraie fenêtre détachée", a
       });
 
       const detachedOccupancy = detached.getByTestId("asset-unit-occupancy-content");
+      await expandOccupancySections(detached);
       await expect(detachedOccupancy).toContainText("VEH-796-ORD");
       await expect(detachedOccupancy).not.toContainText("VEH-796-ACT");
       await expect(detachedOccupancy).toContainText("VEH-796-SCH");
