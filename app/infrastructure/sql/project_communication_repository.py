@@ -21,7 +21,10 @@ from ...domain.project_communication import (
     ProjectCommunicationAsset,
     ProjectCommunicationAssignment,
     ProjectCommunicationParticipant,
+    ProjectCommunicationProjection,
 )
+from ...domain.communication_recipient_provenance import RecipientPolicyContext
+from .communication_recipient_capture import capture_recipient_policy_context
 from .availability_class_scope import availability_class_codes_by_rule
 from .asset_models import Asset, AssetAllocation, AssetRequirement, AssetType
 from .asset_qualification import (
@@ -135,6 +138,14 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             key=lambda employee: employee.resource_id,
         ))
         return SuperintendentPopulation(configured, employees=employees)
+
+    def capture_recipient_context(
+        self, projection: ProjectCommunicationProjection,
+    ) -> RecipientPolicyContext:
+        """Inactive v5 capture boundary; read the global population exactly once."""
+        return capture_recipient_policy_context(
+            self._session, projection, self.read_superintendent_population(),
+        )
 
     def _project_manager(
         self,

@@ -13,8 +13,9 @@ from app.domain.communication_recipient_identity import (
     RecipientIdentityIndex,
     ResourceIdentityFact,
     UserIdentityFact,
-    build_recipient_identity_index,
 )
+
+from app.domain.communication_recipient_provenance import RecipientIdentityEvidence
 
 from .business_contact_models import BusinessContact
 from .identity_models import AppUser
@@ -33,9 +34,9 @@ def _read_matches(session, columns, match_column, values):
                 yield row
 
 
-def read_recipient_identity_index(
+def read_recipient_identity_evidence(
     session: Session, roots: Iterable[RecipientIdentity],
-) -> RecipientIdentityIndex:
+) -> RecipientIdentityEvidence:
     """Read stable links, including noneligible competitors, in bounded batches.
 
     Resolve the complete reachable identity components once per composition.
@@ -105,4 +106,10 @@ def read_recipient_identity_index(
                     employee_only=True,
                 )
                 collect_users(_read_matches(session, user_columns, AppUser.employee_external_id, keys))
-    return build_recipient_identity_index(resources.values(), contacts.values(), users.values())
+    return RecipientIdentityEvidence.capture(resources.values(), contacts.values(), users.values())
+
+
+def read_recipient_identity_index(
+    session: Session, roots: Iterable[RecipientIdentity],
+) -> RecipientIdentityIndex:
+    return read_recipient_identity_evidence(session, roots).index()
