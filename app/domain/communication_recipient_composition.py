@@ -12,8 +12,8 @@ from .superintendent_recipient_resolution import (
     AddressResolution,
     EmployeeAddressDiagnostic,
     SuperintendentAddress,
-    resolve_address,
-    resolve_superintendent_addresses,
+    resolve_address_v1,
+    resolve_superintendent_addresses_v1,
 )
 
 
@@ -32,7 +32,7 @@ class RecipientCandidate:
     active: bool = True
 
 
-def contact_rooted_candidate(
+def contact_rooted_candidate_v1(
     candidate: RecipientCandidate,
     resource: RecipientCandidate | None,
     identities: RecipientIdentityIndex,
@@ -41,7 +41,7 @@ def contact_rooted_candidate(
     if candidate.identity.kind != "CONTACT" or candidate.address_source != "BUSINESS_CONTACT_EMAIL":
         raise ValueError("Expected a contact-rooted candidate")
     if (
-        resolve_address(candidate.email).failure == AddressFailure.MISSING
+        resolve_address_v1(candidate.email).failure == AddressFailure.MISSING
         and resource is not None
         and resource.identity.kind == "RESOURCE"
         and resource.address_source == "RESOURCE_EMAIL"
@@ -99,11 +99,11 @@ class RecipientComposition:
 def _contribution(candidate: RecipientCandidate) -> RecipientContribution:
     return RecipientContribution(
         candidate.identity, candidate.display_name, candidate.role, candidate.channel,
-        candidate.address_source, resolve_address(candidate.email),
+        candidate.address_source, resolve_address_v1(candidate.email),
     )
 
 
-def compose_mandatory_recipients(
+def compose_mandatory_recipients_v1(
     population: SuperintendentPopulation,
     existing: Iterable[RecipientCandidate],
     identities: RecipientIdentityIndex,
@@ -134,7 +134,7 @@ def compose_mandatory_recipients(
 
     existing_keys = frozenset(by_identity)
     mandatory: list[MandatoryResolution] = []
-    for row in resolve_superintendent_addresses(population):
+    for row in resolve_superintendent_addresses_v1(population):
         identity = RecipientIdentity("RESOURCE", row.employee.resource_id)
         key = identities.canonical(identity)
         contribution = RecipientContribution(
@@ -166,3 +166,8 @@ def compose_mandatory_recipients(
         for row in mandatory
     ]
     return RecipientComposition(population, tuple(by_address.values()), tuple(mandatory), tuple(unusable))
+
+
+# Preserve the historical v1 composition authority for frozen recipient contexts.
+contact_rooted_candidate = contact_rooted_candidate_v1
+compose_mandatory_recipients = compose_mandatory_recipients_v1

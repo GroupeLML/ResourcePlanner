@@ -15,8 +15,8 @@ from .superintendent_recipient_resolution import (
     AddressResolution,
     EmployeeAddressDiagnostic,
     SuperintendentAddress,
-    resolve_address,
-    resolve_superintendent_addresses,
+    resolve_address_v1,
+    resolve_superintendent_addresses_v1,
 )
 
 
@@ -85,7 +85,7 @@ class RecipientPolicyPopulation:
                 or (employee.email is not None and not isinstance(employee.email, str))
                 or not isinstance(row.resolution, AddressResolution)
                 or (row.resolution.failure is not None and not isinstance(row.resolution.failure, AddressFailure))
-                or row.resolution != resolve_address(employee.email)
+                or row.resolution != resolve_address_v1(employee.email)
             ):
                 raise ValueError("Contradictory employee address-resolution facts")
             resource_ids.append(employee.resource_id)
@@ -109,7 +109,7 @@ class RecipientPolicyPopulation:
             population.competency_id,
             population.complete,
             population.diagnostic,
-            resolve_superintendent_addresses(population),
+            resolve_superintendent_addresses_v1(population),
         )
 
     @property

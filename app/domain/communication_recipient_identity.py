@@ -63,7 +63,7 @@ class RecipientIdentityIndex:
         return self.canonical(left) == self.canonical(right)
 
 
-def build_recipient_identity_index(
+def build_recipient_identity_index_v1(
     resources: Iterable[ResourceIdentityFact],
     contacts: Iterable[ContactIdentityFact],
     users: Iterable[UserIdentityFact],
@@ -130,3 +130,7 @@ def build_recipient_identity_index(
         canonical = min(component, key=lambda member: (priority[member.kind], member.id))
         aliases.update((member, canonical) for member in component)
     return RecipientIdentityIndex(MappingProxyType(aliases), frozenset(ambiguous))
+
+
+# Preserve the historical v1 identity authority for frozen recipient contexts.
+build_recipient_identity_index = build_recipient_identity_index_v1

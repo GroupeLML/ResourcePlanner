@@ -30,7 +30,7 @@ _LOCAL = re.compile(rf"{_ATOM}(?:\.{_ATOM})*")
 _LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
 
-def resolve_address(raw: str | None) -> AddressResolution:
+def resolve_address_v1(raw: str | None) -> AddressResolution:
     """Validate a single bare mailbox; never parse or select from a list."""
     if raw is None:
         return AddressResolution(None, AddressFailure.MISSING)
@@ -90,11 +90,16 @@ class SuperintendentAddress:
         )
 
 
-def resolve_superintendent_addresses(
+def resolve_superintendent_addresses_v1(
     population: SuperintendentPopulation,
 ) -> tuple[SuperintendentAddress, ...]:
     """Retain every eligible employee, including unusable Resource.email values."""
     return tuple(
-        SuperintendentAddress(employee, resolve_address(employee.email))
+        SuperintendentAddress(employee, resolve_address_v1(employee.email))
         for employee in sorted(population.employees, key=lambda row: row.resource_id)
     )
+
+
+# Historical policy v1 implementations must remain stable; future policies need new entry points.
+resolve_address = resolve_address_v1
+resolve_superintendent_addresses = resolve_superintendent_addresses_v1
