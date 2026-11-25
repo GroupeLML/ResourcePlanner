@@ -129,3 +129,11 @@ class RecipientPolicyContextTests(unittest.TestCase):
             RecipientPolicyContext.capture(self.population, self.identities, (replace(inputs, candidates=(RecipientAuthorityInput(contact, replace(fallback, email=mailbox("invented"))),)),))
         with self.assertRaises(ValueError):
             RecipientPolicyContext.capture(self.population, self.identities, (replace(inputs, candidates=(RecipientAuthorityInput(contact, candidate("RESOURCE", "R-2", mailbox("shared"))),)),))
+
+    def test_duplicate_roles_and_conflicting_raw_authority_rejected(self):
+        with self.assertRaises(ValueError):
+            replace(self.inputs, candidates=self.inputs.candidates + (self.inputs.candidates[0],))
+        changed = replace(self.inputs.candidates[0], primary=replace(self.inputs.candidates[0].primary, email=mailbox("changed")))
+        other = replace(self.inputs, project_id="P-2", candidates=(changed,))
+        with self.assertRaises(ValueError):
+            RecipientPolicyContext.capture(self.population, self.identities, (self.inputs, other))

@@ -125,6 +125,9 @@ class MessageRecipientInputs:
         if (not _nonblank_id(self.project_id) or not isinstance(self.candidates, tuple)
                 or any(type(row) is not RecipientAuthorityInput for row in self.candidates)):
             raise ValueError("Missing explicit message recipient inputs")
+        keys = [(row.primary.identity, row.primary.role, row.primary.channel) for row in self.candidates]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Duplicate message recipient role claim")
         # Preserve same-channel authority precedence; cross-channel order is immaterial.
         object.__setattr__(self, "candidates", tuple(sorted(self.candidates, key=lambda row: row.primary.channel != "TO")))
 
@@ -179,6 +182,7 @@ class RecipientPolicyContext:
         if any(RecipientIdentity("RESOURCE", key) not in roots for key in employees):
             raise ValueError("Missing eligible employee identity evidence")
         messages = []
+        address_facts: dict[RecipientIdentity, str | None] = {}
         for message in self.message_inputs:
             candidates = []
             for row in message.candidates:
@@ -188,6 +192,9 @@ class RecipientPolicyContext:
                         continue
                     if candidate.identity not in roots:
                         raise ValueError("Missing recipient identity evidence")
+                    if candidate.identity in address_facts and address_facts[candidate.identity] != candidate.email:
+                        raise ValueError("Contradictory raw recipient address authority")
+                    address_facts[candidate.identity] = candidate.email
                     if candidate.identity.kind == "RESOURCE" and candidate.identity.id in employees:
                         if candidate.email != employees[candidate.identity.id].email:
                             raise ValueError("Contradictory canonical Resource.email")
