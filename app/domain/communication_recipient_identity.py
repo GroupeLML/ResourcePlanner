@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
@@ -13,8 +14,60 @@ class RecipientIdentity:
     id: str
 
     def __post_init__(self) -> None:
-        if self.kind not in {"RESOURCE", "CONTACT", "USER"} or not self.id:
+        if (type(self.kind) is not str or self.kind not in {
+                "RESOURCE", "CONTACT", "USER", "ERP_EMPLOYEE", "AUTHENTICATED_PRINCIPAL"}
+                or type(self.id) is not str or not self.id or self.id != self.id.strip()):
             raise ValueError("Invalid canonical recipient identity")
+        if self.kind == "AUTHENTICATED_PRINCIPAL":
+            try:
+                parts = json.loads(self.id)
+            except (ValueError, TypeError) as exc:
+                raise ValueError("Invalid authenticated principal identity") from exc
+            if (type(parts) is not list or len(parts) != 2
+                    or any(not _stable_principal_part(part) for part in parts)
+                    or self.id != _principal_key(*parts)):
+                raise ValueError("Invalid authenticated principal identity")
+
+
+def _stable_principal_part(value: str) -> bool:
+    return (type(value) is str and bool(value) and value == value.strip()
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value))
+
+
+def _principal_key(issuer: str, subject: str) -> str:
+    return json.dumps([issuer, subject], ensure_ascii=True, separators=(",", ":"))
+
+
+@dataclass(frozen=True)
+class AuthenticatedPrincipalIdentityFact:
+    """Issuer/subject authority with an independently proven optional local link."""
+    issuer: str
+    subject: str
+    local_user_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if (not _stable_principal_part(self.issuer) or not _stable_principal_part(self.subject)
+                or (self.local_user_id is not None and not _stable_principal_part(self.local_user_id))):
+            raise ValueError("Invalid authenticated principal evidence")
+
+    @property
+    def identity(self) -> RecipientIdentity:
+        return RecipientIdentity("AUTHENTICATED_PRINCIPAL", _principal_key(self.issuer, self.subject))
+
+
+@dataclass(frozen=True)
+class ERPPrincipalIdentityFact:
+    """The ERP principal employee ID observed from the canonical project authority."""
+    project_id: str
+    employee_external_id: str
+
+    def __post_init__(self) -> None:
+        if not _stable_principal_part(self.project_id) or not _stable_principal_part(self.employee_external_id):
+            raise ValueError("Invalid ERP principal evidence")
+
+    @property
+    def identity(self) -> RecipientIdentity:
+        return RecipientIdentity("ERP_EMPLOYEE", self.employee_external_id)
 
 
 @dataclass(frozen=True)
@@ -67,6 +120,9 @@ def build_recipient_identity_index_v1(
     resources: Iterable[ResourceIdentityFact],
     contacts: Iterable[ContactIdentityFact],
     users: Iterable[UserIdentityFact],
+    *,
+    erp_principals: Iterable[ERPPrincipalIdentityFact] = (),
+    authenticated_principals: Iterable[AuthenticatedPrincipalIdentityFact] = (),
 ) -> RecipientIdentityIndex:
     """Resolve complete stable-link facts, including competing matches.
 
@@ -103,6 +159,31 @@ def build_recipient_identity_index_v1(
             contact = RecipientIdentity("CONTACT", row.business_contact_id)
             if contact in graph:
                 connect(RecipientIdentity("USER", row.user_id), contact)
+    # ERP identity comes only from the canonical project principal authority,
+    # never from a Resource/contact label. It joins the same stable-link graph.
+    projects: dict[str, str] = {}
+    for fact in erp_principals:
+        if type(fact) is not ERPPrincipalIdentityFact:
+            raise ValueError("Expected typed ERP principal authority")
+        previous = projects.setdefault(fact.project_id, fact.employee_external_id)
+        if previous != fact.employee_external_id:
+            raise ValueError("Contradictory ERP principal authority for project")
+        add(fact.identity, fact.employee_external_id)
+
+    principals: dict[RecipientIdentity, str | None] = {}
+    for fact in authenticated_principals:
+        if type(fact) is not AuthenticatedPrincipalIdentityFact:
+            raise ValueError("Expected typed authenticated principal authority")
+        previous = principals.setdefault(fact.identity, fact.local_user_id)
+        if previous != fact.local_user_id:
+            raise ValueError("Contradictory authenticated local association")
+        add(fact.identity, None)
+        if fact.local_user_id is not None:
+            user = RecipientIdentity("USER", fact.local_user_id)
+            if user not in graph:
+                raise ValueError("Missing proven authenticated local association")
+            connect(fact.identity, user)
+
     for members in by_employee.values():
         ordered = sorted(members)
         for member in ordered[1:]:
@@ -126,7 +207,8 @@ def build_recipient_identity_index_v1(
         if len(external_ids) > 1 or len({member.kind for member in component}) != len(component):
             ambiguous.update(component)
             continue
-        priority = {"RESOURCE": 0, "CONTACT": 1, "USER": 2}
+        priority = {"RESOURCE": 0, "CONTACT": 1, "USER": 2,
+                    "ERP_EMPLOYEE": 3, "AUTHENTICATED_PRINCIPAL": 4}
         canonical = min(component, key=lambda member: (priority[member.kind], member.id))
         aliases.update((member, canonical) for member in component)
     return RecipientIdentityIndex(MappingProxyType(aliases), frozenset(ambiguous))

@@ -5,6 +5,7 @@ from datetime import date
 import math
 from typing import Sequence
 
+from .communication_recipient_authority import ERPManagerAuthority
 from .communication_recipient_identity import RecipientIdentity
 from .communication_recipient_provenance import RecipientPolicyContext
 from .confirmation import VALID_CONFIRMATIONS
@@ -205,6 +206,7 @@ def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
     # Bind captured source roles to this snapshot, without generating messages.
     # The generator is optional; all known project participant identities are required.
     by_project = {row.project_id: row for row in context.message_inputs}
+    index = context.index()
     for project in projection.projects:
         expected: set[tuple[str, str, RecipientIdentity]] = set()
 
@@ -222,7 +224,22 @@ def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
                 return
             expected.add((role, "TO", identity))
 
-        expect(project.project_manager, "MANAGER")
+        typed_manager = next((row for row in by_project[project.project_id].candidates
+                              if type(row) is ERPManagerAuthority), None)
+        if typed_manager is not None:
+            participant = project.project_manager
+            resolved = typed_manager.candidate(context.identities, index)
+            # The v4-compatible participant is presentation evidence, not an ERP
+            # identity authority. Bind it to the separately captured source facts.
+            if (participant.contact_id != typed_manager.contact_id
+                    or participant.user_id != typed_manager.linked_user_id
+                    or participant.active != resolved.active
+                    or (participant.email or "").strip() != (resolved.email or "").strip()
+                    or participant.display_name != typed_manager.display_name):
+                raise ValueError("Contradictory ERP manager participant evidence")
+            expected.add(("MANAGER", "TO", typed_manager.principal.identity))
+        else:
+            expect(project.project_manager, "MANAGER")
         for participant in project.project_co_managers:
             expect(participant, "CO_MANAGER")
         for participant in project.requesters:
@@ -239,14 +256,13 @@ def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
                             or type(assignment.standard_hours) not in (int, float)):
                         raise ValueError("Heures Shift v5 invalides")
         actual = set()
-        generators = 0
         for row in by_project[project.project_id].candidates:
-            candidate = row.primary
-            if candidate.role == "GENERATOR" and candidate.channel == "CC":
-                generators += 1
+            if type(row) is ERPManagerAuthority:
+                actual.add(("MANAGER", "TO", row.principal.identity))
             else:
+                candidate = row.primary
                 actual.add((candidate.role, candidate.channel, candidate.identity))
-        if actual != expected or generators > 1:
+        if actual != expected:
             raise ValueError("Provenance des rôles destinataires v5 incomplète ou incohérente")
 
 

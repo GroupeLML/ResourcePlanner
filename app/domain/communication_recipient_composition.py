@@ -18,7 +18,8 @@ from .superintendent_recipient_resolution import (
 
 
 Channel = Literal["TO", "CC"]
-AddressSource = Literal["RESOURCE_EMAIL", "BUSINESS_CONTACT_EMAIL", "APP_USER_EMAIL"]
+AddressSource = Literal["RESOURCE_EMAIL", "BUSINESS_CONTACT_EMAIL", "APP_USER_EMAIL",
+                        "AUTHENTICATED_EMAIL", "NO_ADDRESS_AUTHORITY"]
 
 
 @dataclass(frozen=True)

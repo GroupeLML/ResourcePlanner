@@ -4,9 +4,13 @@ import json
 import unittest
 from unittest.mock import patch
 
+from app.domain.communication_recipient_authority import (
+    AuthenticatedGeneratorAuthority, ERPManagerAuthority, RecipientAddressObservation,
+)
 from app.domain.communication_recipient_composition import RecipientCandidate
 from app.domain.communication_recipient_identity import (
-    ContactIdentityFact, RecipientIdentity, ResourceIdentityFact, UserIdentityFact,
+    AuthenticatedPrincipalIdentityFact, ContactIdentityFact, ERPPrincipalIdentityFact,
+    RecipientIdentity, ResourceIdentityFact, UserIdentityFact,
 )
 from app.domain.communication_recipient_policy import RecipientPolicyPopulation
 from app.domain.communication_recipient_provenance import (
@@ -312,6 +316,43 @@ class ProjectCommunicationV5Tests(unittest.TestCase):
         deltas = _project_shift_deltas(result[0].before, result[0].after, previous_version=5, current_version=5)
         self.assertEqual([row.kind for row in deltas], ["modified"])
         self.assertIn("resource_contact", deltas[0].changed_fields)
+
+    def test_typed_current_source_context_round_trips_v5(self):
+        manager_participant = replace(self.assignment.project_manager, contact_id=None, user_id=None,
+                                      email=mailbox("r-1"))
+        manager = ERPManagerAuthority(
+            ERPPrincipalIdentityFact("P-1", "E-1"), manager_participant.display_name,
+            None, None, None, "ABSENT", None, None,
+            RecipientAddressObservation("RESOURCE_EMAIL", RecipientIdentity("RESOURCE", "R-1"),
+                                        "CURRENT", mailbox("r-1")), True, True,
+        )
+        principal = AuthenticatedPrincipalIdentityFact("urn:test", "generator")
+        generator = AuthenticatedGeneratorAuthority(principal, "Demo generator",
+            RecipientAddressObservation("AUTHENTICATED_EMAIL", principal.identity,
+                                        "AUTHENTICATED", mailbox("generator")))
+        inputs = replace(self.inputs, candidates=(manager, *self.inputs.candidates[1:]))
+        context = RecipientPolicyContext.capture(self.population, self.identities, (inputs,), generator=generator)
+        projection = build_project_communication_projection(
+            week_start=WEEK, week_end=END,
+            assignments=(replace(self.assignment, project_manager=manager_participant),),
+            request_provenance_version=5, recipient_policy_context=context,
+        )
+        message = projection.recipient_policy_context.messages[0]
+        self.assertEqual(message.recipients[0].selected.identity, manager.principal.identity)
+        self.assertEqual(message.recipients[0].address, mailbox("r-1"))
+        self.assertTrue(message.mandatory[0].fulfilled_by_existing)
+        self.assertTrue(any(recipient.selected.identity == principal.identity
+                            for recipient in message.recipients))
+        payload = serialize_project_projection(projection)
+        restored = deserialize_project_projection(payload)
+        self.assertEqual(restored, projection)
+        self.assertEqual(serialize_project_projection(restored), payload)
+        self.assertEqual(project_projection_fingerprint(restored), project_projection_fingerprint(projection))
+        with self.assertRaises(ValueError):
+            build_project_communication_projection(
+                week_start=WEEK, week_end=END, assignments=(self.assignment,),
+                request_provenance_version=5, recipient_policy_context=context,
+            )
 
     def test_v5_replacement_and_project_addition_removal(self):
         inputs = replace(self.inputs, candidates=(

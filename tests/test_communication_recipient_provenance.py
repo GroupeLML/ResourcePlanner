@@ -3,9 +3,10 @@ from dataclasses import FrozenInstanceError, replace
 import json
 import unittest
 
+from app.domain.communication_recipient_authority import AuthenticatedGeneratorAuthority, RecipientAddressObservation
 from app.domain.communication_recipient_composition import RecipientCandidate
 from app.domain.communication_recipient_identity import (
-    ContactIdentityFact, RecipientIdentity, ResourceIdentityFact, UserIdentityFact,
+    AuthenticatedPrincipalIdentityFact, ContactIdentityFact, RecipientIdentity, ResourceIdentityFact, UserIdentityFact,
 )
 from app.domain.communication_recipient_policy import RecipientPolicyPopulation
 from app.domain.communication_recipient_provenance import (
@@ -39,11 +40,14 @@ class RecipientPolicyContextTests(unittest.TestCase):
             UserIdentityFact("U-2", None, None),
         ))
         self.inputs = MessageRecipientInputs("P-1", (
-            RecipientAuthorityInput(candidate("USER", "U-1", mailbox("other"), "REQUESTER", "CC")),
             RecipientAuthorityInput(candidate("CONTACT", "C-1", mailbox("SHARED"))),
-            RecipientAuthorityInput(candidate("USER", "U-2", mailbox("shared"), "GENERATOR", "CC")),
+            RecipientAuthorityInput(candidate("USER", "U-1", mailbox("other"), "REQUESTER", "TO")),
+            RecipientAuthorityInput(candidate("RESOURCE", "R-3", "bad-address", "ASSIGNED", "CC")),
         ))
-        self.context = RecipientPolicyContext.capture(self.population, self.identities, (self.inputs,))
+        principal = AuthenticatedPrincipalIdentityFact("urn:test", "generator", "U-2")
+        self.generator = AuthenticatedGeneratorAuthority(principal, "Demo generator",
+            RecipientAddressObservation("AUTHENTICATED_EMAIL", principal.identity, "AUTHENTICATED", mailbox("shared")))
+        self.context = RecipientPolicyContext.capture(self.population, self.identities, (self.inputs,), generator=self.generator)
 
     def test_effective_authority_roles_and_distinct_shared_address(self):
         message = self.context.messages[0]
@@ -52,7 +56,7 @@ class RecipientPolicyContextTests(unittest.TestCase):
         self.assertEqual((recipient.channel, recipient.address), ("TO", mailbox("SHARED")))
         self.assertEqual(recipient.selected.address_source, "BUSINESS_CONTACT_EMAIL")
         self.assertEqual({row.role for row in recipient.contributions}, {"MANAGER", "REQUESTER", "GENERATOR", "SUPERINTENDENT"})
-        self.assertEqual({row.identity.id for row in recipient.contributions}, {"C-1", "U-1", "U-2", "R-1", "R-2"})
+        self.assertEqual({row.identity.id for row in recipient.contributions}, {"C-1", "U-1", self.generator.principal.identity.id, "R-1", "R-2"})
         stored = self.context.to_payload()["messages"][0]["recipients"][0]
         self.assertEqual(stored["selected"]["canonical_identity"], {"kind": "RESOURCE", "id": "R-1"})
         self.assertEqual({row["canonical_identity"]["id"] for row in stored["contributions"]}, {"R-1", "R-2", "U-2"})
@@ -68,16 +72,16 @@ class RecipientPolicyContextTests(unittest.TestCase):
 
     def test_global_context_once_round_trip_and_order(self):
         other = replace(self.inputs, project_id="P-2")
-        context = RecipientPolicyContext.capture(self.population, self.identities, (other, self.inputs))
+        context = RecipientPolicyContext.capture(self.population, self.identities, (other, self.inputs), generator=self.generator)
         payload = context.to_payload()
         self.assertEqual([row["project_id"] for row in payload["messages"]], ["P-1", "P-2"])
         self.assertNotIn("population", payload["messages"][0])
         self.assertNotIn("population", payload["message_inputs"][0])
         self.assertEqual(RecipientPolicyContext.from_payload(json.loads(json.dumps(payload))), context)
         reversed_evidence = RecipientIdentityEvidence.capture(reversed(self.identities.resources), self.identities.contacts, reversed(self.identities.users))
-        self.assertEqual(RecipientPolicyContext.capture(self.population, reversed_evidence, (self.inputs, other)).to_payload(), payload)
+        self.assertEqual(RecipientPolicyContext.capture(self.population, reversed_evidence, (self.inputs, other), generator=self.generator).to_payload(), payload)
         candidates = self.inputs.candidates
-        reordered = replace(self.inputs, candidates=(candidates[1], candidates[0], candidates[2]))
+        reordered = replace(self.inputs, candidates=(candidates[2], candidates[0], candidates[1]))
         self.assertEqual(reordered, self.inputs)
 
     def test_ambiguous_or_unlinked_identity_cannot_fulfill_missing_email(self):
