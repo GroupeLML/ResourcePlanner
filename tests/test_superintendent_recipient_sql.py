@@ -25,8 +25,8 @@ class SuperintendentRecipientSqlTests(unittest.TestCase):
             session.add_all([
                 Competency(id="COMP-869", name="Surintendant"),
                 Resource(id="R1", name="Same name", external_id="E1"),
-                Resource(id="R2", name="Same name", external_id="E2", email="two@example.ca"),
-                BusinessContact(id="C1", display_name="Same name", email="contact@example.ca"),
+                Resource(id="R2", name="Same name", external_id="E2", email="two" + chr(64) + "example.test"),
+                BusinessContact(id="C1", display_name="Same name", email="contact" + chr(64) + "example.test"),
                 BusinessContact(id="C2", display_name="Same name", external_system="RESOURCEPLANNER",
                                 external_entity="EMPLOYEE", external_id="E2"),
                 BusinessContact(id="C3", display_name="Same name", external_system="OTHER",
@@ -58,10 +58,10 @@ class SuperintendentRecipientSqlTests(unittest.TestCase):
         self.assertFalse(before.mandatory_complete)
         self.assertEqual([(row.resource_id, row.reason) for row in before.blockers], [("R1", AddressFailure.MISSING)])
         with self.factory.begin() as session:
-            session.get(Resource, "R1").email = " corrected@example.ca "
+            session.get(Resource, "R1").email = " corrected" + chr(64) + "example.test "
         after, _ = self.read()
         self.assertTrue(after.mandatory_complete)
-        self.assertEqual([row.address for row in after.recipients], ["corrected@example.ca", "two@example.ca"])
+        self.assertEqual([row.address for row in after.recipients], ["corrected" + chr(64) + "example.test", "two" + chr(64) + "example.test"])
         self.assertEqual(before.blockers[0].resource_id, "R1")
         self.assertIsNone(before.population.employees[0].email)
 
@@ -74,7 +74,7 @@ class SuperintendentRecipientSqlTests(unittest.TestCase):
         self.assertTrue(index.equivalent(RecipientIdentity("RESOURCE", "R2"), RecipientIdentity("CONTACT", "C2")))
         self.assertFalse(index.equivalent(resource, RecipientIdentity("CONTACT", "C3")))
         existing = (RecipientCandidate(contact, "Same name", "MANAGER", "TO",
-                                       "contact@example.ca", "BUSINESS_CONTACT_EMAIL"),)
+                                       "contact" + chr(64) + "example.test", "BUSINESS_CONTACT_EMAIL"),)
         before, _ = self.read(existing)
         self.assertTrue(before.mandatory_complete)
         self.assertTrue(before.mandatory[0].fulfilled_by_existing)
@@ -99,24 +99,24 @@ class SuperintendentRecipientSqlTests(unittest.TestCase):
         self.assertFalse(result.mandatory[0].fulfilled_by_existing)
         self.assertEqual([(row.resource_id, row.reason) for row in result.blockers], [("R1", AddressFailure.MISSING)])
         self.assertEqual([(row.channel, row.address) for row in result.recipients],
-                         [("TO", "contact@example.ca"), ("CC", "two@example.ca")])
+                         [("TO", "contact" + chr(64) + "example.test"), ("CC", "two" + chr(64) + "example.test")])
 
     def test_unlinked_acumatica_contact_does_not_fulfill_mandatory_delivery(self):
         with self.factory.begin() as session:
             session.add(BusinessContact(
-                id="C-ERP", display_name="Same name", email="contact@example.ca",
+                id="C-ERP", display_name="Same name", email="contact" + chr(64) + "example.test",
                 external_system="ACUMATICA", external_entity="EMPLOYEE", external_id="E1",
             ))
         contact = RecipientIdentity("CONTACT", "C-ERP")
         existing = (RecipientCandidate(contact, "Same name", "MANAGER", "TO",
-                                       "contact@example.ca", "BUSINESS_CONTACT_EMAIL"),)
+                                       "contact" + chr(64) + "example.test", "BUSINESS_CONTACT_EMAIL"),)
         result, index = self.read(existing)
         self.assertFalse(index.equivalent(RecipientIdentity("RESOURCE", "R1"), contact))
         self.assertFalse(result.mandatory[0].fulfilled_by_existing)
         self.assertFalse(result.mandatory_complete)
         self.assertEqual([(row.resource_id, row.reason) for row in result.blockers], [("R1", AddressFailure.MISSING)])
         self.assertEqual([(row.channel, row.address) for row in result.recipients],
-                         [("TO", "contact@example.ca"), ("CC", "two@example.ca")])
+                         [("TO", "contact" + chr(64) + "example.test"), ("CC", "two" + chr(64) + "example.test")])
 
 
 if __name__ == "__main__":

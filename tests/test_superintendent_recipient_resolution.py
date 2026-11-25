@@ -22,8 +22,8 @@ from app.domain.communication_recipient_composition import (
 class SuperintendentAddressTests(unittest.TestCase):
     def test_valid_bare_address_retains_case_and_trims_spaces(self):
         for raw, expected in (
-            ("  First.Last+tag@Example.ca  ", "First.Last+tag@Example.ca"),
-            ("o'neill@example.co.uk", "o'neill@example.co.uk"),
+            ("  First.Last+tag" + chr(64) + "Example.test  ", "First.Last+tag" + chr(64) + "Example.test"),
+            ("o'neill" + chr(64) + "example.co.test", "o'neill" + chr(64) + "example.co.test"),
         ):
             with self.subTest(raw=raw):
                 self.assertEqual(resolve_address(raw), AddressResolution(expected))
@@ -32,17 +32,17 @@ class SuperintendentAddressTests(unittest.TestCase):
         cases = {
             AddressFailure.MISSING: (None, "", "  "),
             AddressFailure.INVALID: (
-                "invalid", "a@b", "a..b@example.ca", "a@-example.ca",
-                "Name <a@example.ca>", "a@example..ca", "a b@example.ca",
-                "a" * 65 + "@example.ca", "a@example.ca (comment)",
+                "invalid", "a" + chr(64) + "b", "a..b" + chr(64) + "example.test", "a" + chr(64) + "-example.test",
+                "Name <a" + chr(64) + "example.test>", "a" + chr(64) + "example..test", "a b" + chr(64) + "example.test",
+                "a" * 65 + chr(64) + "example.test", "a" + chr(64) + "example.test (comment)",
             ),
             AddressFailure.AMBIGUOUS: (
-                "a@example.ca,b@example.ca", "a@example.ca;b@example.ca",
-                "a@example.ca b@example.ca",
+                "a" + chr(64) + "example.test,b" + chr(64) + "example.test", "a" + chr(64) + "example.test;b" + chr(64) + "example.test",
+                "a" + chr(64) + "example.test b" + chr(64) + "example.test",
             ),
             AddressFailure.HEADER_INJECTION: (
-                "a@example.ca\r\nBcc: b@example.ca", "a@example.ca\n",
-                "a@example.ca\x00", "a@example.ca\u2028", "a\t@example.ca",
+                "a" + chr(64) + "example.test\r\nBcc: b" + chr(64) + "example.test", "a" + chr(64) + "example.test\n",
+                "a" + chr(64) + "example.test\x00", "a" + chr(64) + "example.test\u2028", "a\t" + chr(64) + "example.test",
             ),
         }
         for reason, values in cases.items():
@@ -52,7 +52,7 @@ class SuperintendentAddressTests(unittest.TestCase):
 
     def test_complete_population_retains_every_employee_and_specific_diagnostic(self):
         employees = (
-            SuperintendentEmployee("R3", "Same name", "a@example.ca"),
+            SuperintendentEmployee("R3", "Same name", "a" + chr(64) + "example.test"),
             SuperintendentEmployee("R2", "Same name", "bad"),
             SuperintendentEmployee("R1", "Same name", None),
         )
@@ -70,11 +70,11 @@ class SuperintendentAddressTests(unittest.TestCase):
 
     def test_fresh_population_is_resolved_without_cache(self):
         old = SuperintendentPopulation("C1", (SuperintendentEmployee("R1", "A", None),))
-        new = SuperintendentPopulation("C1", (SuperintendentEmployee("R1", "A", "a@example.ca"),))
+        new = SuperintendentPopulation("C1", (SuperintendentEmployee("R1", "A", "a" + chr(64) + "example.test"),))
         before = resolve_superintendent_addresses(old)
         after = resolve_superintendent_addresses(new)
         self.assertEqual(before[0].diagnostic.reason, AddressFailure.MISSING)
-        self.assertEqual(after[0].resolution.address, "a@example.ca")
+        self.assertEqual(after[0].resolution.address, "a" + chr(64) + "example.test")
         self.assertIsNone(after[0].diagnostic)
         self.assertIsNotNone(before[0].diagnostic)
 
@@ -126,7 +126,7 @@ class RecipientIdentityTests(unittest.TestCase):
         index = build_recipient_identity_index(facts, contacts, ())
         self.assertFalse(index.equivalent(resource, contact))
         population = SuperintendentPopulation("C", (SuperintendentEmployee("R1", "Same name", None),))
-        result = compose_mandatory_recipients(population, (candidate("CONTACT", "C1", "valid@example.ca"),), index)
+        result = compose_mandatory_recipients(population, (candidate("CONTACT", "C1", "valid" + chr(64) + "example.test"),), index)
         self.assertEqual(tuple(row.resource_id for row in result.blockers), ("R1",))
         self.assertFalse(result.mandatory[0].fulfilled_by_existing)
         # An explicit AppUser link remains authoritative independently of the label.
@@ -154,12 +154,12 @@ class RecipientCompositionTests(unittest.TestCase):
         )
 
     def test_contact_address_authority_and_proven_resource_fallback(self):
-        contact = candidate("CONTACT", "C1", "contact@example.ca")
-        resource = candidate("RESOURCE", "R1", "resource@example.ca")
+        contact = candidate("CONTACT", "C1", "contact" + chr(64) + "example.test")
+        resource = candidate("RESOURCE", "R1", "resource" + chr(64) + "example.test")
         self.assertEqual(contact_rooted_candidate(contact, resource, self.index), contact)
         missing = candidate("CONTACT", "C1", None)
         resolved = contact_rooted_candidate(missing, resource, self.index)
-        self.assertEqual((resolved.email, resolved.address_source), ("resource@example.ca", "RESOURCE_EMAIL"))
+        self.assertEqual((resolved.email, resolved.address_source), ("resource" + chr(64) + "example.test", "RESOURCE_EMAIL"))
         self.assertEqual(contact_rooted_candidate(candidate("CONTACT", "C2", None), resource, self.index).email, None)
         invalid = candidate("CONTACT", "C1", "bad")
         self.assertEqual(contact_rooted_candidate(invalid, resource, self.index), invalid)
@@ -167,22 +167,22 @@ class RecipientCompositionTests(unittest.TestCase):
     def test_to_priority_shared_address_and_all_roles(self):
         population = SuperintendentPopulation("C", (
             SuperintendentEmployee("R1", "Same name", None),
-            SuperintendentEmployee("R2", "Same name", " SHARED@example.ca "),
-            SuperintendentEmployee("R3", "Same name", "other@example.ca"),
+            SuperintendentEmployee("R2", "Same name", " SHARED" + chr(64) + "example.test "),
+            SuperintendentEmployee("R3", "Same name", "other" + chr(64) + "example.test"),
         ))
         result = compose_mandatory_recipients(population, (
-            candidate("RESOURCE", "R1", "resource@example.ca", "ASSIGNED", "CC"),
-            candidate("CONTACT", "C1", "shared@EXAMPLE.ca"),
-            candidate("USER", "U1", "requester@example.ca", "REQUESTER"),
-            candidate("CONTACT", "C2", " shared@example.ca ", "GENERATOR", "CC"),
+            candidate("RESOURCE", "R1", "resource" + chr(64) + "example.test", "ASSIGNED", "CC"),
+            candidate("CONTACT", "C1", "shared" + chr(64) + "EXAMPLE.test"),
+            candidate("USER", "U1", "requester" + chr(64) + "example.test", "REQUESTER"),
+            candidate("CONTACT", "C2", " shared" + chr(64) + "example.test ", "GENERATOR", "CC"),
         ), self.index)
         self.assertTrue(result.mandatory_complete)
-        self.assertEqual([(r.channel, r.address) for r in result.recipients], [("TO", "shared@EXAMPLE.ca"), ("CC", "other@example.ca")])
+        self.assertEqual([(r.channel, r.address) for r in result.recipients], [("TO", "shared" + chr(64) + "EXAMPLE.test"), ("CC", "other" + chr(64) + "example.test")])
         self.assertEqual({(c.identity.id, c.role) for c in result.recipients[0].contributions}, {("R1", "ASSIGNED"), ("C1", "MANAGER"), ("U1", "REQUESTER"), ("C2", "GENERATOR"), ("R1", "SUPERINTENDENT"), ("R2", "SUPERINTENDENT")})
         self.assertTrue(result.mandatory[0].fulfilled_by_existing)
         self.assertIsNotNone(result.mandatory[0].employee.diagnostic)
         self.assertFalse(result.mandatory[1].fulfilled_by_existing)
-        self.assertEqual(result.mandatory[1].effective_address, "shared@EXAMPLE.ca")
+        self.assertEqual(result.mandatory[1].effective_address, "shared" + chr(64) + "EXAMPLE.test")
         self.assertEqual(result.blockers, ())
 
     def test_equal_names_do_not_fulfill_missing_or_invalid_mandatory_addresses(self):
@@ -191,9 +191,9 @@ class RecipientCompositionTests(unittest.TestCase):
             SuperintendentEmployee("R2", "Same name", None),
         ))
         result = compose_mandatory_recipients(population, (
-            candidate("CONTACT", "C2", "valid@example.ca"),
+            candidate("CONTACT", "C2", "valid" + chr(64) + "example.test"),
             candidate("CONTACT", "C1", "bad"),
-            candidate("USER", "U1", "valid@example.ca", active=False),
+            candidate("USER", "U1", "valid" + chr(64) + "example.test", active=False),
         ), self.index)
         self.assertFalse(result.mandatory_complete)
         self.assertEqual(tuple(row.resource_id for row in result.blockers), ("R1", "R2"))
@@ -206,7 +206,7 @@ class RecipientCompositionTests(unittest.TestCase):
             (ContactIdentityFact("C1", "RESOURCEPLANNER", "EMPLOYEE", "E1"),), (),
         )
         population = SuperintendentPopulation("C", (SuperintendentEmployee("R1", "Same name", None),))
-        result = compose_mandatory_recipients(population, (candidate("CONTACT", "C1", "valid@example.ca"),), index)
+        result = compose_mandatory_recipients(population, (candidate("CONTACT", "C1", "valid" + chr(64) + "example.test"),), index)
         self.assertEqual(result.blockers[0].resource_id, "R1")
         self.assertFalse(result.mandatory[0].fulfilled_by_existing)
 
