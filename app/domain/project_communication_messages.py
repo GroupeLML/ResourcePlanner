@@ -542,8 +542,22 @@ def project_projection_fingerprint(
         _validate_provenance(projection)
 
     if version == 5:
-        raise ValueError("Provenance v5/P5 non prise en charge pour les empreintes")
-    if version == 4:
+        # P5 extends P4 business semantics with the frozen policy authority.
+        # Do not fingerprint traceability-only Shift/requirement fields via raw JSON.
+        context = projection.recipient_policy_context
+        assert context is not None  # Required by _validate_provenance.
+        payload = (
+            "project_provenance_v5",
+            projection.week_start.isoformat(),
+            projection.week_end.isoformat(),
+            tuple(
+                _project_v4_semantic_payload(project)
+                for project in sorted(projection.projects, key=lambda row: row.project_id)
+            ),
+            tuple(projection.diagnostics),
+            context.to_payload(),
+        )
+    elif version == 4:
         payload = (
             "project_provenance_v4",
             projection.week_start.isoformat(),

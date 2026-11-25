@@ -169,8 +169,7 @@ class ProjectCommunicationV5Tests(unittest.TestCase):
             deserialize_project_projection(json.dumps(older))
 
     def test_operational_v5_unsupported_until_p5_and_delta_integration(self):
-        with self.assertRaisesRegex(ValueError, "v5/P5"):
-            project_projection_fingerprint(self.v5)
+        self.assertNotEqual(project_projection_fingerprint(self.v5), project_projection_fingerprint(self.v4))
         for previous, current in ((self.v4, self.v5), (self.v5, self.v4), (self.v5, self.v5)):
             with self.assertRaisesRegex(ValueError, "v5/P5"):
                 compare_project_communication_projections(previous, current)
@@ -180,3 +179,70 @@ class ProjectCommunicationV5Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "v5/P5"):
                 build_project_confirmation_batch(self.v5)
             draft.assert_not_called()
+
+    def test_p5_round_trip_and_canonical_context_order(self):
+        fingerprint = project_projection_fingerprint(self.v5)
+        restored = deserialize_project_projection(serialize_project_projection(self.v5))
+        self.assertEqual(project_projection_fingerprint(restored), fingerprint)
+        population = RecipientPolicyPopulation.capture(replace(
+            self.population.to_population(), employees=tuple(reversed(self.population.to_population().employees)),
+        ))
+        identities = RecipientIdentityEvidence.capture(
+            reversed(self.identities.resources), reversed(self.identities.contacts), reversed(self.identities.users),
+        )
+        inputs = replace(self.inputs, candidates=(self.inputs.candidates[-1], *self.inputs.candidates[:-1]))
+        context = RecipientPolicyContext.capture(population, identities, (inputs,))
+        self.assertEqual(context, self.context)
+        self.assertEqual(project_projection_fingerprint(self.build(5, context)), fingerprint)
+
+    def test_p5_policy_changes_are_fingerprint_sensitive(self):
+        original = project_projection_fingerprint(self.v5)
+        source = self.population.to_population()
+        populations = (
+            replace(source, competency_id="COMP-2"),
+            replace(source, employees=source.employees[:1]),
+            replace(source, employees=(source.employees[0], replace(source.employees[1], email=mailbox("new")))),
+            SuperintendentPopulation("COMP-1"),
+            SuperintendentPopulation(None, diagnostic="SUPERINTENDENT_BINDING_MISSING"),
+        )
+        fingerprints = {original}
+        for population in populations:
+            context = RecipientPolicyContext.capture(RecipientPolicyPopulation.capture(population), self.identities, (self.inputs,))
+            fingerprints.add(project_projection_fingerprint(self.build(5, context)))
+        self.assertEqual(len(fingerprints), len(populations) + 1)
+        changed_identity = replace(self.identities, resources=(
+            self.identities.resources[0], replace(self.identities.resources[1], employee_external_id="E-NEW"),
+        ))
+        changed_inputs = replace(self.inputs, candidates=(
+            replace(self.inputs.candidates[0], primary=replace(self.inputs.candidates[0].primary, email=mailbox("other"))),
+            *self.inputs.candidates[1:],
+        ))
+        for identities, inputs in ((changed_identity, self.inputs), (self.identities, changed_inputs)):
+            context = RecipientPolicyContext.capture(self.population, identities, (inputs,))
+            self.assertNotEqual(project_projection_fingerprint(self.build(5, context)), original)
+
+    def test_p5_preserves_business_fingerprint_sensitivity(self):
+        original = project_projection_fingerprint(self.v5)
+        for changes in (
+            {"shift_id": "S-NEW"}, {"hours": 7.0}, {"confirmation": "Tentative"},
+            {"project_name": "Demo changed"}, {"standard_hours": 9.0},
+        ):
+            projection = build_project_communication_projection(
+                week_start=WEEK, week_end=END, assignments=(replace(self.assignment, **changes),),
+                request_provenance_version=5, recipient_policy_context=self.context,
+            )
+            self.assertNotEqual(project_projection_fingerprint(projection), original)
+        trace_only = build_project_communication_projection(
+            week_start=WEEK, week_end=END, assignments=(replace(self.assignment, requirement_id="REQ-NEW"),),
+            request_provenance_version=5, recipient_policy_context=self.context,
+        )
+        self.assertEqual(project_projection_fingerprint(trace_only), original)
+
+    def test_p5_rejects_invalid_capability_and_context(self):
+        # Exercise the fingerprint boundary, not just construction.
+        for field, value in (("request_provenance_complete", False), ("recipient_policy_context", None),
+                             ("request_provenance_version", 6), ("request_provenance_version", True)):
+            malformed = replace(self.v5)
+            object.__setattr__(malformed, field, value)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                project_projection_fingerprint(malformed)
