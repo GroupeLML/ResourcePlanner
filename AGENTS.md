@@ -101,7 +101,7 @@ understand scope
 → inspect relevant code
 → implement
 → targeted tests
-→ broader relevant local validation
+→ broader relevant validation (or authorized Draft checkpoint under section 3D)
 → create/update PR
 → report PR number and exact current head SHA
 → report CI run number / run ID if already available
@@ -118,7 +118,7 @@ If that corrective scope is complex under section 3B, the orchestrator should se
 
 After GitHub proves that the PR is merged and required CI is green, machine-pipeline reconciliation may be initiated manually by explicit Product Owner instruction or automatically by DevCockpit when that orchestration mode is explicitly active. That reconciliation turn is authorized only to reflect the already-proven delivery in #851: mark the delivered WorkItem DONE, promote the true next already-defined item to READY according to the existing order/dependencies/gates, and keep later items BLOCKED when appropriate. Human roadmap #55 remains context and is not a fallback machine authority. The reconciliation must not change scope, ordering, dependencies, REPLACES, WorkItem identity or decomposition.
 
-A completed implementation DEV turn is not the same as a completed WorkItem. The WorkItem remains unfinished until authoritative GitHub and roadmap evidence satisfy the Definition of Done.
+An authorized early Draft checkpoint under section 3D is not a completed implementation handoff. A completed implementation DEV turn is not the same as a completed WorkItem. The WorkItem remains unfinished until authoritative GitHub and roadmap evidence satisfy the Definition of Done.
 
 Do not begin the next roadmap item on your own after stopping. A new WorkItem starts only from a new orchestrator prompt or explicit user instruction.
 
@@ -342,6 +342,40 @@ The DEV agent should include concise **production-impact notes** in its final ha
 
 Those notes are evidence for the Product Owner/orchestrator. They do not replace the independent Production Merge Risk Assessment on the exact merge head.
 
+
+---
+
+## 3D. Execution environments and validation fallbacks
+
+GitHub connector access, terminal network access, repository checkout, dependency availability and execution capability are independent. Do not assume that a connected GitHub account grants terminal GitHub access, or that a repository URL creates a local checkout. Never extract, copy or expose connector credentials for shell use.
+
+Before implementation, discover the available repository and execution capabilities, read live AGENTS.md, verify the authorized Issue/PR and exact starting SHA, and select the strongest practical execution mode:
+
+1. **Full checkout:** use a verified existing or synchronizable checkout and normal local targeted and broader validation when available. Verify repository root, branch, exact HEAD and worktree cleanliness before modifying files.
+2. **Reconstructed workspace:** retrieve exact-ref source and tests through the connector and materialize only the files and dependencies sufficient for meaningful isolated checks. Do not call a partial reconstruction a full checkout or claim repository-wide coverage from it.
+3. **Connector implementation + CI:** when a functioning full checkout cannot be obtained, the Product Owner may explicitly authorize a bounded Draft implementation checkpoint using GitHub connector reads/writes, static inspection, feasible isolated checks and unchanged exact-head GitHub Actions for outstanding executable validation. The authorization is specific to the WorkItem/phase; do not infer it from past work or a failed clone.
+
+A failed clone or missing dependencies is a capability limitation, not automatically a reason to stop. Determine whether another permitted mode satisfies the authorized work. If essential validation cannot be performed or safely deferred under the current authorization, report the precise limitation and request a Product Owner decision. Do not repeatedly attempt a known unavailable operation or spend the turn reconstructing an entire checkout without the necessary dependencies.
+
+For connector-based writes, read files at the exact authorized ref; preserve unrelated files; prefer a coherent multi-file commit when implementation and tests belong together. Verify the branch parent before writing, use available expected-head protection and non-forced updates, fail closed if the branch unexpectedly changes, and verify the resulting commit, PR head/base and changed files. Discover actual tool contracts rather than assuming identical capabilities across environments. Never modify main directly or bypass repository protection.
+
+### Early Draft checkpoint
+
+For an explicitly authorized connector/CI fallback, DEV may create or update the existing Draft PR before all executable validation is available. Before the checkpoint:
+
+- implement the authorized scope and meaningful targeted regression coverage;
+- inspect the complete proposed diff, relevant contracts and existing tests;
+- run any genuinely available appropriate local/isolated checks;
+- report the execution mode, actual results and outstanding validation in the PR description and handoff;
+- identify which unchanged CI jobs/tests are expected to exercise the outstanding behavior.
+
+A checkpoint is recoverable implementation evidence, not completed acceptance, a completed normal DEV handoff, Ready status, or merge authorization. DEV reports the exact head and one immediate CI lookup if available, then stops. Do not poll CI. Subsequent corrections remain on the same PR/branch and may use the same explicitly authorized fallback within its scope.
+
+The Product Owner must independently verify actual exact-head test execution and outcomes, not just job names or a green overall conclusion. A skipped/no-op job is not an executed test suite. Accept CI execution in place of unavailable local execution only when it demonstrably covers the required targeted and relevant regression behavior; obtain additional executable evidence in an appropriate environment whenever CI coverage or environment fidelity is insufficient. Preserve all required architecture/review gates, production-risk assessment, acceptance criteria, branch protection and manual merge authority. Never weaken assertions, change CI merely to compensate for workspace limitations, or treat a checkpoint or green CI alone as permission to merge.
+
+Report validation as PASS or FAIL only for genuinely executed checks, NOT RUN for unexecuted checks, DEFERRED TO CI for identified outstanding checks, and SKIPPED/NO-OP for checks that did not execute. Distinguish static review from executable validation and disclose material environment differences and limitations. Neither a local binary nor a declared CI job proves dependency availability or test execution.
+
+This section also applies to exceptionally authorized Architect implementation under section 3B; it does not authorize an Architect takeover or relax independent-review requirements. Read-only reviews can use exact-ref connector evidence without a local checkout, but must disclose unavailable execution evidence.
 
 ---
 
@@ -696,7 +730,7 @@ When the orchestrator reactivates the same DEV session for a current-head CI fai
 2. inspect the failing job/check and exact failure;
 3. determine whether the failure is caused by the current change;
 4. make the smallest correct fix within the authorized WorkItem;
-5. run targeted validation locally;
+5. run targeted validation locally when available, or follow the explicitly authorized section 3D checkpoint path and disclose outstanding validation;
 6. push the fix to the existing PR;
 7. report the updated head SHA and newly started CI run when available;
 8. stop the DEV turn again.
@@ -734,14 +768,26 @@ Otherwise stop and report:
 
 A PR should represent one coherent issue or sub-issue.
 
-The PR description should summarize:
+### Initial pull request description and traceability
 
-- requested change;
-- implementation;
-- important design decisions;
-- tests/validation performed;
-- migrations or compatibility implications;
-- known limitations, if any.
+The initial PR description is the durable technical delivery record for the authorized WorkItem. Make it sufficiently complete for a Product Owner, Architect, future Developer or maintainer to understand and evaluate the implementation without access to the originating agent conversation.
+
+Include, proportionally to the scope and complexity:
+
+- **WorkItem and objective:** associated Issue, requested behavior, implementation scope, relevant accepted ADRs or architectural boundaries, and starting base/ref when relevant.
+- **Implementation details:** concrete changes organized by affected component, subsystem or functional behavior.
+- **Important design decisions:** choices, rationale, edge cases and trade-offs.
+- **Changed files:** principal modified files and their responsibilities.
+- **Preserved contracts and exclusions:** business authority, security, persistence, compatibility and unrelated behavior intentionally preserved.
+- **Validation coverage:** targeted tests added/modified, existing regression coverage and the behavior those tests establish.
+- **Actual validation results:** checks genuinely executed and their results, unavailable/skipped checks, execution mode and validation deferred to GitHub CI, including exact-head evidence when available.
+- **Production impact:** migrations, configuration, startup behavior, integrations, deployment and rollback considerations where applicable.
+- **Known limitations and residual risks:** unresolved evidence, deferred work and material limitations.
+- **Handoff disposition:** implementation status, Draft/Ready requirements and outstanding review or validation gates.
+
+A small correction may use concise bullets; complex changes require more detailed structured sections. Do not inflate descriptions mechanically or substitute a reference to a chat handoff for the durable record. An early Draft checkpoint must identify outstanding executable validation and must not claim completed acceptance. Keep the description accurate when later corrections or verified evidence materially change scope, design, validation, production impact or handoff status; do not overwrite historical facts or claim tests not run. The Product Owner checks traceability before merge authorization and may request a bounded description update.
+
+This requirement concerns the opening PR description, not routine PR conversation comments. Preserve existing write-restraint rules for orchestration messages and ordinary read-only reviews. Exceptionally authorized Architect implementation follows the same description standard.
 
 Do not mix unrelated cleanup into the same PR.
 
@@ -796,7 +842,7 @@ Auto-merge is not permission to weaken branch protection, required checks or tes
 Before the DEV handoff, verify:
 
 - requested behavior is implemented;
-- appropriate local/targeted validation has been performed;
+- appropriate local/targeted validation has been performed, except for an explicitly authorized early Draft checkpoint under section 3D (outstanding validation must be resolved before merge authorization);
 - migrations/documentation are updated when required;
 - no known blocking defect remains;
 - production-impact notes are reported when section 3C applies;
@@ -988,6 +1034,7 @@ Stop and request a decision when:
 - security implications are unclear or significant;
 - the requested behavior conflicts with existing documented architecture;
 - an unrelated defect prevents reliable validation;
+- essential validation or repository access cannot be satisfied through an available authorized execution mode or safely deferred under section 3D;
 - CI remains unresolved after reasonable targeted investigation;
 - the next roadmap item is insufficiently defined.
 
@@ -998,7 +1045,8 @@ Do not stop for:
 - normal test failures caused by the implementation;
 - lint/type/build errors;
 - straightforward merge conflicts;
-- small refactors necessary to implement the requested behavior.
+- small refactors necessary to implement the requested behavior;
+- a failed clone or missing local dependency when another authorized execution mode can safely advance the WorkItem under section 3D.
 
 ---
 
@@ -1052,6 +1100,7 @@ For normal autonomous implementation work, an item is DONE only when:
 - the requested behavior is implemented;
 - appropriate targeted tests pass;
 - relevant regression tests pass;
+- any validation deferred under section 3D has been resolved with actual exact-head executable evidence appropriate to the required behavior and risk;
 - required CI is green;
 - the Production Merge Risk Assessment has been completed on the merge head and its deployment disposition is acceptable;
 - the PR is merged;
@@ -1072,7 +1121,7 @@ Therefore:
 DEV TURN COMPLETE ≠ WORKITEM DONE
 ```
 
-`Code complete`, `CI started`, and `DEV turn complete` are not definitions of WorkItem DONE.
+`Code complete`, `CI started`, `Draft checkpoint delivered`, and `DEV turn complete` are not definitions of WorkItem DONE.
 
 ---
 
