@@ -4,7 +4,7 @@ import unittest
 
 from app.application.operational_contacts import OperationalContactService
 from app.domain.communication_recipient_identity import RecipientIdentity
-from app.domain.communication_recipient_composition import compose_mandatory_recipients
+from app.domain.communication_recipient_composition import RecipientCandidate, compose_mandatory_recipients
 from app.domain.superintendent_recipient_resolution import AddressFailure
 from app.infrastructure.sql import Base, create_session_factory, create_sql_engine
 from app.infrastructure.sql.business_contact_models import BusinessContact
@@ -40,7 +40,7 @@ class SuperintendentRecipientSqlTests(unittest.TestCase):
                         employee_external_id="E1", business_contact_id="C1"),
             ])
 
-    def read(self):
+    def read(self, existing=()):
         with self.factory() as session:
             repository = SqlProjectCommunicationRepository(
                 session,
@@ -49,8 +49,8 @@ class SuperintendentRecipientSqlTests(unittest.TestCase):
             )
             population = repository.read_superintendent_population()
             roots = tuple(RecipientIdentity("RESOURCE", row.resource_id) for row in population.employees)
-            index = read_recipient_identity_index(session, roots)
-            return compose_mandatory_recipients(population, (), index), index
+            index = read_recipient_identity_index(session, roots + tuple(row.identity for row in existing))
+            return compose_mandatory_recipients(population, existing, index), index
 
     def test_committed_resource_email_correction_is_fresh_and_old_facts_unchanged(self):
         before, _ = self.read()
@@ -73,13 +73,50 @@ class SuperintendentRecipientSqlTests(unittest.TestCase):
         self.assertTrue(index.equivalent(resource, RecipientIdentity("USER", "U1")))
         self.assertTrue(index.equivalent(RecipientIdentity("RESOURCE", "R2"), RecipientIdentity("CONTACT", "C2")))
         self.assertFalse(index.equivalent(resource, RecipientIdentity("CONTACT", "C3")))
+        existing = (RecipientCandidate(contact, "Same name", "MANAGER", "TO",
+                                       "contact@example.ca", "BUSINESS_CONTACT_EMAIL"),)
+        before, _ = self.read(existing)
+        self.assertTrue(before.mandatory_complete)
+        self.assertTrue(before.mandatory[0].fulfilled_by_existing)
+        # Distinct external IDs obey the unique filtered Resource index. The
+        # explicit U1 -> C1 link now conflicts with C1's canonical employee
+        # namespace, which points to an inactive, noneligible Resource.
         with self.factory.begin() as session:
-            session.add(Resource(id="R-INACTIVE", name="Other", external_id="E1", active=False))
-        result, index = self.read()
+            session.add(Resource(id="R-INACTIVE", name="Other", external_id="E3", active=False))
+            linked_contact = session.get(BusinessContact, "C1")
+            linked_contact.external_system = "RESOURCEPLANNER"
+            linked_contact.external_entity = "EMPLOYEE"
+            linked_contact.external_id = "E3"
+        result, index = self.read(existing)
         self.assertEqual(tuple(row.resource_id for row in result.population.employees), ("R1", "R2"))
         self.assertIn(resource, index.ambiguous)
         self.assertIn(RecipientIdentity("RESOURCE", "R-INACTIVE"), index.ambiguous)
+        self.assertIn(contact, index.ambiguous)
+        self.assertIn(RecipientIdentity("USER", "U1"), index.ambiguous)
         self.assertFalse(index.equivalent(resource, contact))
+        self.assertTrue(index.equivalent(RecipientIdentity("RESOURCE", "R2"), RecipientIdentity("CONTACT", "C2")))
+        self.assertFalse(result.mandatory_complete)
+        self.assertFalse(result.mandatory[0].fulfilled_by_existing)
+        self.assertEqual([(row.resource_id, row.reason) for row in result.blockers], [("R1", AddressFailure.MISSING)])
+        self.assertEqual([(row.channel, row.address) for row in result.recipients],
+                         [("TO", "contact@example.ca"), ("CC", "two@example.ca")])
+
+    def test_unlinked_acumatica_contact_does_not_fulfill_mandatory_delivery(self):
+        with self.factory.begin() as session:
+            session.add(BusinessContact(
+                id="C-ERP", display_name="Same name", email="contact@example.ca",
+                external_system="ACUMATICA", external_entity="EMPLOYEE", external_id="E1",
+            ))
+        contact = RecipientIdentity("CONTACT", "C-ERP")
+        existing = (RecipientCandidate(contact, "Same name", "MANAGER", "TO",
+                                       "contact@example.ca", "BUSINESS_CONTACT_EMAIL"),)
+        result, index = self.read(existing)
+        self.assertFalse(index.equivalent(RecipientIdentity("RESOURCE", "R1"), contact))
+        self.assertFalse(result.mandatory[0].fulfilled_by_existing)
+        self.assertFalse(result.mandatory_complete)
+        self.assertEqual([(row.resource_id, row.reason) for row in result.blockers], [("R1", AddressFailure.MISSING)])
+        self.assertEqual([(row.channel, row.address) for row in result.recipients],
+                         [("TO", "contact@example.ca"), ("CC", "two@example.ca")])
 
 
 if __name__ == "__main__":

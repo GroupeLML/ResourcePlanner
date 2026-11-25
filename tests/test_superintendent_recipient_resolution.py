@@ -110,13 +110,28 @@ class RecipientIdentityTests(unittest.TestCase):
             ((ResourceIdentityFact("R1", "E1"), ResourceIdentityFact("R2", "E1")),
              (ContactIdentityFact("C1"),), (UserIdentityFact("U1", "E1", "C1"),)),
             ((ResourceIdentityFact("R1", "E1"), ResourceIdentityFact("R2", "E2")),
-             (ContactIdentityFact("C1", "ACUMATICA", "EMPLOYEE", "E2"),), (UserIdentityFact("U1", "E1", "C1"),)),
+             (ContactIdentityFact("C1", "RESOURCEPLANNER", "EMPLOYEE", "E2"),), (UserIdentityFact("U1", "E1", "C1"),)),
         ):
             with self.subTest(resources=resources, contacts=contacts):
                 index = build_recipient_identity_index(resources, contacts, users)
                 self.assertEqual(index.ambiguous, frozenset((identity("RESOURCE", "R1"), identity("RESOURCE", "R2"), identity("CONTACT", "C1"), identity("USER", "U1"))))
                 self.assertFalse(index.equivalent(identity("RESOURCE", "R1"), identity("CONTACT", "C1")))
                 self.assertTrue(index.equivalent(identity("RESOURCE", "R1"), identity("RESOURCE", "R1")))
+
+    def test_acumatica_namespace_alone_is_not_employee_identity_authority(self):
+        resource = identity("RESOURCE", "R1")
+        contact = identity("CONTACT", "C1")
+        facts = (ResourceIdentityFact("R1", "E1"),)
+        contacts = (ContactIdentityFact("C1", "ACUMATICA", "EMPLOYEE", "E1"),)
+        index = build_recipient_identity_index(facts, contacts, ())
+        self.assertFalse(index.equivalent(resource, contact))
+        population = SuperintendentPopulation("C", (SuperintendentEmployee("R1", "Same name", None),))
+        result = compose_mandatory_recipients(population, (candidate("CONTACT", "C1", "valid@example.ca"),), index)
+        self.assertEqual(tuple(row.resource_id for row in result.blockers), ("R1",))
+        self.assertFalse(result.mandatory[0].fulfilled_by_existing)
+        # An explicit AppUser link remains authoritative independently of the label.
+        linked = build_recipient_identity_index(facts, contacts, (UserIdentityFact("U1", "E1", "C1"),))
+        self.assertTrue(linked.equivalent(resource, contact))
 
     def test_exact_external_id_and_namespace_required(self):
         index = build_recipient_identity_index(

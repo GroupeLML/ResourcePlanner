@@ -32,7 +32,9 @@ class ContactIdentityFact:
 
     @property
     def employee_external_id(self) -> str | None:
-        if self.external_system in {"RESOURCEPLANNER", "ACUMATICA"} and self.external_entity == "EMPLOYEE":
+        # SqlIdentityRepository creates/reconciles this exact namespace. An
+        # arbitrary ERP-labelled contact is not an independent employee link.
+        if self.external_system == "RESOURCEPLANNER" and self.external_entity == "EMPLOYEE":
             return self.external_id
         return None
 
@@ -71,6 +73,8 @@ def build_recipient_identity_index(
     Components with conflicting employee IDs or multiple rows of any root kind
     do not establish cross-root equivalence. Same-root identity remains valid.
     The caller must supply all competing matches, not just eligible Resources.
+    Resource.external_id is unique when non-null (filtered index); duplicate
+    Resource facts are still rejected defensively if supplied to this boundary.
     """
     users = tuple(users)
     graph: dict[RecipientIdentity, set[RecipientIdentity]] = {}
