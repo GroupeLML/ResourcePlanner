@@ -1302,6 +1302,33 @@ h1 { font-size: 1.6rem; }
 .asset-capacity-scroll { overflow-x: auto; }
 .asset-capacity-grid { display: grid; min-width: 760px; }
 .asset-capacity-row { display: contents; }
+.asset-capacity-section-rows { display: contents; }
+.asset-capacity-section-rows[hidden] { display: none; }
+.asset-capacity-section-toggle {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+  min-height: 36px;
+  padding: .45rem .6rem;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: #f0f3f8;
+  color: #536076;
+  font: inherit;
+  font-size: .68rem;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+.asset-capacity-section-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.asset-capacity-section-toggle > :last-child {
+  font-variant-numeric: tabular-nums;
+}
 .asset-capacity-header,
 .asset-capacity-identity,
 .asset-capacity-cell {

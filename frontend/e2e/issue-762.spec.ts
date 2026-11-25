@@ -131,6 +131,9 @@ test("762 profile unité véhicule pilote le contrat continu #744", async ({ bro
 
     const occupancyPanel = page.getByTestId("asset-unit-occupancy-panel");
     const occupancyContent = page.getByTestId("asset-unit-occupancy-content");
+    const otherSection = occupancyPanel.getByTestId("asset-unit-section-OTHER");
+    await expect(otherSection).toHaveAttribute("aria-expanded", "false");
+    await otherSection.click();
     await expect(occupancyContent).toContainText("NAC-01");
     await expect(occupancyContent).not.toContainText("VEH-762-03");
 
