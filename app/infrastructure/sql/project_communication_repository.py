@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+from ...domain.superintendent_population import SuperintendentPopulation, SuperintendentEmployee
+
 from sqlalchemy import or_, select, true
 from sqlalchemy.orm import Session
 
@@ -31,6 +33,9 @@ from .business_contact_models import BusinessContact
 from .identity_models import AppUser
 from .models import (
     ORIGIN_QUICK_SHIFT,
+    ID_LENGTH,
+    Competency,
+    ResourceCompetency,
     Project,
     Resource,
     ResourceAvailabilityRule,
@@ -94,9 +99,42 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
         session: Session,
         *,
         operational_contacts: OperationalContactService,
+        superintendent_competency_id: str | None = None,
     ) -> None:
         self._session = session
         self._operational_contacts = operational_contacts
+        self._superintendent_competency_id = superintendent_competency_id
+
+    def read_superintendent_population(self) -> SuperintendentPopulation:
+        """Read the complete global population, without invoking scheduling composition."""
+        configured = self._superintendent_competency_id
+        if configured is None or not configured.strip():
+            return SuperintendentPopulation(None, diagnostic="SUPERINTENDENT_BINDING_MISSING")
+        if configured != configured.strip() or len(configured) > ID_LENGTH:
+            return SuperintendentPopulation(configured, diagnostic="SUPERINTENDENT_BINDING_INVALID")
+
+        # One outer-join statement captures binding and membership together, including
+        # an active definition with no eligible employee. No catalogue search limit.
+        rows = self._session.execute(
+            select(Competency.id, Competency.active, Resource.id, Resource.name, Resource.email)
+            .select_from(Competency)
+            .outerjoin(ResourceCompetency, ResourceCompetency.competency_id == Competency.id)
+            .outerjoin(Resource, (Resource.id == ResourceCompetency.resource_id)
+                       & (Resource.active == true()) & (Resource.erp_active == true()))
+            .where(Competency.id == configured)
+        ).all()
+        # SQL Server may compare textual IDs case-insensitively or ignore trailing
+        # spaces. Never silently accept an inexact configured identity.
+        if not rows or any(row[0] != configured for row in rows):
+            return SuperintendentPopulation(configured, diagnostic="SUPERINTENDENT_BINDING_INVALID")
+        if not rows[0][1]:
+            return SuperintendentPopulation(configured, diagnostic="SUPERINTENDENT_BINDING_INACTIVE")
+        employees = tuple(sorted(
+            (SuperintendentEmployee(resource_id, name, address)
+             for _, _, resource_id, name, address in rows if resource_id is not None),
+            key=lambda employee: employee.resource_id,
+        ))
+        return SuperintendentPopulation(configured, employees=employees)
 
     def _project_manager(
         self,

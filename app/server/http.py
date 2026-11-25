@@ -356,6 +356,7 @@ def make_project_communication_dependency(
     transport: CommunicationTransportPort | None = None,
     smtp_cipher: SecretCipherPort | None = None,
     smtp_client: SmtpClientPort | None = None,
+    superintendent_competency_id: str | None = None,
 ) -> ProjectCommunicationDependency:
     request_session = session_dependency or make_session_dependency(factory)
     resolved_smtp_client = smtp_client or SmtpClient()
@@ -372,6 +373,7 @@ def make_project_communication_dependency(
             session,
             transport=transport,
             smtp_service=smtp_service,
+            superintendent_competency_id=superintendent_competency_id,
         )
 
     return dependency
@@ -510,6 +512,7 @@ def create_api_app(
     break_glass_runtime: BreakGlassRuntime | None = None,
     dev_user_switcher_runtime: DevUserSwitcherRuntime | None = None,
     communication_transport: CommunicationTransportPort | None = None,
+    superintendent_competency_id: str | None = None,
     smtp_cipher: SecretCipherPort | None = None,
     smtp_client: SmtpClientPort | None = None,
     performance_log_path: Path | None = None,
@@ -618,6 +621,7 @@ def create_api_app(
         transport=communication_transport,
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
+        superintendent_competency_id=superintendent_competency_id,
     )
     competency_dependency = make_competency_dependency(
         factory,
