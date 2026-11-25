@@ -8,6 +8,12 @@ WorkItem: #889
 
 Decision authority: Product Owner acceptance of the Architect's provenance-v4 decision.
 
+## Relationship to ADR-039
+
+[ADR-039 — Mandatory superintendent CC and recipient-policy provenance v5](ADR-039-mandatory-superintendent-cc-and-recipient-provenance-v5.md) extends this decision forward with v5/P5 recipient-policy provenance, the explicit cross-project superintendent CC exception and project-only new scheduling generation. Historical P0-P4 serialized shapes/fingerprints and this ADR's genuine project/Shift delta and baseline rules remain unchanged.
+
+For v5, changes confined to the global superintendent recipient context do not create an independent delta, and the v4-to-v5 capability transition alone does not require a Shift historical refresh. Existing missing-fact refresh rules continue to apply where older snapshots lack Shift facts. See ADR-039 for employee-email correction, narrowly scoped legacy retirement, cutover and rollback obligations.
+
 ## Context
 
 #889 requires an explicit choice between a full project communication and a communication containing only changes since the latest effectively communicated snapshot of the same week. Within an affected project, unchanged Shifts must not be repeated once complete comparison facts are available.
