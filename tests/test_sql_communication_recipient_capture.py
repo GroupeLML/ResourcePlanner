@@ -7,6 +7,9 @@ from unittest.mock import patch
 from sqlalchemy import event
 
 from app.application.operational_contacts import OperationalContactService
+from app.application.project_communications import ProjectCommunicationService
+from app.application.errors import ApplicationUnavailableError, ApplicationValidationError
+from app.application.security import AuthPrincipal
 from app.domain.communication_recipient_identity import RecipientIdentity
 from app.domain.project_communication import build_project_communication_projection
 from app.domain.project_communication_messages import (
@@ -57,7 +60,7 @@ class SqlRecipientCaptureTests(unittest.TestCase):
             session.add_all(ResourceCompetency(resource_id=key, competency_id=COMP) for key in (
                 "R-PM", "R-GLOBAL", "R-MISSING", "R-INVALID", "R-AMBIG", "R-OFF", "R-ERP-OFF",
             ))
-            session.add(ProjectCoManager(project_id="P1", business_contact_id="C-CO"))
+            session.add(ProjectCoManager(project_id="P1", business_contact_id="C-CO", created_by_user_id="U-REQUESTER"))
             session.get(WorkforceRequest, "D1").requester_user_id = "U-REQUESTER"
 
     def repository(self, session, binding=COMP):
@@ -187,3 +190,64 @@ class SqlRecipientCaptureTests(unittest.TestCase):
             session.get(Resource, "R-PM").email = mailbox("fallback")
         with self.assertRaisesRegex(ValueError, "no representable project participant root"):
             self.capture()
+
+    def test_application_capture_keeps_live_v4_and_normalizes_week(self):
+        with self.factory() as session:
+            repository = self.repository(session)
+            service = ProjectCommunicationService(repository)
+            with patch.object(repository, "read_superintendent_population", wraps=repository.read_superintendent_population) as read:
+                current = service.capture_v5_projection(week_start=WEEK.replace(day=23))
+                read.assert_called_once_with()
+            live = service.project_projection(week_start=WEEK)
+            self.assertEqual(current.week_start, WEEK)
+            self.assertEqual(current.projects, live.projects)
+            self.assertEqual(current.request_provenance_version, 5)
+            self.assertEqual(live.request_provenance_version, 4)
+            self.assertIsNone(live.recipient_policy_context)
+            self.assertFalse(session.new)
+            self.assertFalse(session.dirty)
+            self.assertFalse(session.deleted)
+
+    def test_generator_authority_is_not_fabricated(self):
+        with self.factory() as session:
+            repository = self.repository(session)
+            service = ProjectCommunicationService(repository)
+            principal = AuthPrincipal.from_roles(
+                local_user_id=None, issuer="urn:test", subject="generator",
+                display_name="Demo generator", email=mailbox("generator"),
+                roles=(), auth_mode="test",
+            )
+            with patch.object(repository, "capture_recipient_context", wraps=repository.capture_recipient_context) as capture:
+                with self.assertRaises(ApplicationValidationError):
+                    service.capture_v5_projection(week_start=WEEK, add_generator_cc=True)
+                with self.assertRaises(ApplicationUnavailableError) as exc:
+                    service.capture_v5_projection(week_start=WEEK, add_generator_cc=True, generator_principal=principal)
+                self.assertEqual(exc.exception.code, "project_communication_v5_generator_authority_unavailable")
+                capture.assert_not_called()
+            projection = service.capture_v5_projection(week_start=WEEK, generator_principal=principal)
+            self.assertFalse(any(row.primary.role == "GENERATOR"
+                                 for message in projection.recipient_policy_context.message_inputs
+                                 for row in message.candidates))
+
+    def test_large_population_identity_queries_respect_batch_limit(self):
+        with self.factory.begin() as session:
+            keys = ["R-BULK-" + str(i) for i in range(905)]
+            session.add_all(Resource(id=key, name="Demo bulk", external_id="E-" + key,
+                                     email=mailbox(key.lower())) for key in keys)
+            session.flush()
+            session.add_all(ResourceCompetency(resource_id=key, competency_id=COMP) for key in keys)
+        with self.factory() as session:
+            repository = self.repository(session)
+            projection = ProjectCommunicationService(repository).project_projection(week_start=WEEK)
+            sizes = []
+            def record(conn, cursor, statement, parameters, context, executemany):
+                sizes.append(len(parameters))
+            event.listen(self.engine, "before_cursor_execute", record)
+            try:
+                context = repository.capture_recipient_context(projection)
+            finally:
+                event.remove(self.engine, "before_cursor_execute", record)
+            self.assertEqual(len(context.population.employees), 910)
+            self.assertEqual(len(context.messages[0].mandatory), 910)
+            self.assertIn(900, sizes)
+            self.assertTrue(all(size <= 900 for size in sizes))
