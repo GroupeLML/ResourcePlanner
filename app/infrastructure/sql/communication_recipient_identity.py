@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.communication_recipient_identity import (
     ContactIdentityFact,
+    ERPPrincipalIdentityFact,
     RecipientIdentity,
     RecipientIdentityIndex,
     ResourceIdentityFact,
@@ -36,17 +37,24 @@ def _read_matches(session, columns, match_column, values):
 
 def read_recipient_identity_evidence(
     session: Session, roots: Iterable[RecipientIdentity],
+    *, erp_principals: Iterable[ERPPrincipalIdentityFact] = (),
 ) -> RecipientIdentityEvidence:
     """Read stable links, including noneligible competitors, in bounded batches.
 
     Resolve the complete reachable identity components once per composition.
     Each search key is queried at most once per column; do not scope Resource
     competitors to active employees or to membership in the policy population.
-    This read has no cache, performs no writes and does not select email authority.
+    Typed ERP principals seed exact employee-key searches without requiring a
+    local user/contact/Resource root. This read has no cache, performs no writes
+    and does not select email authority.
     """
     pending = {kind: set() for kind in ("RESOURCE", "CONTACT", "USER", "EMPLOYEE")}
     for root in roots:
         pending[root.kind].add(root.id)
+    for principal in erp_principals:
+        if type(principal) is not ERPPrincipalIdentityFact:
+            raise ValueError("Expected typed ERP principal authority")
+        pending["EMPLOYEE"].add(principal.employee_external_id)
     searched = {kind: set() for kind in pending}
     resources: dict[str, ResourceIdentityFact] = {}
     contacts: dict[str, ContactIdentityFact] = {}
