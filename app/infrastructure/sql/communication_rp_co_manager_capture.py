@@ -10,7 +10,7 @@ from ...domain.communication_recipient_identity import (
     ContactIdentityFact, RecipientIdentity, ResourceIdentityFact, UserIdentityFact,
 )
 from ...domain.communication_recipient_provenance import (
-    MessageRecipientInputs, RecipientAuthorityInput, RecipientIdentityEvidence,
+    MessageRecipientInputs, RecipientAuthorityInput, RecipientIdentityEvidence, RPNominationSource,
 )
 from .business_contact_models import BusinessContact
 from .communication_recipient_identity import _read_matches, read_recipient_identity_evidence
@@ -56,6 +56,8 @@ def capture_rp_co_manager_authorities(
         pairs.add(pair)
         by_project[row.project_id].append(contact.id)
 
+    # Freeze independent complete raw relationship coverage before candidate or address construction.
+    sources = {key: RPNominationSource.capture(key, keys) for key, keys in by_project.items()}
     contact_ids = {contact_id for _, contact_id in pairs}
     roots = {RecipientIdentity("CONTACT", key) for key in contact_ids}
     evidence = read_recipient_identity_evidence(session, roots)
@@ -125,5 +127,6 @@ def capture_rp_co_manager_authorities(
         # aliasing and final transport deduplication belong to the domain.
         candidates[key] = RecipientAuthorityInput(primary, fallback)
 
-    return tuple(MessageRecipientInputs(project_id, tuple(candidates[key] for key in keys))
+    return tuple(MessageRecipientInputs(project_id, tuple(candidates[key] for key in keys),
+                                        sources[project_id])
                  for project_id, keys in by_project.items()), evidence

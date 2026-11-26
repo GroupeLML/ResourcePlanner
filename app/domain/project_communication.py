@@ -240,8 +240,57 @@ def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
             expected.add(("MANAGER", "TO", typed_manager.principal.identity))
         else:
             expect(project.project_manager, "MANAGER")
-        for participant in project.project_co_managers:
-            expect(participant, "CO_MANAGER")
+        source = by_project[project.project_id].nomination_source
+        if source is None:
+            # Unavailable/provisional authority cannot justify a hidden role.
+            for participant in project.project_co_managers:
+                expect(participant, "CO_MANAGER")
+        else:
+            # C = N is enforced by MessageRecipientInputs. Bind the effective
+            # presentation independently: E = N - S, where S follows ADR-017's
+            # exact resolved AppUser OR BusinessContact predicate. Neither
+            # address equality nor a broader canonical Resource alias proves S.
+            nominations = set(source.contact_ids)
+            contacts = {row.contact_id for row in context.identities.contacts}
+            if not nominations <= contacts:
+                raise ValueError("Missing canonical RP nomination contact evidence")
+            linked = {}
+            for user in context.identities.users:
+                key = user.business_contact_id
+                if key in nominations:
+                    if key in linked:
+                        raise ValueError("Contradictory RP nomination user/contact binding")
+                    linked[key] = user.user_id
+            suppressed = set()
+            co_candidates = {row.primary.identity.id: row.primary
+                             for row in by_project[project.project_id].candidates
+                             if type(row) is not ERPManagerAuthority and row.primary.role == "CO_MANAGER"}
+            if typed_manager is not None:
+                for key in nominations:
+                    same_user = (typed_manager.linked_user_id is not None
+                                 and typed_manager.linked_user_id == linked.get(key))
+                    same_contact = typed_manager.contact_id is not None and typed_manager.contact_id == key
+                    if same_user or same_contact:
+                        # A coherent direct user link can have only one contact.
+                        # Missing or contradictory bindings are not suppression proof.
+                        if (not same_user or not same_contact
+                                or typed_manager.contact_status != "RESOLVED"):
+                            raise ValueError("Contradictory canonical manager/nomination suppression evidence")
+                        if co_candidates[key].active != bool(typed_manager.linked_user_active
+                                                            and typed_manager.contact_active):
+                            raise ValueError("Contradictory canonical manager/nomination activity")
+                        suppressed.add(key)
+            effective = set()
+            for participant in project.project_co_managers:
+                key = participant.contact_id
+                if (key not in nominations or key in effective
+                        or participant.user_id != linked.get(key)):
+                    raise ValueError("Contradictory effective RP nomination presentation")
+                effective.add(key)
+            if effective != nominations - suppressed:
+                raise ValueError("Effective RP nomination coverage differs from persisted source")
+            expected.update(("CO_MANAGER", "TO", RecipientIdentity("CONTACT", key))
+                            for key in nominations)
         for participant in project.requesters:
             expect(participant, "REQUESTER")
         for day in project.days:

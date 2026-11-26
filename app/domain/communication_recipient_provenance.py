@@ -145,9 +145,51 @@ class RecipientAuthorityInput:
 
 
 @dataclass(frozen=True, slots=True)
+class RPNominationSource:
+    """Independent raw ProjectCoManager coverage, not a derived role claim.
+
+    This frozen record is structural evidence, not authentication of its
+    acquisition. Only the trusted persisted adapter may establish completeness.
+    """
+    project_id: str
+    source_kind: str
+    contact_ids: tuple[str, ...] | None
+
+    def __post_init__(self):
+        if not _nonblank_id(self.project_id):
+            raise ValueError("Invalid RP nomination source project")
+        if self.source_kind == "UNAVAILABLE_PROVISIONAL":
+            if self.contact_ids is not None:
+                raise ValueError("Unavailable RP nomination source cannot claim coverage")
+        elif self.source_kind == "CANONICAL_PERSISTED":
+            if (type(self.contact_ids) is not tuple
+                    or any(type(key) is not str or not _nonblank_id(key) for key in self.contact_ids)
+                    or list(self.contact_ids) != sorted(set(self.contact_ids))):
+                raise ValueError("RP nomination source identities must be unique and ordered")
+        else:
+            raise ValueError("Unknown RP nomination source kind")
+
+    @classmethod
+    def capture(cls, project_id, contact_ids):
+        return cls(project_id, "CANONICAL_PERSISTED", tuple(sorted(contact_ids)))
+
+    def to_payload(self):
+        return _json_value(asdict(self))
+
+    @classmethod
+    def from_payload(cls, payload):
+        data = _require_keys(payload, {"project_id", "source_kind", "contact_ids"})
+        ids = data["contact_ids"]
+        return cls(data["project_id"], data["source_kind"],
+                   None if ids is None else _read_list(ids, lambda item: item))
+
+
+@dataclass(frozen=True, slots=True)
 class MessageRecipientInputs:
     project_id: str
     candidates: tuple[RecipientAuthorityInput | ERPManagerAuthority, ...]
+    # None means unavailable, never complete empty. Serialize it explicitly.
+    nomination_source: RPNominationSource | None = None
 
     def __post_init__(self):
         if (not _nonblank_id(self.project_id) or not isinstance(self.candidates, tuple)
@@ -164,6 +206,18 @@ class MessageRecipientInputs:
                 for row in self.candidates]
         if len(keys) != len(set(keys)):
             raise ValueError("Duplicate message recipient role claim")
+        if self.nomination_source is not None:
+            source = self.nomination_source
+            if (type(source) is not RPNominationSource or source.project_id != self.project_id
+                    or source.source_kind != "CANONICAL_PERSISTED"):
+                raise ValueError("Invalid or cross-project canonical RP nomination source")
+            candidates = {row.primary.identity.id for row in self.candidates
+                          if type(row) is RecipientAuthorityInput and row.primary.role == "CO_MANAGER"}
+            if candidates != set(source.contact_ids):
+                raise ValueError("RP nomination candidate coverage differs from persisted source")
+            if any(type(row) is RecipientAuthorityInput and row.primary.role == "MANAGER"
+                   for row in self.candidates):
+                raise ValueError("Canonical RP nomination coverage cannot use provisional manager authority")
         # Preserve established within-role order and canonical role precedence.
         priority = {"MANAGER": 0, "CO_MANAGER": 1, "REQUESTER": 2, "ASSIGNED": 3}
         object.__setattr__(self, "candidates", tuple(sorted(
@@ -173,12 +227,16 @@ class MessageRecipientInputs:
 
     @classmethod
     def from_payload(cls, payload):
-        data = _require_keys(payload, {"project_id", "candidates", "role_evidence"})
+        data = _require_keys(payload, {"project_id", "candidates", "role_evidence", "nomination_source"})
         def read(row):
             if isinstance(row, dict) and set(row) == {"erp_manager"}:
                 return ERPManagerAuthority.from_payload(row["erp_manager"])
             return RecipientAuthorityInput.from_payload(row)
-        result = cls(data["project_id"], _read_list(data["candidates"], read))
+        source = RPNominationSource.from_payload(data["nomination_source"])
+        if source.project_id != data["project_id"]:
+            raise ValueError("Cross-project RP nomination source")
+        result = cls(data["project_id"], _read_list(data["candidates"], read),
+                     source if source.source_kind == "CANONICAL_PERSISTED" else None)
         if result.to_payload() != data:
             raise ValueError("Contradictory project role evidence")
         return result
@@ -201,7 +259,8 @@ class MessageRecipientInputs:
         return _json_value({"project_id": self.project_id, "candidates": [
             {"erp_manager": row.to_payload()} if type(row) is ERPManagerAuthority else row.to_payload()
             for row in self.candidates
-        ], "role_evidence": roles})
+        ], "role_evidence": roles, "nomination_source": (self.nomination_source or
+            RPNominationSource(self.project_id, "UNAVAILABLE_PROVISIONAL", None)).to_payload()})
 
 
 @dataclass(frozen=True, slots=True)
