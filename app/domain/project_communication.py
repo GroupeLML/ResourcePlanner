@@ -207,6 +207,24 @@ def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
     # All known project participant identities are required; no generator authority.
     by_project = {row.project_id: row for row in context.message_inputs}
     index = context.current_index()
+    lookup = context.manager_presentation
+    canonical_presentation = context.presentation_mode == "CANONICAL_R2B"
+    presentation_roles = {} if lookup is None else {role.binding: role for role in lookup.roles}
+
+    def validate_manager_participant(participant, binding):
+        role = presentation_roles.get(binding)
+        if role is None:
+            raise ValueError("Missing originating effective manager presentation")
+        email, active = lookup.derive(role)
+        # These are the v4 presenter facts, not canonical transport authority.
+        # Phone and diagnostics remain their existing independent v4 fields.
+        if (participant.contact_id != role.contact_id
+                or participant.user_id != role.linked_user_id
+                or participant.email != email
+                or type(participant.active) is not bool or participant.active != active
+                or participant.display_name != role.display_name):
+            raise ValueError("Contradictory independent manager participant presentation")
+
     for project in projection.projects:
         expected: set[tuple[str, str, RecipientIdentity]] = set()
 
@@ -228,18 +246,31 @@ def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
                               if type(row) is ERPManagerAuthority), None)
         if typed_manager is not None:
             participant = project.project_manager
-            resolved = typed_manager.candidate(context.identities, index)
-            # The v4-compatible participant is presentation evidence, not an ERP
-            # identity authority. Bind it to the separately captured source facts.
-            if (participant.contact_id != typed_manager.contact_id
-                    or participant.user_id != typed_manager.linked_user_id
-                    or participant.active != resolved.active
-                    or (participant.email or "").strip() != (resolved.email or "").strip()
-                    or participant.display_name != typed_manager.display_name):
-                raise ValueError("Contradictory ERP manager participant evidence")
+            if canonical_presentation:
+                validate_manager_participant(participant, (
+                    project.project_id, "MANAGER", typed_manager.principal.employee_external_id,
+                ))
+            else:
+                # Retain only the earlier inactive compatibility boundary.
+                # It cannot assert independently captured presentation authority.
+                resolved = typed_manager.candidate(context.identities, index)
+                if (participant.contact_id != typed_manager.contact_id
+                        or participant.user_id != typed_manager.linked_user_id
+                        or participant.active != resolved.active
+                        or (participant.email or "").strip() != (resolved.email or "").strip()
+                        or participant.display_name != typed_manager.display_name):
+                    raise ValueError("Contradictory ERP manager participant evidence")
             expected.add(("MANAGER", "TO", typed_manager.principal.identity))
         else:
-            expect(project.project_manager, "MANAGER")
+            if canonical_presentation:
+                participant = project.project_manager
+                if (participant.contact_id is not None or participant.user_id is not None
+                        or participant.email is not None or participant.phone is not None
+                        or participant.active is not False
+                        or participant.display_name != "Chargé de projet non défini"):
+                    raise ValueError("Contradictory absent canonical manager presentation")
+            else:
+                expect(project.project_manager, "MANAGER")
         source = by_project[project.project_id].nomination_source
         if source is None:
             # Unavailable/provisional authority cannot justify a hidden role.
@@ -286,6 +317,8 @@ def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
                 if (key not in nominations or key in effective
                         or participant.user_id != linked.get(key)):
                     raise ValueError("Contradictory effective RP nomination presentation")
+                if canonical_presentation:
+                    validate_manager_participant(participant, (project.project_id, "CO_MANAGER", key))
                 effective.add(key)
             if effective != nominations - suppressed:
                 raise ValueError("Effective RP nomination coverage differs from persisted source")

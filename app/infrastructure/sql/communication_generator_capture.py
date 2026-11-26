@@ -101,4 +101,5 @@ def capture_generator_context(
     return RecipientPolicyContext.capture(
         current.population, current.identities, current.message_inputs,
         generator=generator, composition_identities=extension,
+        manager_presentation=current.manager_presentation, presentation_mode=current.presentation_mode,
     )

@@ -6,7 +6,8 @@ import hashlib
 import json
 
 from .communication_recipient_authority import (
-    AuthenticatedGeneratorAuthority, ERPManagerAuthority, RecipientAddressObservation,
+    AuthenticatedGeneratorAuthority, ERPManagerAuthority, ManagerPresentationLookup,
+    RecipientAddressObservation,
 )
 
 from .communication_recipient_composition import (
@@ -294,6 +295,10 @@ class RecipientPolicyContext:
     message_inputs: tuple[MessageRecipientInputs, ...]
     generator: AuthenticatedGeneratorAuthority | None = None
     composition_identities: RecipientIdentityEvidence | None = None
+    # The old inactive fixtures, including R1 persisted nomination evidence,
+    # cannot claim complete independent presentation acquisition.
+    manager_presentation: ManagerPresentationLookup | None = None
+    presentation_mode: str = "UNAVAILABLE_PRE_R2B"
     current_resolution: tuple[MessageRecipientProvenance, ...] = field(init=False)
     messages: tuple[MessageRecipientProvenance, ...] = field(init=False)
 
@@ -303,6 +308,12 @@ class RecipientPolicyContext:
                 or not isinstance(self.message_inputs, tuple)
                 or any(type(row) is not MessageRecipientInputs for row in self.message_inputs)):
             raise ValueError("Missing recipient policy context")
+        if (type(self.presentation_mode) is not str
+                or self.presentation_mode not in ("UNAVAILABLE_PRE_R2B", "CANONICAL_R2B")
+                or (self.presentation_mode == "CANONICAL_R2B") !=
+                   (type(self.manager_presentation) is ManagerPresentationLookup)
+                or (self.presentation_mode == "UNAVAILABLE_PRE_R2B" and self.manager_presentation is not None)):
+            raise ValueError("Missing or contradictory manager presentation authority mode")
         if self.generator is not None and type(self.generator) is not AuthenticatedGeneratorAuthority:
             raise ValueError("Invalid generator option evidence")
         ids = [row.project_id for row in self.message_inputs]
@@ -410,13 +421,177 @@ class RecipientPolicyContext:
             current_resolution.append(current)
             messages.append(current if self.generator is None else
                             resolve((*candidates, self.generator.candidate), composition_index))
+        if self.presentation_mode == "CANONICAL_R2B":
+            self._validate_manager_presentation(address_facts, manager_states, requester_states,
+                                                active_contacts, resource_states, resource_activity_flags)
         object.__setattr__(self, "current_resolution", tuple(current_resolution))
         object.__setattr__(self, "messages", tuple(messages))
 
+    def _validate_manager_presentation(self, addresses, manager_states, requester_states,
+                                       active_contacts, resource_states, resource_activity_flags):
+        """Corroborate independent current-source observations without adding identity roots.
+
+        The standalone lookup is legacy presentation authority only. It may
+        contain physical Resources outside the exact canonical identity graph.
+        Comparing common persisted facts does not prove acquisition completeness
+        or transaction-wide consistency; neither does a recomputable digest.
+        """
+        lookup = self.manager_presentation
+        if type(lookup) is not ManagerPresentationLookup:
+            raise ValueError("Invalid independent manager presentation lookup")
+        if lookup.project_ids != tuple(row.project_id for row in self.message_inputs):
+            raise ValueError("Manager presentation lookup differs from originating snapshot scope")
+        users = {row.user_id: row for row in self.identities.users}
+        contacts = {row.contact_id for row in self.identities.contacts}
+        resources = {row.resource_id: row for row in self.identities.resources}
+        roles = {row.binding: row for row in lookup.roles}
+        index = self.current_index()
+        users_by_contact = {}
+        users_by_employee = {}
+        for user in users.values():
+            users_by_contact.setdefault(user.business_contact_id, []).append(user)
+            users_by_employee.setdefault(user.employee_external_id, []).append(user)
+
+        def corroborate(facts, key, value):
+            if key in facts and facts[key] != value:
+                raise ValueError("Contradictory independent manager presentation source fact")
+
+        # Verify precisely the effective bindings from the independent
+        # nomination/ERP sources. Hidden nominations retain delivery authority
+        # but are not a source of additional presentation keys.
+        expected = set()
+        for message in self.message_inputs:
+            if message.nomination_source is None or any(
+                    type(row) is RecipientAuthorityInput and row.primary.role == "MANAGER"
+                    for row in message.candidates):
+                raise ValueError("Canonical manager presentation requires independent project sources")
+            manager = next((row for row in message.candidates if type(row) is ERPManagerAuthority), None)
+            if manager is not None:
+                binding = (message.project_id, "MANAGER", manager.principal.employee_external_id)
+                expected.add(binding)
+                role = roles.get(binding)
+                if role is None:
+                    raise ValueError("Missing independent ERP manager presentation")
+                canonical = index.canonical(manager.principal.identity)
+                if (canonical.kind == "RESOURCE") != (manager.resource_address is not None):
+                    raise ValueError("Missing or unproven canonical ERP Resource observation")
+                manager_role = role
+                if (role.linked_user_id != manager.linked_user_id
+                        or role.linked_user_active != manager.linked_user_active
+                        or role.contact_id != manager.contact_id
+                        or role.contact_status != manager.contact_status
+                        or role.contact_active != manager.contact_active
+                        or role.raw_contact_email != (None if manager.contact_address is None
+                                                      else manager.contact_address.raw_address)
+                        or role.display_name != manager.display_name):
+                    raise ValueError("Contradictory ERP manager presentation source")
+                if manager.linked_user_id is None:
+                    matches = len(users_by_employee.get(manager.principal.employee_external_id, ()))
+                    status = "IDENTITY_CONFLICT" if matches > 1 else "UNRESOLVED_USER"
+                else:
+                    status = {"ABSENT": "UNRESOLVED_CONTACT", "UNRESOLVED": "INVALID_REFERENCE",
+                              "RESOLVED": "RESOLVED"}[manager.contact_status]
+                if role.resolution_status != status:
+                    raise ValueError("Contradictory ERP manager presentation resolution")
+                if (role.contact_active and (role.raw_contact_display_name or "").strip()
+                        and role.resolver_display_name != role.raw_contact_display_name.strip()):
+                    raise ValueError("Contradictory ERP manager presentation display name")
+            for row in message.candidates:
+                if type(row) is not RecipientAuthorityInput or row.primary.role != "CO_MANAGER":
+                    continue
+                key = row.primary.identity.id
+                linked = users_by_contact.get(key, ())
+                if key not in contacts or len(linked) > 1:
+                    raise ValueError("Missing or contradictory independent nomination identity")
+                user_id = linked[0].user_id if linked else None
+                # The persisted RP adapter retains the proven Resource observation
+                # even if a direct contact address wins. No presentation fact
+                # may supply or repair this canonical authority.
+                canonical = index.canonical(row.primary.identity)
+                if (canonical.kind == "RESOURCE") != (row.resource_fallback is not None):
+                    raise ValueError("Missing or unproven canonical RP Resource observation")
+                if row.resource_fallback is not None and row.resource_fallback.identity != canonical:
+                    raise ValueError("Contradictory canonical RP Resource observation")
+                same_user = (manager is not None and manager.linked_user_id is not None
+                             and manager.linked_user_id == user_id)
+                same_contact = manager is not None and manager.contact_id == key
+                if same_user or same_contact:
+                    if (not same_user or not same_contact or manager.contact_status != "RESOLVED"
+                            or row.primary.active != bool(manager.linked_user_active and manager.contact_active)):
+                        raise ValueError("Contradictory independent nomination suppression evidence")
+                    if row.primary.display_name != ((manager_role.raw_contact_display_name or "").strip() or key):
+                        raise ValueError("Contradictory hidden RP nomination display name")
+                    continue
+                binding = (message.project_id, "CO_MANAGER", key)
+                expected.add(binding)
+                role = roles.get(binding)
+                if (role is None or role.linked_user_id != user_id
+                        or role.contact_status != "RESOLVED" or role.resolution_status != "RESOLVED"
+                        or role.raw_contact_email != row.primary.email
+                        or bool(role.contact_active and role.linked_user_active is not False) != row.primary.active
+                        or role.resolver_display_name != row.primary.display_name):
+                    raise ValueError("Contradictory independent RP manager presentation source")
+                if role.resolver_display_name != ((role.raw_contact_display_name or "").strip() or key):
+                    raise ValueError("Contradictory RP manager presentation display name")
+        if set(roles) != expected:
+            raise ValueError("Extra or missing independent manager presentation binding")
+
+        for role in lookup.roles:
+            if role.linked_user_id is not None:
+                user = users.get(role.linked_user_id)
+                if user != UserIdentityFact(role.linked_user_id, role.raw_user_employee_id,
+                                            role.linked_user_contact_id):
+                    raise ValueError("Contradictory manager presentation user identity")
+                key = RecipientIdentity("USER", role.linked_user_id)
+                corroborate(manager_states, key, role.linked_user_active)
+                corroborate(requester_states, key, role.linked_user_active)
+            if role.contact_id is not None:
+                if (role.contact_id in contacts) != (role.contact_status == "RESOLVED"):
+                    raise ValueError("Contradictory manager presentation contact identity")
+                key = RecipientIdentity("CONTACT", role.contact_id)
+                corroborate(manager_states, key, role.contact_active)
+                if key in active_contacts and role.contact_active is not True:
+                    raise ValueError("Contradictory manager presentation contact activity")
+                if role.contact_status == "RESOLVED":
+                    corroborate(addresses, ("BUSINESS_CONTACT_EMAIL", key, "CURRENT"),
+                                role.raw_contact_email)
+
+        # An exact canonical Resource key in the lookup's effective key set
+        # must be among the results for the partition containing that key.
+        # Other results may occur across partitions under database collation.
+        # Do not infer equality or an alias from a trimmed identifier.
+        partition_by_key = {key: i for i, keys in enumerate(lookup.partitions) for key in keys}
+        results = tuple(frozenset(rows) for rows in lookup.partition_results)
+        for row in resources.values():
+            partition = partition_by_key.get(row.employee_external_id)
+            if partition is not None and row.resource_id not in results[partition]:
+                raise ValueError("Missing overlapping canonical Resource presentation observation")
+        eligible_ids = {employee.employee.resource_id for employee in self.population.employees}
+        for row in lookup.resources:
+            other = resources.get(row.resource_id)
+            if other is not None and other.employee_external_id != row.employee_external_id:
+                raise ValueError("Contradictory raw Resource employee identifier")
+            key = RecipientIdentity("RESOURCE", row.resource_id)
+            corroborate(addresses, ("RESOURCE_EMAIL", key, "CURRENT"), row.raw_email)
+            corroborate(resource_states, key, bool(row.active and row.erp_active))
+            corroborate(resource_activity_flags, key, (row.active, row.erp_active))
+            if row.resource_id in eligible_ids:
+                if not (row.active and row.erp_active):
+                    raise ValueError("Inactive presentation Resource cannot be an eligible superintendent")
+
     @classmethod
-    def capture(cls, population, identities, message_inputs, *, generator=None, composition_identities=None):
+    def capture(cls, population, identities, message_inputs, *, generator=None, composition_identities=None,
+                manager_presentation=None, presentation_mode="UNAVAILABLE_PRE_R2B"):
         return cls(population, identities, tuple(sorted(message_inputs, key=lambda row: row.project_id)),
-                   generator, composition_identities)
+                   generator, composition_identities, manager_presentation, presentation_mode)
+
+    @classmethod
+    def capture_canonical(cls, population, identities, message_inputs, *, manager_presentation):
+        """Inactive R2b construction boundary; never synthesize presentation facts."""
+        if type(manager_presentation) is not ManagerPresentationLookup:
+            raise ValueError("Missing independent canonical manager presentation")
+        return cls.capture(population, identities, message_inputs,
+                           manager_presentation=manager_presentation, presentation_mode="CANONICAL_R2B")
 
     def _erp_principals(self):
         return tuple(row.principal for message in self.message_inputs
@@ -483,6 +658,9 @@ class RecipientPolicyContext:
             "identities": asdict(self.identities),
             "message_inputs": [row.to_payload() for row in self.message_inputs],
             "current_resolution": self._messages_payload(self.current_resolution, self.current_index()),
+            "presentation_mode": self.presentation_mode,
+            "manager_presentation": (None if self.manager_presentation is None
+                                     else self.manager_presentation.to_payload()),
         })
 
     def _composition_payload(self):
@@ -515,13 +693,16 @@ class RecipientPolicyContext:
     def from_payload(cls, payload):
         data = _require_keys(payload, {"population", "identities", "message_inputs", "current_resolution",
                                        "messages", "generator", "generator_identity_fingerprint",
-                                       "composition_identities", "provisional_composition_fingerprint"})
+                                       "composition_identities", "manager_presentation", "presentation_mode",
+                                       "provisional_composition_fingerprint"})
         context = cls(RecipientPolicyPopulation.from_payload(data["population"]),
                       RecipientIdentityEvidence.from_payload(data["identities"]),
                       _read_list(data["message_inputs"], MessageRecipientInputs.from_payload),
                       None if data["generator"] is None else AuthenticatedGeneratorAuthority.from_payload(data["generator"]),
                       None if data["composition_identities"] is None else RecipientIdentityEvidence.from_payload(
-                          data["composition_identities"]))
+                          data["composition_identities"]),
+                      None if data["manager_presentation"] is None else ManagerPresentationLookup.from_payload(
+                          data["manager_presentation"]), data["presentation_mode"])
         # Compare canonical JSON rather than Python's bool/int-coercing equality.
         if json.dumps(context.to_payload(), sort_keys=True, allow_nan=False) != json.dumps(data, sort_keys=True, allow_nan=False):
             raise ValueError("Contradictory or incomplete recipient provenance claims")
