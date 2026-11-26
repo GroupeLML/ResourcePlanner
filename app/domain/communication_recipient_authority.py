@@ -233,3 +233,253 @@ class AuthenticatedGeneratorAuthority:
         if result.to_payload() != data:
             raise ValueError("Contradictory authenticated generator evidence")
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class ManagerPresentationResource:
+    """Physical Resource fact for legacy presentation, not identity authority."""
+    resource_id: str
+    employee_external_id: str
+    raw_email: str | None
+    active: bool
+    erp_active: bool
+
+    def __post_init__(self):
+        if (type(self.resource_id) is not str or not _nonblank_id(self.resource_id)
+                or type(self.employee_external_id) is not str
+                or not self.employee_external_id.strip()
+                or (self.raw_email is not None and type(self.raw_email) is not str)
+                or type(self.active) is not bool or type(self.erp_active) is not bool):
+            raise ValueError("Invalid manager presentation Resource fact")
+
+
+@dataclass(frozen=True, slots=True)
+class ManagerPresentationEvidence:
+    """Effective role and independent presentation facts, never delivery authority."""
+    project_id: str
+    role: str
+    role_id: str
+    employee_key: str | None
+    resolution_status: str
+    resolver_display_name: str
+    linked_user_id: str | None
+    linked_user_active: bool | None
+    raw_user_employee_id: str | None
+    linked_user_contact_id: str | None
+    raw_user_display_name: str | None
+    contact_id: str | None
+    contact_status: str
+    contact_active: bool | None
+    raw_contact_email: str | None
+    raw_contact_display_name: str | None
+
+    def __post_init__(self):
+        def exact(value):
+            return type(value) is str and _nonblank_id(value)
+
+        if (not exact(self.project_id) or not exact(self.role_id)
+                or type(self.role) is not str or self.role not in ("MANAGER", "CO_MANAGER")
+                or (self.employee_key is not None and not exact(self.employee_key))
+                or type(self.resolver_display_name) is not str
+                or self.resolution_status not in (
+                    "RESOLVED", "UNRESOLVED_USER", "UNRESOLVED_CONTACT",
+                    "INVALID_REFERENCE", "IDENTITY_CONFLICT")
+                or any(value is not None and not exact(value) for value in
+                       (self.linked_user_id, self.linked_user_contact_id, self.contact_id))
+                or any(value is not None and type(value) is not str for value in
+                       (self.raw_user_employee_id, self.raw_user_display_name,
+                        self.raw_contact_email, self.raw_contact_display_name))):
+            raise ValueError("Invalid manager presentation role")
+        if self.linked_user_id is None:
+            if any(value is not None for value in (
+                    self.linked_user_active, self.raw_user_employee_id,
+                    self.linked_user_contact_id, self.raw_user_display_name)):
+                raise ValueError("Presentation user facts without direct user")
+        elif (type(self.linked_user_active) is not bool
+              or type(self.raw_user_display_name) is not str
+              or self.linked_user_contact_id != self.contact_id):
+            raise ValueError("Contradictory presentation user binding")
+        if self.contact_status == "RESOLVED":
+            if (self.contact_id is None or type(self.contact_active) is not bool
+                    or type(self.raw_contact_display_name) is not str):
+                raise ValueError("Missing resolved presentation contact")
+        elif self.contact_status in ("ABSENT", "UNRESOLVED"):
+            if ((self.contact_status == "ABSENT") != (self.contact_id is None)
+                    or any(value is not None for value in
+                           (self.contact_active, self.raw_contact_email, self.raw_contact_display_name))):
+                raise ValueError("Contradictory presentation contact absence")
+        else:
+            raise ValueError("Invalid presentation contact status")
+        status = self.resolution_status
+        if ((status == "RESOLVED" and self.contact_status != "RESOLVED")
+                or (status == "UNRESOLVED_USER" and
+                    (self.role != "MANAGER" or self.linked_user_id is not None
+                     or self.contact_status != "ABSENT"))
+                or (status == "UNRESOLVED_CONTACT" and
+                    (self.role != "MANAGER" or self.linked_user_id is None
+                     or self.contact_status != "ABSENT"))
+                or (status == "INVALID_REFERENCE" and self.contact_status != "UNRESOLVED")):
+            raise ValueError("Contradictory presentation resolution status")
+        user_key = (self.raw_user_employee_id or "").strip() or None
+        if self.role == "MANAGER":
+            if (self.employee_key != self.role_id
+                    or (self.linked_user_id is not None and user_key != self.role_id)
+                    or (self.linked_user_id is None and self.contact_id is not None)):
+                raise ValueError("Wrong ERP presentation origin")
+        elif self.contact_id != self.role_id or self.employee_key != user_key:
+            raise ValueError("Wrong RP presentation origin or employee key")
+
+    @property
+    def binding(self):
+        return self.project_id, self.role, self.role_id
+
+    @property
+    def display_name(self):
+        if self.role == "MANAGER" and self.contact_id is not None:
+            return (self.raw_user_display_name or "").strip() or self.resolver_display_name
+        return self.resolver_display_name
+
+
+@dataclass(frozen=True, slots=True)
+class ManagerPresentationLookup:
+    """Versioned effective snapshot lookup with physical facts and query occurrences.
+
+    Standalone structural evidence is not proof of trusted SQL acquisition.
+    Nothing here can construct a delivery candidate or extend an identity index.
+    """
+    project_ids: tuple[str, ...]
+    roles: tuple[ManagerPresentationEvidence, ...]
+    resources: tuple[ManagerPresentationResource, ...]
+    partition_results: tuple[tuple[str, ...], ...]
+    version: int = 1
+
+    def __post_init__(self):
+        if (type(self.version) is not int or self.version != 1
+                or type(self.project_ids) is not tuple
+                or any(type(key) is not str or not _nonblank_id(key) for key in self.project_ids)
+                or self.project_ids != tuple(sorted(set(self.project_ids)))
+                or type(self.roles) is not tuple
+                or any(type(row) is not ManagerPresentationEvidence for row in self.roles)
+                or type(self.resources) is not tuple
+                or any(type(row) is not ManagerPresentationResource for row in self.resources)
+                or type(self.partition_results) is not tuple):
+            raise ValueError("Invalid manager presentation lookup scope")
+        bindings = tuple(row.binding for row in self.roles)
+        if (bindings != tuple(sorted(set(bindings)))
+                or any(row.project_id not in self.project_ids for row in self.roles)):
+            raise ValueError("Duplicate or out-of-scope manager presentation binding")
+        primary_projects = [row.project_id for row in self.roles if row.role == "MANAGER"]
+        if len(primary_projects) != len(set(primary_projects)):
+            raise ValueError("Multiple effective ERP principals")
+        users = {}
+        contacts = {}
+        for row in self.roles:
+            if row.linked_user_id is not None:
+                fact = (row.linked_user_active, row.raw_user_employee_id,
+                        row.linked_user_contact_id, row.raw_user_display_name)
+                if users.setdefault(row.linked_user_id, fact) != fact:
+                    raise ValueError("Contradictory presentation user facts")
+            if row.contact_id is not None:
+                fact = (row.contact_status, row.contact_active, row.raw_contact_email,
+                        row.raw_contact_display_name)
+                if contacts.setdefault(row.contact_id, fact) != fact:
+                    raise ValueError("Contradictory presentation contact facts")
+        ids = tuple(row.resource_id for row in self.resources)
+        if ids != tuple(sorted(set(ids))):
+            raise ValueError("Duplicate or unordered presentation Resource facts")
+        physical = {row.resource_id: row for row in self.resources}
+        keys = set(self.employee_keys)
+        if len(self.partition_results) != len(self.partitions):
+            raise ValueError("Incomplete presentation partition results")
+        referenced = set()
+        for refs in self.partition_results:
+            if (type(refs) is not tuple or any(type(ref) is not str for ref in refs)
+                    or refs != tuple(sorted(set(refs)))):
+                raise ValueError("Duplicate or malformed presentation partition reference")
+            for ref in refs:
+                if ref not in physical or physical[ref].employee_external_id.strip() not in keys:
+                    raise ValueError("Unknown or out-of-scope presentation Resource reference")
+                referenced.add(ref)
+        if referenced != set(ids):
+            raise ValueError("Unreferenced presentation Resource fact")
+
+    @property
+    def employee_keys(self):
+        return tuple(sorted({row.employee_key for row in self.roles if row.employee_key is not None}))
+
+    @property
+    def partitions(self):
+        keys = self.employee_keys
+        return tuple(keys[i:i + 900] for i in range(0, len(keys), 900))
+
+    @classmethod
+    def capture(cls, project_ids, roles, result_rows):
+        """Freeze scalar acquisition rows, retaining repeated cross-partition occurrences."""
+        facts = {}
+        results = []
+        for partition in result_rows:
+            refs = []
+            for row in partition:
+                if type(row) is not ManagerPresentationResource:
+                    raise ValueError("Invalid presentation Resource acquisition")
+                if facts.setdefault(row.resource_id, row) != row:
+                    raise ValueError("Contradictory physical presentation Resource facts")
+                refs.append(row.resource_id)
+            results.append(tuple(sorted(refs)))
+        return cls(tuple(sorted(set(project_ids))), tuple(sorted(roles, key=lambda row: row.binding)),
+                   tuple(facts[key] for key in sorted(facts)), tuple(results))
+
+    def occurrences(self, employee_key):
+        physical = {row.resource_id: row for row in self.resources}
+        return tuple(physical[ref] for refs in self.partition_results for ref in refs
+                     if physical[ref].employee_external_id.strip() == employee_key)
+
+    def derive(self, role: ManagerPresentationEvidence):
+        if type(role) is not ManagerPresentationEvidence or role not in self.roles:
+            raise ValueError("Missing originating presentation role")
+        rows = self.occurrences(role.employee_key)
+        contact_email = (role.raw_contact_email or "").strip()
+        resource_email = (rows[0].raw_email or "").strip() if len(rows) == 1 else ""
+        return (contact_email or resource_email or None,
+                bool(role.linked_user_active is not False and role.contact_active is not False
+                     and (role.contact_active is True or (not contact_email and resource_email))))
+
+    def to_payload(self):
+        return json.loads(json.dumps(asdict(self), ensure_ascii=False, allow_nan=False))
+
+    @classmethod
+    def from_payload(cls, payload):
+        data = _require_keys(payload, {
+            "project_ids", "roles", "resources", "partition_results", "version",
+        })
+        if any(type(data[key]) is not list for key in
+               ("project_ids", "roles", "resources", "partition_results")):
+            raise ValueError("Missing explicit presentation lookup collections")
+        if any(type(refs) is not list for refs in data["partition_results"]):
+            raise ValueError("Malformed presentation partition results")
+        role_keys = set(ManagerPresentationEvidence.__dataclass_fields__)
+        resource_keys = set(ManagerPresentationResource.__dataclass_fields__)
+        return cls(
+            tuple(data["project_ids"]),
+            tuple(ManagerPresentationEvidence(**_require_keys(row, role_keys)) for row in data["roles"]),
+            tuple(ManagerPresentationResource(**_require_keys(row, resource_keys)) for row in data["resources"]),
+            tuple(tuple(refs) for refs in data["partition_results"]), data["version"],
+        )
+
+    def serialize(self):
+        return json.dumps(self.to_payload(), ensure_ascii=False, sort_keys=True,
+                          separators=(",", ":"), allow_nan=False)
+
+    @classmethod
+    def deserialize(cls, payload):
+        def read_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate presentation lookup JSON key")
+                result[key] = value
+            return result
+
+        if type(payload) is not str:
+            raise ValueError("Expected serialized presentation lookup")
+        return cls.from_payload(json.loads(payload, object_pairs_hook=read_object))
