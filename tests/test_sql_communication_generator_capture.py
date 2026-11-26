@@ -41,6 +41,7 @@ class SqlGeneratorCaptureTests(unittest.TestCase):
         self.addCleanup(self.engine.dispose)
         Base.metadata.create_all(self.engine)
         self.factory = create_session_factory(self.engine)
+        self._session_sequence = 0
         self.f = fixtures.ProjectCommunicationV5Tests()
         self.f.setUp()
         with self.factory.begin() as session:
@@ -92,7 +93,8 @@ class SqlGeneratorCaptureTests(unittest.TestCase):
         return AuthPrincipal.from_roles(**values)
 
     def session_principal(self, key, mode):
-        value = "synthetic-session-value"
+        self._session_sequence += 1
+        value = f"synthetic-session-value-{self._session_sequence}"
         with self.factory.begin() as session:
             repository = SqlAuthSessionRepository(session)
             repository.create_session(raw_token=value, user_id=key,
@@ -163,13 +165,15 @@ class SqlGeneratorCaptureTests(unittest.TestCase):
 
     def test_local_and_break_glass_existing_session_semantics(self):
         local = self.session_principal("U-G", "local")
+        self.assertEqual((local.auth_mode, local.issuer, local.subject), ("local", "urn:test", "U-G"))
         self.assertEqual(self.capture(local).generator.principal.local_user_id, "U-G")
         self.change(AppUser, "U-G", issuer=None, subject=None)
         emergency = self.session_principal("U-G", "break_glass")
+        self.assertEqual(emergency.auth_mode, "break_glass")
         self.assertEqual(emergency.issuer, "urn:resourceplanner:break-glass")
         self.assertEqual(emergency.subject, "app-user:U-G")
         self.assertEqual(self.capture(emergency).generator.principal.local_user_id, "U-G")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "Contradictory authenticated local association"):
             self.capture(replace(emergency, auth_mode="oidc"))
 
     def test_missing_inactive_wrong_and_stale_local_link(self):
@@ -214,16 +218,38 @@ class SqlGeneratorCaptureTests(unittest.TestCase):
         self.assertIn(mailbox("authenticated"), self.actual(policy).messages[0].cc_addresses)
 
     def test_incomplete_existing_component_rejected_not_repaired(self):
+        requester = RecipientIdentity("USER", "U-RQ")
+        generator = RecipientIdentity("USER", "U-G")
+        resource_g = RecipientIdentity("RESOURCE", "R-G")
+        resource_2 = RecipientIdentity("RESOURCE", "R-2")
+        current_index = self.current.current_index()
+        self.assertIn(requester, current_index.components)
+        self.assertNotIn(resource_g, current_index.components)
+        # Release the unique employee key in a committed transaction first.
+        self.change(AppUser, "U-G", employee_external_id=None)
         self.change(AppUser, "U-RQ", employee_external_id="E-G")
-        with self.assertRaisesRegex(ValueError, "complete current identity closure"):
+        with self.factory() as session:
+            observed = read_recipient_identity_evidence(session, (requester,)).index()
+            self.assertTrue(observed.equivalent(requester, resource_g))
+        with self.assertRaisesRegex(ValueError, "Generator contradicts complete current identity closure"):
             self.capture(self.principal("U-RQ"))
         # A generator outside the captured closure may also bridge into it.
         self.change(AppUser, "U-RQ", employee_external_id=None)
         self.change(AppUser, "U-G", employee_external_id="E-2")
-        with self.assertRaises(ValueError):
+        self.assertNotIn(generator, current_index.components)
+        self.assertIn(resource_2, current_index.components)
+        with self.factory() as session:
+            observed = read_recipient_identity_evidence(session, (generator,)).index()
+            self.assertTrue(observed.equivalent(generator, resource_2))
+        # The extension repeats R-2, which the domain's unique-fact boundary rejects.
+        with self.assertRaisesRegex(ValueError, "Identity evidence must be unique and ordered"):
             self.capture(self.principal())
         refreshed = self.current_policy()
-        self.assertIsNone(self.capture(self.principal(), current=refreshed).composition_identities)
+        self.assertTrue(refreshed.current_index().equivalent(generator, resource_2))
+        captured = self.capture(self.principal(), current=refreshed)
+        self.assertIs(captured.identities, refreshed.identities)
+        self.assertIsNone(captured.composition_identities)
+        self.assertTrue(captured.index().equivalent(captured.generator.principal.identity, resource_2))
 
     def test_address_dedup_without_identity_equivalence(self):
         policy = self.capture(self.principal(None, email=mailbox("rq").upper()))
