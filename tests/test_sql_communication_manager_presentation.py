@@ -173,12 +173,25 @@ class SqlManagerPresentationTests(unittest.TestCase):
 
     def test_distinct_physical_resources_prevent_unique_fallback(self):
         self.db.change(BusinessContact, "C-PM", email=None)
+        # Keep the unique index intact: binary-distinct persisted identifiers
+        # can both match the legacy lookup under SQLite RTRIM instrumentation.
         with self.db.factory.begin() as session:
-            session.add(Resource(id="R-PM-2", external_id="E-PM", name="Demo duplicate",
+            session.add(Resource(id="R-PM-2", external_id="E-PM  ", name="Demo duplicate",
                                  email=mailbox("other")))
+        self.collation("RTRIM")
+        with self.db.factory() as session:
+            rows = session.execute(select(Resource.id, Resource.external_id).where(
+                Resource.external_id.in_(("E-PM",))
+            ).order_by(Resource.id)).all()
+        self.assertEqual([tuple(row) for row in rows], [("R-PM", "E-PM"), ("R-PM-2", "E-PM  ")])
+        self.assertEqual({employee.strip() for _, employee in rows}, {"E-PM"})
         lookup = self.capture()
+        self.assertEqual(lookup.employee_keys, ("E-PM",))
         self.assertEqual(lookup.partition_results, (("R-PM", "R-PM-2"),))
         self.assertEqual(len(lookup.resources), 2)
+        self.assertEqual([(row.resource_id, row.employee_external_id) for row in lookup.resources],
+                         [("R-PM", "E-PM"), ("R-PM-2", "E-PM  ")])
+        self.assertEqual(lookup.occurrences("E-PM"), lookup.resources)
         self.assertEqual(lookup.derive(lookup.roles[0]), (None, True))
         self.assert_legacy(lookup)
 
