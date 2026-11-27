@@ -595,3 +595,162 @@ class SqlManagerPresentationIntegrationTests(unittest.TestCase):
         tampered = replace(lookup, partition_results=(lookup.partition_results[0], ()))
         with self.assertRaisesRegex(ValueError, "Missing overlapping canonical Resource"):
             replace(policy, manager_presentation=tampered)
+
+    def assert_b01_missing_resource(self, projection, resource_id, *, inputs=None):
+        policy = projection.recipient_policy_context
+        observed, = (row for row in policy.manager_presentation.resources
+                     if row.resource_id == resource_id)
+        canonical, = (row for row in policy.identities.resources if row.resource_id == resource_id)
+        self.assertEqual(observed.employee_external_id, canonical.employee_external_id)
+        incomplete = replace(policy.identities, resources=tuple(
+            row for row in policy.identities.resources if row.resource_id != resource_id))
+        inputs = policy.message_inputs if inputs is None else inputs
+        # The incomplete claims can still pass the earlier inactive identity
+        # and delivery boundary. They must fail specifically at B01 when the
+        # independently observed presentation facts are supplied.
+        compatibility = RecipientPolicyContext.capture(policy.population, incomplete, inputs)
+        self.assertNotIn(RecipientIdentity("RESOURCE", resource_id),
+                         compatibility.current_index().components)
+        error = "Missing canonical Resource fact for exact searched employee key"
+        with self.assertRaisesRegex(ValueError, error):
+            RecipientPolicyContext.capture_canonical(
+                policy.population, incomplete, inputs,
+                manager_presentation=policy.manager_presentation,
+            )
+        raw = json.loads(serialize_project_projection(projection))
+        frozen = raw["recipient_policy_context"]
+        frozen["identities"]["resources"] = [row for row in frozen["identities"]["resources"]
+                                              if row["resource_id"] != resource_id]
+        frozen["message_inputs"] = [row.to_payload() for row in inputs]
+        # Constructor corroboration must reject before stale digest or
+        # recomputed-resolution comparisons can mask the missing source fact.
+        with self.assertRaisesRegex(ValueError, error):
+            deserialize_project_projection(json.dumps(raw))
+
+    def test_b01_exact_erp_seed_requires_canonical_resource(self):
+        self.db.change(Project, "P1", project_manager_external_id="E-B01-ERP")
+        with self.db.factory.begin() as session:
+            session.add(Resource(id="R-B01-ERP", external_id="E-B01-ERP", name="Demo ERP",
+                                 email=mailbox("b01-erp")))
+        _, projection = self.capture()
+        policy = projection.recipient_policy_context
+        message, = policy.message_inputs
+        manager = next(row for row in message.candidates if hasattr(row, "principal"))
+        self.assertEqual(manager.principal.employee_external_id, "E-B01-ERP")
+        self.assertIsNone(manager.linked_user_id)
+        self.assertIsNone(manager.contact_id)
+        self.assertEqual(policy.identities.users, ())
+        self.assertEqual(policy.identities.contacts, ())
+        self.assertEqual(manager.resource_address.record, RecipientIdentity("RESOURCE", "R-B01-ERP"))
+        # Remove the accompanying canonical fallback claim as well, otherwise
+        # the prior observation-presence validation rejects before B01.
+        omitted = replace(manager, resource_address=None, resource_active=None, resource_erp_active=None)
+        inputs = (replace(message, candidates=tuple(
+            omitted if row is manager else row for row in message.candidates)),)
+        self.assert_b01_missing_resource(projection, "R-B01-ERP", inputs=inputs)
+
+    def test_b01_exact_rp_user_key_requires_canonical_resource(self):
+        self.db.nominate(("P1", "C-CO"))
+        with self.db.factory.begin() as session:
+            session.add(Resource(id="R-B01-CO", external_id="E-CO", name="Demo co-manager",
+                                 email=mailbox("b01-co")))
+        self.conflict("C-CO")
+        _, projection = self.capture()
+        policy = projection.recipient_policy_context
+        user = next(row for row in policy.identities.users if row.user_id == "U-CO")
+        contact = next(row for row in policy.identities.contacts if row.contact_id == "C-CO")
+        self.assertEqual(user.business_contact_id, contact.contact_id)
+        self.assertEqual(user.employee_external_id, "E-CO")
+        self.assertEqual(contact.employee_external_id, "E-COMPETING")
+        self.assertIn(RecipientIdentity("CONTACT", "C-CO"), policy.current_index().ambiguous)
+        co = next(row for row in policy.message_inputs[0].candidates
+                  if type(row) is RecipientAuthorityInput and row.primary.role == "CO_MANAGER")
+        self.assertIsNone(co.resource_fallback)
+        self.assert_b01_missing_resource(projection, "R-B01-CO")
+
+    def test_b01_qualifying_rp_contact_key_requires_canonical_resource(self):
+        self.db.nominate(("P1", "C-CO"))
+        self.db.change(AppUser, "U-CO", employee_external_id="E-CO  ")
+        self.db.change(BusinessContact, "C-CO", external_system="RESOURCEPLANNER",
+                       external_entity="EMPLOYEE", external_id="E-CO")
+        with self.db.factory.begin() as session:
+            session.add(Resource(id="R-B01-CO", external_id="E-CO", name="Demo co-manager",
+                                 email=mailbox("b01-co")))
+        _, projection = self.capture()
+        policy = projection.recipient_policy_context
+        user = next(row for row in policy.identities.users if row.user_id == "U-CO")
+        contact = next(row for row in policy.identities.contacts if row.contact_id == "C-CO")
+        self.assertEqual(user.employee_external_id, "E-CO  ")
+        self.assertEqual(contact.employee_external_id, "E-CO")
+        self.assertNotIn("E-CO", {row.employee_external_id for row in policy.identities.users})
+        self.assertNotIn("E-CO", {row.principal.employee_external_id
+                                  for row in policy.message_inputs[0].candidates
+                                  if hasattr(row, "principal")})
+        role = next(row for row in policy.manager_presentation.roles if row.role_id == "C-CO")
+        self.assertEqual(role.employee_key, "E-CO")
+        message, = policy.message_inputs
+        co = next(row for row in message.candidates
+                  if type(row) is RecipientAuthorityInput and row.primary.role == "CO_MANAGER")
+        self.assertEqual(co.resource_fallback.identity, RecipientIdentity("RESOURCE", "R-B01-CO"))
+        omitted = replace(co, resource_fallback=None)
+        inputs = (replace(message, candidates=tuple(
+            omitted if row is co else row for row in message.candidates)),)
+        self.assert_b01_missing_resource(projection, "R-B01-CO", inputs=inputs)
+
+    def test_b01_padded_presentation_only_resource_round_trip(self):
+        self.db.change(Resource, "R-PM", external_id="E-PM  ")
+        self.db.change(BusinessContact, "C-PM", email=None)
+        self.collation("RTRIM")
+        _, projection = self.capture()
+        restored = deserialize_project_projection(serialize_project_projection(projection))
+        self.assertEqual(restored, projection)
+        policy = restored.recipient_policy_context
+        self.assertEqual(policy.manager_presentation.resources[0].employee_external_id, "E-PM  ")
+        self.assertNotIn("R-PM", {row.resource_id for row in policy.identities.resources})
+        self.assertEqual(self.manager(restored).email, mailbox("resource"))
+        message, = self.actual(restored).messages
+        self.assertNotIn(mailbox("resource"), message.to_addresses + message.cc_addresses)
+
+    def test_b01_trimmed_rp_user_key_and_nonqualifying_contact_remain_presentation_only(self):
+        self.db.nominate(("P1", "C-CO"))
+        self.db.change(AppUser, "U-CO", employee_external_id="E-CO  ")
+        self.db.change(BusinessContact, "C-CO", email=None, external_system="ACUMATICA",
+                       external_entity="EMPLOYEE", external_id="E-CO")
+        with self.db.factory.begin() as session:
+            session.add(Resource(id="R-B01-CO", external_id="E-CO", name="Demo co-manager",
+                                 email=mailbox("b01-co")))
+        _, projection = self.capture()
+        restored = deserialize_project_projection(serialize_project_projection(projection))
+        self.assertEqual(restored, projection)
+        policy = restored.recipient_policy_context
+        user = next(row for row in policy.identities.users if row.user_id == "U-CO")
+        contact = next(row for row in policy.identities.contacts if row.contact_id == "C-CO")
+        self.assertEqual(user.employee_external_id, "E-CO  ")
+        self.assertEqual(contact.external_id, "E-CO")
+        self.assertIsNone(contact.employee_external_id)
+        role = next(row for row in policy.manager_presentation.roles if row.role_id == "C-CO")
+        self.assertEqual(role.employee_key, "E-CO")
+        self.assertIn("R-B01-CO", {row.resource_id for row in policy.manager_presentation.resources})
+        self.assertNotIn("R-B01-CO", {row.resource_id for row in policy.identities.resources})
+        self.assertEqual(restored.projects[0].project_co_managers[0].email, mailbox("b01-co"))
+        message, = self.actual(restored).messages
+        self.assertNotIn(mailbox("b01-co"), message.to_addresses + message.cc_addresses)
+        self.assertFalse(next(row for row in self.typed(message, "CO_MANAGER")
+                              if row.identity.id == "C-CO").selectable)
+
+    def test_b01_complete_exact_overlap_preserves_delivery_and_frozen_projection(self):
+        self.db.change(BusinessContact, "C-PM", email=None)
+        _, projection = self.capture()
+        policy = projection.recipient_policy_context
+        observed, = policy.manager_presentation.resources
+        canonical, = (row for row in policy.identities.resources if row.resource_id == observed.resource_id)
+        self.assertEqual(canonical.employee_external_id, observed.employee_external_id)
+        self.assertEqual(policy.manager_presentation.partition_results, (("R-PM",),))
+        restored = deserialize_project_projection(serialize_project_projection(projection))
+        self.assertEqual(restored, projection)
+        self.assertEqual(project_projection_fingerprint(restored), project_projection_fingerprint(projection))
+        message, = self.actual(restored).messages
+        self.assertEqual(message.to_addresses, (mailbox("resource"),))
+        row, = self.typed(message)
+        self.assertEqual(row.canonical_identity, RecipientIdentity("RESOURCE", "R-PM"))
+        self.assertEqual(row.address_source, "RESOURCE_EMAIL")

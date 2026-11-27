@@ -433,8 +433,9 @@ class RecipientPolicyContext:
 
         The standalone lookup is legacy presentation authority only. It may
         contain physical Resources outside the exact canonical identity graph.
-        Comparing common persisted facts does not prove acquisition completeness
-        or transaction-wide consistency; neither does a recomputable digest.
+        Corroboration detects omissions for independently observed exact keys,
+        but does not prove full acquisition or transaction-wide consistency;
+        neither does a recomputable digest.
         """
         lookup = self.manager_presentation
         if type(lookup) is not ManagerPresentationLookup:
@@ -566,9 +567,22 @@ class RecipientPolicyContext:
             partition = partition_by_key.get(row.employee_external_id)
             if partition is not None and row.resource_id not in results[partition]:
                 raise ValueError("Missing overlapping canonical Resource presentation observation")
+        # Mirror the exact employee-key enqueue contract of the canonical
+        # identity reader: typed ERP seeds and every acquired current Resource,
+        # user and qualifying contact fact. A trimmed legacy presentation key
+        # is not a canonical search key; generator-only evidence is excluded.
+        searched_employee_keys = {principal.employee_external_id for principal in self._erp_principals()}
+        for facts in (self.identities.resources, self.identities.contacts, self.identities.users):
+            for fact in facts:
+                value = fact.employee_external_id
+                if value and value == value.strip():
+                    searched_employee_keys.add(value)
+
         eligible_ids = {employee.employee.resource_id for employee in self.population.employees}
         for row in lookup.resources:
             other = resources.get(row.resource_id)
+            if other is None and row.employee_external_id in searched_employee_keys:
+                raise ValueError("Missing canonical Resource fact for exact searched employee key")
             if other is not None and other.employee_external_id != row.employee_external_id:
                 raise ValueError("Contradictory raw Resource employee identifier")
             key = RecipientIdentity("RESOURCE", row.resource_id)
