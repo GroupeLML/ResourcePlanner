@@ -76,6 +76,52 @@ def _unique(values: list[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
 
 
+def _scope_batches(keys):
+    """Bound a single IN predicate without altering SQL collation matching."""
+    ordered = sorted(set(keys))
+    for offset in range(0, len(ordered), 900):
+        yield ordered[offset:offset + 900]
+
+
+def _read_scoped_rows(session, model, column, keys):
+    """Union physical ORM rows, not normalized lookup keys."""
+    found = {}
+    for subset in _scope_batches(keys):
+        for row in session.scalars(select(model).where(column.in_(subset))).all():
+            found.setdefault(row.id, row)
+    return list(found.values())
+
+
+def _read_scoped_assets(
+    session, *, request_ids, shift_ids, project_ids, resource_ids,
+    human_requirement_ids, week_start, week_end,
+):
+    """Union the original five OR branches; each SELECT has at most 903 binds."""
+    statement = (
+        select(AssetAllocation, AssetRequirement, Asset, AssetType)
+        .join(AssetRequirement, AssetAllocation.asset_requirement_id == AssetRequirement.id)
+        .join(Asset, Asset.id == AssetAllocation.asset_id)
+        .join(AssetType, AssetType.id == Asset.asset_type_id)
+        .where(
+            AssetRequirement.status != "Annulé",
+            AssetAllocation.start_date <= week_end,
+            or_(AssetAllocation.end_date.is_(None), AssetAllocation.end_date >= week_start),
+        )
+    )
+    found = {}
+    for column, keys in (
+        (AssetRequirement.workforce_request_id, request_ids),
+        (AssetRequirement.shift_id, shift_ids),
+        (AssetRequirement.project_id, project_ids),
+        (AssetRequirement.context_resource_id, resource_ids),
+        (AssetRequirement.resource_requirement_id, human_requirement_ids),
+    ):
+        for subset in _scope_batches(keys):
+            for row in session.execute(statement.where(column.in_(subset))).all():
+                found.setdefault(row[0].id, row)
+    return tuple(found.values())
+
+
 def _availability_record(
     rule: ResourceAvailabilityRule,
     resource_class_codes: tuple[str, ...] = (),
@@ -370,12 +416,8 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 project.id for _shift, _requirement, _resource, project in rows
             )
         )
-        requests = (
-            self._session.scalars(
-                select(WorkforceRequest).where(WorkforceRequest.id.in_(request_ids))
-            ).all()
-            if request_ids
-            else []
+        requests = _read_scoped_rows(
+            self._session, WorkforceRequest, WorkforceRequest.id, request_ids,
         )
         requests_by_id = {row.id: row for row in requests}
         requester_user_ids = {
@@ -383,12 +425,8 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             for request in requests
             if _text(request.requester_user_id)
         }
-        requester_users = (
-            self._session.scalars(
-                select(AppUser).where(AppUser.id.in_(requester_user_ids))
-            ).all()
-            if requester_user_ids
-            else []
+        requester_users = _read_scoped_rows(
+            self._session, AppUser, AppUser.id, requester_user_ids,
         )
         requester_users_by_id = {row.id: row for row in requester_users}
 
@@ -408,50 +446,11 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 for _shift, requirement, _resource, _project in rows
             )
         )
-        asset_scope = []
-        if request_ids:
-            asset_scope.append(
-                AssetRequirement.workforce_request_id.in_(request_ids)
-            )
-        if shift_ids:
-            asset_scope.append(AssetRequirement.shift_id.in_(shift_ids))
-        if project_ids:
-            asset_scope.append(AssetRequirement.project_id.in_(project_ids))
-        if resource_ids:
-            asset_scope.append(
-                AssetRequirement.context_resource_id.in_(resource_ids)
-            )
-        if human_requirement_ids:
-            asset_scope.append(
-                AssetRequirement.resource_requirement_id.in_(
-                    human_requirement_ids
-                )
-            )
-        asset_rows = (
-            tuple(
-                self._session.execute(
-                    select(
-                        AssetAllocation,
-                        AssetRequirement,
-                        Asset,
-                        AssetType,
-                    )
-                    .join(
-                        AssetRequirement,
-                        AssetAllocation.asset_requirement_id == AssetRequirement.id,
-                    )
-                    .join(Asset, Asset.id == AssetAllocation.asset_id)
-                    .join(AssetType, AssetType.id == Asset.asset_type_id)
-                    .where(
-                        or_(*asset_scope),
-                        AssetRequirement.status != "Annulé",
-                        AssetAllocation.start_date <= week_end,
-                        or_(AssetAllocation.end_date.is_(None), AssetAllocation.end_date >= week_start),
-                    )
-                ).all()
-            )
-            if asset_scope
-            else ()
+        asset_rows = _read_scoped_assets(
+            self._session,
+            request_ids=request_ids, shift_ids=shift_ids, project_ids=project_ids,
+            resource_ids=resource_ids, human_requirement_ids=human_requirement_ids,
+            week_start=week_start, week_end=week_end,
         )
         qualifications = evaluate_asset_qualifications(
             self._session,
@@ -644,25 +643,13 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
             if _text(resolution.operational_responsible.contact_id)
         )
 
-        contacts = (
-            self._session.scalars(
-                select(BusinessContact).where(
-                    BusinessContact.id.in_(relevant_contact_ids)
-                )
-            ).all()
-            if relevant_contact_ids
-            else []
+        contacts = _read_scoped_rows(
+            self._session, BusinessContact, BusinessContact.id, relevant_contact_ids,
         )
         contacts_by_id = {row.id: row for row in contacts}
 
-        users_by_contact_rows = (
-            self._session.scalars(
-                select(AppUser).where(
-                    AppUser.business_contact_id.in_(relevant_contact_ids)
-                )
-            ).all()
-            if relevant_contact_ids
-            else []
+        users_by_contact_rows = _read_scoped_rows(
+            self._session, AppUser, AppUser.business_contact_id, relevant_contact_ids,
         )
         users_by_contact = {
             _text(row.business_contact_id): row
@@ -732,10 +719,10 @@ class SqlProjectCommunicationRepository(ProjectCommunicationRepositoryPort):
                 + list(resource_contact.diagnostics)
                 + operational_diagnostics
                 + list(
-                    asset_qualification_diagnostics_by_shift.get(
+                    sorted(set(asset_qualification_diagnostics_by_shift.get(
                         shift.id,
                         (),
-                    )
+                    )))
                 )
             )
             result.append(
