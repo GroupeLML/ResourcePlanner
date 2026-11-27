@@ -1,4 +1,4 @@
-"""Inactive, transaction-owned current-only canonical communication acquisition."""
+"""Inactive, transaction-owned canonical communication acquisition."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
 from ...application.operational_contacts import OperationalContactService
+from ...application.security import AuthPrincipal
 from ...domain.communication_recipient_composition import RecipientCandidate
 from ...domain.communication_recipient_identity import (
     RecipientIdentity, ResourceIdentityFact, UserIdentityFact,
@@ -21,6 +22,7 @@ from ...domain.project_communication import (
     build_project_communication_projection,
 )
 from .communication_erp_manager_capture import capture_erp_manager_authorities
+from .communication_generator_capture import capture_generator_context
 from .communication_manager_presentation_capture import capture_manager_presentation
 from .communication_read_uow import communication_read_uow
 from .communication_recipient_identity import _read_matches, read_recipient_identity_evidence
@@ -170,12 +172,15 @@ def _corroborate_partial(
 def acquire_canonical_current_projection(
     factory: SqlSessionFactory, *, week_start: date,
     superintendent_competency_id: str | None,
+    add_generator_cc: bool = False,
+    generator_principal: AuthPrincipal | None = None,
 ) -> ProjectCommunicationProjection:
-    """Acquire the entire current projection in one accepted owned read scope.
+    """Acquire current facts and optional generator in one owned read scope.
 
-    Not an operational application port. No prebuilt business projection,
-    caller Session, generator authority, external provider or retry is accepted.
-    A cleanup failure prevents delivery of the materialized result.
+    Only a trusted server-resolved principal may supply generator authority.
+    Not an operational application port; no prebuilt projection, caller
+    Session, external provider or retry is accepted. A cleanup failure
+    prevents delivery of the materialized result.
     """
     week = week_start - timedelta(days=week_start.weekday())
     end = week + timedelta(days=6)
@@ -269,5 +274,13 @@ def acquire_canonical_current_projection(
         policy = RecipientPolicyContext.capture_canonical(
             population, complete, messages, manager_presentation=lookup,
         )
+        # The complete current policy is independent of the generator.
+        # Only literal False skips the adapter, so invalid option types
+        # retain its existing explicit-boolean validation contract.
+        if add_generator_cc is not False:
+            policy = capture_generator_context(
+                session, policy, add_generator_cc=add_generator_cc,
+                principal=generator_principal,
+            )
         result = replace(business, request_provenance_version=5, recipient_policy_context=policy)
     return result
