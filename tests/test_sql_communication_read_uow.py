@@ -395,5 +395,223 @@ class CommunicationReadUowTests(unittest.TestCase):
             self.assertIsNot(replacement.connection.driver_connection, dbapi)
 
 
+    def _f01_compound_cleanup(self, *, origin=None, configure=None):
+        from contextlib import ExitStack
+
+        session_error = RuntimeError("F01 Session cleanup failed")
+        first_invalidation = RuntimeError("F01 initial invalidation failed")
+        later_invalidation = RuntimeError("F01 later invalidation failed")
+        invalidations = []
+
+        def fail_session(_session, _transaction):
+            raise session_error
+
+        def fail_invalidation(_driver, _record, _cause):
+            error = first_invalidation if not invalidations else later_invalidation
+            invalidations.append(error)
+            raise error
+
+        with ExitStack() as injections:
+            event.listen(self.engine.pool, "invalidate", fail_invalidation)
+            injections.callback(event.remove, self.engine.pool, "invalidate", fail_invalidation)
+            with self.assertRaises(BaseExceptionGroup) as caught:
+                with communication_read_uow(self.factory) as session:
+                    self.assertEqual(self._read(session), 10)
+                    connection = session.connection()
+                    driver = connection.connection.driver_connection
+                    event.listen(session, "after_transaction_end", fail_session)
+                    if configure is not None:
+                        configure(injections, connection, driver)
+                    if origin is not None:
+                        raise origin
+        errors = caught.exception.exceptions
+        self.assertIn(session_error, errors)
+        self.assertIn(first_invalidation, errors)
+        if origin is not None:
+            self.assertIs(errors[0], origin)
+        self.assertEqual([x for x in self.trace if isinstance(x, tuple) and x[0] == "checkout"],
+                         [("checkout", driver)])
+        self.assertNotIn(("checkin", driver), self.trace)
+        self._assert_closed(session)
+        return connection, driver, errors, invalidations
+
+    def _assert_f01_discard(self, connection, driver, *, physical_closed=True):
+        import sqlite3
+
+        self.assertIn(("detach", driver), self.trace)
+        if physical_closed:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                driver.execute("SELECT 1")
+        self.assertEqual(self.engine.pool.checkedout(), 0)
+        with self.engine.connect() as replacement:
+            self.assertIsNot(replacement, connection)
+            self.assertIsNot(replacement.connection.driver_connection, driver)
+            self.assertEqual(replacement.execute(select(Fact.value)).scalar_one(), 10)
+        self.assertEqual(self.engine.pool.checkedout(), 0)
+
+    def test_f01_successful_read_compound_cleanup_discards_driver(self):
+        connection, driver, errors, invalidations = self._f01_compound_cleanup()
+        self.assertEqual(len(errors), 2)
+        self.assertEqual(len(invalidations), 1)
+        self.assertTrue(connection.closed)
+        self._assert_f01_discard(connection, driver)
+
+    def test_f01_read_failure_compound_cleanup_preserves_origin_and_discards(self):
+        origin = LookupError("F01 originating read failed")
+        connection, driver, errors, invalidations = self._f01_compound_cleanup(origin=origin)
+        self.assertEqual(len(errors), 3)
+        self.assertEqual(len(invalidations), 1)
+        self.assertTrue(connection.closed)
+        self._assert_f01_discard(connection, driver)
+
+    def test_f01_detach_event_failure_preserved_after_pool_separation(self):
+        detach_error = RuntimeError("F01 detach event failed")
+
+        def configure(injections, _connection, _driver):
+            def fail_detach(_driver, _record):
+                raise detach_error
+            event.listen(self.engine.pool, "detach", fail_detach)
+            injections.callback(event.remove, self.engine.pool, "detach", fail_detach)
+
+        connection, driver, errors, _ = self._f01_compound_cleanup(configure=configure)
+        self.assertIn(detach_error, errors)
+        self.assertTrue(connection.closed)
+        self._assert_f01_discard(connection, driver)
+
+    def test_f01_detach_and_later_invalidation_fail_without_ordinary_close(self):
+        detach_error = RuntimeError("F01 detach failed before separation")
+        quarantine = []
+        close_calls = []
+
+        def configure(injections, connection, _driver):
+            def soft_invalidate(driver, _record, _cause):
+                quarantine.append(driver)
+            event.listen(self.engine.pool, "soft_invalidate", soft_invalidate)
+            injections.callback(event.remove, self.engine.pool, "soft_invalidate", soft_invalidate)
+            injections.enter_context(patch.object(connection, "detach", side_effect=detach_error))
+            close_calls.append(injections.enter_context(patch.object(connection, "close", wraps=connection.close)))
+
+        connection, driver, errors, invalidations = self._f01_compound_cleanup(configure=configure)
+        self.addCleanup(lambda: connection.close() if not connection.closed else None)
+        self.addCleanup(lambda: connection.invalidate() if not connection.closed else None)
+        self.assertIn(detach_error, errors)
+        self.assertEqual(len(invalidations), 2)
+        self.assertIn(invalidations[1], errors)
+        self.assertEqual(quarantine, [driver])
+        close_calls[0].assert_not_called()
+        self.assertFalse(connection.closed)
+        self.assertFalse(connection.invalidated)
+        self.assertEqual(self.engine.pool.checkedout(), 1)
+        # Test-owned teardown after removing injected failures; not UOW recovery.
+        connection.invalidate()
+        connection.close()
+        with self.engine.connect() as replacement:
+            self.assertIsNot(replacement.connection.driver_connection, driver)
+
+    def test_f01_failed_soft_quarantine_preserves_all_errors_without_close(self):
+        detach_error = RuntimeError("F01 detach failed")
+        quarantine_error = RuntimeError("F01 soft quarantine failed")
+        close_calls = []
+
+        def configure(injections, connection, _driver):
+            def fail_quarantine(_driver, _record, _cause):
+                raise quarantine_error
+            event.listen(self.engine.pool, "soft_invalidate", fail_quarantine)
+            injections.callback(event.remove, self.engine.pool, "soft_invalidate", fail_quarantine)
+            injections.enter_context(patch.object(connection, "detach", side_effect=detach_error))
+            close_calls.append(injections.enter_context(patch.object(connection, "close", wraps=connection.close)))
+
+        connection, _driver, errors, invalidations = self._f01_compound_cleanup(configure=configure)
+        self.addCleanup(lambda: connection.close() if not connection.closed else None)
+        self.addCleanup(lambda: connection.invalidate() if not connection.closed else None)
+        self.assertIn(detach_error, errors)
+        self.assertIn(quarantine_error, errors)
+        self.assertEqual(len(invalidations), 2)
+        self.assertIn(invalidations[1], errors)
+        close_calls[0].assert_not_called()
+        self.assertFalse(connection.closed)
+        self.assertEqual(self.engine.pool.checkedout(), 1)
+        # No successful pool recovery is asserted under these compound faults.
+        connection.invalidate()
+        connection.close()
+
+    def test_f01_physical_close_failure_preserved_after_detach(self):
+        import sqlite3
+        from sqlalchemy import create_engine
+
+        physical_error = RuntimeError("F01 physical close failed")
+
+        class FailingClose(sqlite3.Connection):
+            fail_close = False
+
+            def close(self):
+                if self.fail_close:
+                    raise physical_error
+                return super().close()
+
+        # Real SQLite driver subclass, separate test engine over the existing fixture.
+        self.engine = create_engine(self.engine.url, connect_args={"factory": FailingClose})
+        self.addCleanup(self.engine.dispose)
+        self.factory = create_session_factory(self.engine)
+        event.listen(self.engine.pool, "checkout", self._checkout)
+        event.listen(self.engine.pool, "checkin", self._checkin)
+        event.listen(self.engine.pool, "invalidate", self._invalidate)
+        event.listen(self.engine.pool, "detach", lambda dbapi, _record: self.trace.append(("detach", dbapi)))
+
+        def configure(_injections, _connection, driver):
+            driver.fail_close = True
+
+            def clean_driver():
+                driver.fail_close = False
+                driver.close()
+            self.addCleanup(clean_driver)
+
+        connection, driver, errors, _ = self._f01_compound_cleanup(
+            origin=LookupError("F01 read failed before physical close failure"), configure=configure)
+        self.assertIn(physical_error, errors)
+        self.assertTrue(connection.closed)
+        self._assert_f01_discard(connection, driver, physical_closed=False)
+
+    def test_f01_later_logical_invalidation_failure_does_not_fall_through(self):
+        later_error = RuntimeError("F01 logical invalidation failed after detach")
+        close_calls = []
+
+        def configure(injections, connection, _driver):
+            original = connection.invalidate
+            calls = []
+
+            def fail_later(*args, **kwargs):
+                calls.append(None)
+                if len(calls) == 1:
+                    return original(*args, **kwargs)
+                raise later_error
+            injections.enter_context(patch.object(connection, "invalidate", side_effect=fail_later))
+            close_calls.append(injections.enter_context(patch.object(connection, "close", wraps=connection.close)))
+
+        connection, driver, errors, _ = self._f01_compound_cleanup(configure=configure)
+        self.addCleanup(lambda: connection.close() if not connection.closed else None)
+        self.addCleanup(lambda: connection.invalidate() if not connection.closed else None)
+        self.assertIn(later_error, errors)
+        close_calls[0].assert_not_called()
+        self.assertFalse(connection.closed)
+        self._assert_f01_discard(connection, driver)
+        connection.invalidate()
+        connection.close()
+
+    def test_f01_logical_close_failure_after_discard_is_observable(self):
+        close_error = RuntimeError("F01 logical close failed after discard")
+
+        def configure(injections, connection, _driver):
+            injections.enter_context(patch.object(connection, "close", side_effect=close_error))
+
+        connection, driver, errors, _ = self._f01_compound_cleanup(configure=configure)
+        self.addCleanup(connection.close)
+        self.assertIn(close_error, errors)
+        self.assertTrue(connection.invalidated)
+        self.assertFalse(connection.closed)
+        self._assert_f01_discard(connection, driver)
+        connection.close()
+
+
 if __name__ == "__main__":
     unittest.main()

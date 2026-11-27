@@ -62,21 +62,31 @@ def _enroll(connection: Connection, dialect: str):
     return transaction
 
 
-def _discard_after_failed_close(connection, cause, errors):
+def _discard_uncertain_connection(connection, cause, errors):
     # A failed SQLAlchemy isolation-reset finalizer can occur after the pool
     # record has begun check-in but before the slot has been returned. A plain
     # invalidate at that point can strand the slot. Detach the uncertain DBAPI
     # connection using the public API, close it physically, then invalidate the
-    # logical Connection. Never put that physical connection back into the pool.
+    # logical Connection. Also use this path if initial invalidation raises;
+    # ordinary close must not check an uncertain driver back into the pool.
     if connection.closed:
         return
     if not connection.invalidated:
-        driver = None
+        proxy = driver = None
         try:
-            driver = connection.connection.driver_connection
+            proxy = connection.connection
+            driver = proxy.driver_connection
             connection.detach()
         except BaseException as exc:
             errors.append(exc)
+            # Detach may have failed before severing the pool record. Mark
+            # the existing proxy for replacement even if hard invalidation
+            # fails again (including eventual pool finalization).
+            if proxy is not None:
+                try:
+                    proxy.invalidate(cause, soft=True)
+                except BaseException as quarantine_error:
+                    errors.append(quarantine_error)
         if driver is not None:
             try:
                 driver.close()
@@ -86,6 +96,9 @@ def _discard_after_failed_close(connection, cause, errors):
             connection.invalidate(cause)
         except BaseException as exc:
             errors.append(exc)
+            # Do not attempt ordinary closure after failed discard. In this
+            # case even pool-slot recovery cannot be promised.
+            return
     try:
         connection.close()
     except BaseException as exc:
@@ -173,16 +186,18 @@ def _owned_read_session(factory: SqlSessionFactory) -> Iterator[Session]:
                 cleanup.append(invalidation_error)
         if connection is not None:
             # Setup failure or a lost/failed transaction makes reuse uncertain.
-            if cleanup or (failure is not None and not connection.in_transaction()):
-                try:
-                    connection.invalidate()
-                except BaseException as exc:
-                    cleanup.append(exc)
             try:
-                connection.close()
+                if cleanup or (failure is not None and not connection.in_transaction()):
+                    connection.invalidate()
             except BaseException as exc:
                 cleanup.append(exc)
-                _discard_after_failed_close(connection, exc, cleanup)
+                _discard_uncertain_connection(connection, exc, cleanup)
+            else:
+                try:
+                    connection.close()
+                except BaseException as exc:
+                    cleanup.append(exc)
+                    _discard_uncertain_connection(connection, exc, cleanup)
         if cleanup:
             errors = ([failure] if failure is not None else []) + cleanup
             raise BaseExceptionGroup("Communication read transaction cleanup failed", errors)
