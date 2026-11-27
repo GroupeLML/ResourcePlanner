@@ -13,7 +13,7 @@ import re
 import subprocess
 import tempfile
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from uuid import UUID
 from urllib.parse import parse_qsl, urlsplit
@@ -132,14 +132,156 @@ def validate_target(target):
     fields(target, "server database classification")
     token(target["server"], r"[A-Za-z0-9_.-]{1,128}(?:\\[A-Za-z0-9_.-]{1,128})?")
     token(target["database"])
-    require(target["classification"] == "DEDICATED_ISOLATED", "PROHIBITED_ENVIRONMENT")
-    require(target["database"].casefold() not in {"rplanner", "rplanner_dev", "master", "model", "msdb", "tempdb"},
-            "PROHIBITED_DATABASE")
+    database = target["database"].casefold()
+    require(database not in {"rplanner", "master", "model", "msdb", "tempdb"} and
+            "prod" not in database and "erp" not in database, "PROHIBITED_DATABASE")
+    if target["classification"] == "POPULATED_DEV":
+        require(target["database"] == "rplanner_dev", "PROHIBITED_DATABASE")
+    else:
+        require(target["classification"] == "DEDICATED_ISOLATED" and database != "rplanner_dev",
+                "PROHIBITED_ENVIRONMENT")
+
+
+# R1 contracts are deliberately incompatible with the version-1 live-intent
+# documents. Journal and evidence schemas remain version 1; the journal binds
+# the version-2 plan digest. These checks validate supplied observations only.
+SHARED_LIMITS = {"io_latency_ms", "prod_latency_ms", "erp_latency_ms"}
+SCOPE_DIGESTS = ("availability_digest", "competency_digest", "background_digest", "preservation_digest")
+ENV_FACTS = ("exclusive_reservation", "application_stopped", "background_stopped",
+             "erp_sync_prevented", "integrations_prevented", "restarts_prevented",
+             "manual_access_prevented", "delivery_prevented", "dev_credentials_confined",
+             "prod_erp_excluded", "backup_recoverable", "log_backup_arranged",
+             "restore_capability_verified", "recovery_procedure_approved")
+SCOPE_FACTS = ("week_clear", "collation_verified", "relationships_verified",
+               "availability_inventoried", "competency_inventoried",
+               "independent_expectations", "preservation_verified")
+PROBE_SCENARIOS = {f"F{i:02d}" for i in range(1, 9)} - {"F07"}
+ROLLBACK_SCENARIOS = {"F01", "F03", "F04", "F08"}
+CONCURRENT = {**{f"D{i:02d}": 2 for i in range(1, 6)},
+              "E08": 2, "E09": 2, "E10": 2, "G09": 2, "G10": 3}
+PROBE_VALUES = {"column": "project_snapshot_json", "kind": "Q869_STORAGE_ONLY",
+                "status": "Q869_PROBE", "model_version": "q869_storage_only",
+                "no_children": True, "no_workflow": True}
+
+
+def validate_environment(a):
+    e = a["environment"]
+    fields(e, "reservation_ref reservation_until quiescence_ref credential_scope_ref backup_ref backup_at backup_max_age_seconds log_backup_ref restore_capability_ref restore_evidence_kind recovery_owner recovery_procedure_ref")
+    for key in ("reservation_ref", "quiescence_ref", "credential_scope_ref", "backup_ref",
+                "log_backup_ref", "restore_capability_ref", "recovery_owner", "recovery_procedure_ref"):
+        token(e[key])
+    require(e["restore_evidence_kind"] in ("RESTORE_REHEARSAL", "INDEPENDENT_RECOVERY_CAPABILITY"),
+            "RESTORE_CAPABILITY_REQUIRED")
+    start, end = utc(a["window"]["start"]), utc(a["window"]["end"])
+    backup = utc(e["backup_at"])
+    number(e["backup_max_age_seconds"])
+    require(backup <= start and (end-backup).total_seconds() <= e["backup_max_age_seconds"],
+            "BACKUP_NOT_RECENT")
+    require(utc(e["reservation_until"]) >= utc(a["recovery_until"]), "RESERVATION_TOO_SHORT")
+
+
+def validate_scope(a, grants):
+    scope = a["scope"]
+    fields(scope, "week_start availability_digest competency_digest background_digest preservation_digest expectations")
+    token(scope["week_start"], r"\d{4}-\d\d-\d\d")
+    try:
+        week = date.fromisoformat(scope["week_start"])
+    except ValueError:
+        raise SafetyError("INVALID_WEEK") from None
+    require(week.weekday() == 0, "INVALID_WEEK")
+    for key in SCOPE_DIGESTS:
+        sha(scope[key])
+    require(type(scope["expectations"]) is list, "INVALID_SCOPE")
+    pairs = set()
+    for item in scope["expectations"]:
+        fields(item, "scenario tier status expected_digest max_active concurrency_ref")
+        pair = (item["scenario"], item["tier"])
+        require(all(type(x) is str for x in pair) and pair in grants and pair not in pairs, "INVALID_SCOPE")
+        pairs.add(pair)
+        require(item["status"] in ("READY", "BLOCKED"), "INVALID_SCOPE")
+        if item["status"] == "READY":
+            sha(item["expected_digest"])
+        else:
+            require(item["expected_digest"] is None, "INVALID_SCOPE")
+        cap = item["max_active"]
+        require(type(cap) is int and 1 <= cap <= min(a["limits"]["connections"], CONCURRENT.get(pair[0], 1)),
+                "CONCURRENCY_NOT_APPROVED")
+        if cap > 1:
+            token(item["concurrency_ref"])
+        else:
+            require(item["concurrency_ref"] is None, "CONCURRENCY_NOT_APPROVED")
+    require(pairs == grants, "MISSING_SCOPE_EXPECTATION")
+
+
+def scope_expectation(a, scenario, tier):
+    for item in a["scope"]["expectations"]:
+        if (item["scenario"], item["tier"]) == (scenario, tier):
+            require(item["status"] == "READY", "SCENARIO_BLOCKED")
+            return item
+    raise SafetyError("GRANT_REQUIRED")
+
+
+def validate_progression(a, grants):
+    p = a["progression"]
+    fields(p, "stage admission_ref prior_evidence monitoring_ref monitoring_connections contention_ref")
+    token(p["admission_ref"]); token(p["monitoring_ref"])
+    require(type(p["monitoring_connections"]) is int and 0 <= p["monitoring_connections"] <= 1,
+            "MONITOR_CONNECTION_LIMIT")
+    require(type(p["stage"]) is str and p["stage"] in TIERS | {"PILOT"}, "INVALID_STAGE")
+    stage = p["stage"]
+    prior = {"PILOT": set(), "T0": {"PILOT"}, "T1": {"PILOT", "T0"}}
+    needed = prior.get(stage, {"PILOT", "T0", "T1"})
+    require(type(p["prior_evidence"]) is dict and set(p["prior_evidence"]) == needed, "PROGRESSION_NOT_APPROVED")
+    for evidence in p["prior_evidence"].values():
+        fields(evidence, "status evidence_digest review_ref")
+        require(evidence["status"] == "PASS", "PROGRESSION_NOT_APPROVED")
+        sha(evidence["evidence_digest"]); token(evidence["review_ref"])
+    require(all(tier == ("T0" if stage == "PILOT" else stage) for _, tier in grants), "STAGE_NOT_APPROVED")
+    if stage == "PILOT":
+        require(grants == {("A06", "T0")}, "PILOT_ONLY")
+    if any(scenario == "E09" for scenario, _ in grants):
+        boundary = p["contention_ref"]
+        fields(boundary, "po_ref it_ref max_connections lock_seconds mutation_seconds")
+        token(boundary["po_ref"]); token(boundary["it_ref"])
+        require(type(boundary["max_connections"]) is int and
+                boundary["max_connections"] == 2 <= a["limits"]["connections"],
+                "INVALID_CONTENTION_PERMIT")
+        for key in ("lock_seconds", "mutation_seconds"):
+            number(boundary[key])
+            require(boundary[key] <= a["limits"][key], "INVALID_CONTENTION_PERMIT")
+    else:
+        require(p["contention_ref"] is None, "INVALID_CONTENTION_PERMIT")
+
+
+def validate_probe_permit(a, grants):
+    permit = a["probe_permit"]
+    required = {scenario for scenario, _ in grants if scenario in PROBE_SCENARIOS}
+    if not required:
+        require(permit is None, "UNEXPECTED_PROBE_PERMIT")
+        return
+    fields(permit, "mode po_ref it_ref source_head source_tree target run_id manifest_digest start end scenarios")
+    require(permit["mode"] in ("ROLLBACK_ONLY", "COMMITTED_STORAGE_ONLY"), "INVALID_PROBE_MODE")
+    token(permit["po_ref"]); token(permit["it_ref"]); uuid_text(permit["run_id"])
+    sha(permit["manifest_digest"])
+    require(permit["source_head"] == a["source_head"] and permit["source_tree"] == a["source_tree"] and
+            permit["target"] == a["target"] and permit["manifest_digest"] == a["manifest_digest"],
+            "PROBE_PERMIT_BINDING")
+    require(type(permit["scenarios"]) is list and all(type(x) is str for x in permit["scenarios"]) and
+            len(permit["scenarios"]) == len(required) and set(permit["scenarios"]) == required,
+            "PROBE_SCENARIO_MISMATCH")
+    require(permit["mode"] != "ROLLBACK_ONLY" or required <= ROLLBACK_SCENARIOS, "COMMITTED_PROBE_REQUIRED")
+    require(utc(a["window"]["start"]) <= utc(permit["start"]) < utc(permit["end"]) <= utc(a["window"]["end"]),
+            "PROBE_WINDOW")
+
+
+def authorize_probe_window(a, now):
+    p = a["probe_permit"]
+    require(p is not None and utc(p["start"]) <= now < utc(p["end"]), "PROBE_WINDOW_CLOSED")
 
 
 def validate_approval(a):
-    fields(a, "schema_version source_head source_tree protected target routing prerequisites mode window recovery_until manifest_digest grants fixture_limits limits performance monitoring operator approval_ref it_approval_ref recovery_approval_ref capacity_tiers deadlock_approval")
-    require(type(a["schema_version"]) is int and a["schema_version"] == 1, "VERSION")
+    fields(a, "schema_version source_head source_tree protected target routing prerequisites mode window recovery_until manifest_digest grants fixture_limits limits performance monitoring operator approval_ref it_approval_ref recovery_approval_ref capacity_tiers deadlock_approval environment scope progression shared_limits probe_permit")
+    require(type(a["schema_version"]) is int and a["schema_version"] == 2, "VERSION")
     sha(a["source_head"], 40); sha(a["source_tree"], 40)
     require(a["protected"] == PROTECTED, "PROTECTED_SOURCE")
     validate_target(a["target"])
@@ -150,6 +292,8 @@ def validate_approval(a):
     require(a["mode"] in ("WORKLOAD", "RECOVERY_ONLY"), "INVALID_MODE")
     fields(a["prerequisites"], "version alembic_revision driver")
     token(a["prerequisites"]["version"], r"14\.0\.\d+\.\d+")
+    if a["target"]["classification"] == "POPULATED_DEV":
+        require(a["prerequisites"]["version"] == "14.0.3445.2", "ENGINE_PREREQUISITE")
     token(a["prerequisites"]["alembic_revision"])
     token(a["prerequisites"]["driver"])
     fields(a["window"], "start end")
@@ -205,6 +349,13 @@ def validate_approval(a):
             else:
                 number(rule[name])
         require(rule["target"] is None or rule["maximum"] is None or rule["target"] <= rule["maximum"], "INVALID_PERFORMANCE")
+    require(type(a["shared_limits"]) is dict and set(a["shared_limits"]) == SHARED_LIMITS, "SHARED_LIMITS_REQUIRED")
+    for value in a["shared_limits"].values():
+        number(value)
+    validate_environment(a)
+    validate_scope(a, grants)
+    validate_progression(a, grants)
+    validate_probe_permit(a, grants)
     return json.loads(canonical(a))
 
 
@@ -277,7 +428,9 @@ def observe_source(root):
 
 
 def validate_preflight(a, observed):
-    fields(observed, "target version edition compatibility collation snapshot rcsi recovery alembic_revision python sqlalchemy pyodbc alembic driver constraints_verified permissions_verified reservation_verified monitoring_verified no_consumers no_operational_records")
+    fields(observed, "schema_version approval_digest target version edition compatibility collation snapshot rcsi recovery alembic_revision python sqlalchemy pyodbc alembic driver constraints_verified permissions_verified reservation_verified monitoring_verified no_consumers environment scope active_probe_count probe_constraints_verified probe_triggers_verified probe_workflow_excluded monitoring_connection_count")
+    require(type(observed["schema_version"]) is int and observed["schema_version"] == 2 and
+            observed["approval_digest"] == digest(a), "PREFLIGHT_BINDING")
     validate_target(observed["target"])
     require(observed["target"] == a["target"], "TARGET_MISMATCH")
     require(observed["version"] == a["prerequisites"]["version"] and observed["edition"] == "Standard" and
@@ -287,8 +440,27 @@ def validate_preflight(a, observed):
     require(type(observed["python"]) is str and re.fullmatch(r"3\.12\.\d+", observed["python"]) and
             (observed["sqlalchemy"], observed["pyodbc"], observed["alembic"]) == ("2.0.52", "5.3.0", "1.19.1"), "DEPENDENCY_MISMATCH")
     require(observed["driver"] == a["prerequisites"]["driver"], "DRIVER_MISMATCH")
-    for key in ("constraints_verified", "permissions_verified", "reservation_verified", "monitoring_verified", "no_consumers", "no_operational_records"):
+    for key in ("constraints_verified", "permissions_verified", "reservation_verified", "monitoring_verified", "no_consumers"):
         require(observed[key] is True, "PREFLIGHT_INCOMPLETE")
+    fields(observed["environment"], " ".join(ENV_FACTS))
+    require(all(observed["environment"][k] is True for k in ENV_FACTS), "ENVIRONMENT_INCOMPLETE")
+    fields(observed["scope"], " ".join(SCOPE_DIGESTS + SCOPE_FACTS + ("week_start", "expectations_digest")))
+    require(all(observed["scope"][k] is True for k in SCOPE_FACTS), "SCOPE_INCOMPLETE")
+    require(all(observed["scope"][k] == a["scope"][k] for k in SCOPE_DIGESTS + ("week_start",)) and
+            observed["scope"]["expectations_digest"] == digest(a["scope"]["expectations"]), "BACKGROUND_DRIFT")
+    require(type(observed["monitoring_connection_count"]) is int and
+            0 <= observed["monitoring_connection_count"] <= a["progression"]["monitoring_connections"],
+            "MONITOR_CONNECTION_LIMIT")
+    require(type(observed["active_probe_count"]) is int and observed["active_probe_count"] >= 0,
+            "INVALID_PROBE_COUNT")
+    # Recovery may need to observe one still-owned probe; it cannot create another.
+    require(observed["active_probe_count"] <= (1 if a["probe_permit"] is not None else 0),
+            "ACTIVE_PROBE_CONFLICT")
+    for key in ("probe_constraints_verified", "probe_triggers_verified", "probe_workflow_excluded"):
+        if a["probe_permit"] is not None:
+            require(observed[key] is True, "PROBE_CONSTRAINTS_UNVERIFIED")
+        else:
+            exact_bool(observed[key])
 
 
 # Model -> exact table, primary key columns, allowed alternate key columns.
@@ -373,14 +545,16 @@ def row_key(value):
 
 
 def validate_plan(a, plan, *, bound=True):
-    fields(plan, "schema_version run_id source_head target tier scenarios rows")
-    require(type(plan["schema_version"]) is int and plan["schema_version"] == 1, "VERSION")
+    fields(plan, "schema_version run_id source_head target tier scenarios rows probe")
+    require(type(plan["schema_version"]) is int and plan["schema_version"] == 2, "VERSION")
     uuid_text(plan["run_id"])
     require(plan["source_head"] == a["source_head"] and plan["target"] == a["target"] and
             any(g["tier"] == plan["tier"] for g in a["grants"]), "PLAN_AUTHORITY")
     require(type(plan["scenarios"]) is list and bool(plan["scenarios"]) and
             all(type(x) is str and dict(scenario=x, tier=plan["tier"]) in a["grants"] for x in plan["scenarios"]) and
             len(set(plan["scenarios"])) == len(plan["scenarios"]), "PLAN_SCENARIOS")
+    for scenario in plan["scenarios"]:
+        scope_expectation(a, scenario, plan["tier"])
     require(type(plan["rows"]) is list and bool(plan["rows"]), "EMPTY_PLAN")
     counts = {}
     keys, references, alternate = set(), [], set()
@@ -433,6 +607,21 @@ def validate_plan(a, plan, *, bound=True):
             references.append((key, parent_key))
         require(REQUIRED_RELATIONS.get(model, set()) <= relation_columns, "MISSING_RELATION")
     require(all(parent in keys and parent != child for child, parent in references), "UNOWNED_REFERENCE")
+    probes = [row for row in plan["rows"] if row["identity"]["model"] == "CommunicationBatchRow"]
+    scenarios = set(plan["scenarios"]) & PROBE_SCENARIOS
+    if scenarios:
+        permit = a["probe_permit"]
+        require(permit is not None and scenarios <= set(permit["scenarios"]) and
+                plan["run_id"] == permit["run_id"] and len(probes) == 1, "PROBE_PLAN_BINDING")
+        fields(plan["probe"], "mode identity " + " ".join(PROBE_VALUES))
+        require(plan["probe"]["mode"] == permit["mode"] and
+                plan["probe"]["identity"] == probes[0]["identity"] and
+                all(plan["probe"][key] == value and type(plan["probe"][key]) is type(value)
+                    for key, value in PROBE_VALUES.items()) and not probes[0]["references"],
+                "NONOPERATIONAL_PROBE_REQUIRED")
+        require(digest(plan) == permit["manifest_digest"], "PROBE_PLAN_BINDING")
+    else:
+        require(not probes and plan["probe"] is None, "PROBE_NOT_AUTHORIZED")
     # Local duplicate/collision checks are exact Python comparisons only. The future
     # adapter must perform independent deployed-collation and complete FK checks.
     if bound:
@@ -445,6 +634,10 @@ def authorize_mutation(a, plan, observation, preflight, env, now, *, recovery=Fa
     a = validate_approval(a); validate_configuration(env, a["target"], a["routing"]); verify_source(a, observation)
     validate_preflight(a, preflight); authorize_window(a, now, recovery=recovery)
     validate_plan(a, plan)
+    if not recovery:
+        require(preflight["active_probe_count"] == 0, "ACTIVE_PROBE_CONFLICT")
+        if plan["probe"] is not None:
+            authorize_probe_window(a, now)
 
 
 STATES = {
@@ -592,6 +785,25 @@ def store_journal(path, plan, *, previous=None, state=None, **transition_evidenc
     return record
 
 
+def validate_restart(a, plan, journal, observed, now):
+    """Offline restart gate only. No restart, connection or physical reconciliation."""
+    a = validate_approval(a)
+    authorize_window(a, now, recovery=True)
+    validate_plan(a, plan)
+    validate_journal(plan, journal)
+    require(journal["state"] == "VERIFIED_CLEAN" and not journal["uncertain"] and
+            not journal["owned"] and not journal["pending"], "RESTART_NOT_CLEAN")
+    fields(observed, "approval_digest plan_digest target run_id source independent_absence preserved_digest no_active_transactions no_active_probe reservation_held operator_checks_passed restart_ref")
+    verify_source(a, observed["source"])
+    require(observed["approval_digest"] == digest(a) and observed["plan_digest"] == digest(plan) and
+            observed["target"] == a["target"] and observed["run_id"] == plan["run_id"] and
+            observed["preserved_digest"] == a["scope"]["preservation_digest"], "RESTART_BINDING")
+    for key in ("independent_absence", "no_active_transactions", "no_active_probe", "reservation_held",
+                "operator_checks_passed"):
+        require(observed[key] is True, "RESTART_NOT_CLEAN")
+    token(observed["restart_ref"])
+
+
 class SafetyController:
     """Thread-safe admission/stop bookkeeping; no driver cancellation implementation."""
     def __init__(self, approval):
@@ -616,9 +828,15 @@ class SafetyController:
     def sample(self, values, now):
         with self.lock:
             try:
-                fields(values, "sql_cpu sql_cpu_baseline app_cpu memory_mib disk_free_percent disk_free_mib tempdb_free_percent tempdb_free_mib version_store_growth_mib log_percent blocking_seconds external_activity available")
+                fields(values, "sql_cpu sql_cpu_baseline app_cpu memory_mib disk_free_percent disk_free_mib tempdb_free_percent tempdb_free_mib version_store_growth_mib log_percent blocking_seconds external_activity available io_latency_ms prod_latency_ms erp_latency_ms business_impact ownership_uncertain unexpected_consumers availability_digest competency_digest background_digest preservation_digest")
                 require(values["available"] is True and values["external_activity"] is False, "MONITORING_LOST")
-                for key in set(values)-{"external_activity", "available"}:
+                for key in ("business_impact", "ownership_uncertain", "unexpected_consumers"):
+                    exact_bool(values[key])
+                if values["business_impact"] or values["ownership_uncertain"] or values["unexpected_consumers"] or any(
+                        values[key] != self.approval["scope"][key] for key in SCOPE_DIGESTS):
+                    self.stop("ENVIRONMENT_ABORT", uncertain=values["ownership_uncertain"])
+                    return False
+                for key in set(values)-{"external_activity", "available", "business_impact", "ownership_uncertain", "unexpected_consumers", *SCOPE_DIGESTS}:
                     number(values[key], positive=False)
                 for key in ("sql_cpu", "sql_cpu_baseline", "app_cpu", "disk_free_percent", "tempdb_free_percent", "log_percent"):
                     require(values[key] <= 100, "MONITORING_LOST")
@@ -635,7 +853,8 @@ class SafetyController:
                     values["memory_mib"] < lim["app_memory_mib"] or values["disk_free_percent"] < lim["disk_free_percent"] or
                     values["disk_free_mib"] < lim["disk_free_mib"] or
                     values["tempdb_free_percent"] < lim["disk_free_percent"] or values["tempdb_free_mib"] < lim["disk_free_mib"] or values["version_store_growth_mib"] >= lim["version_store_growth_mib"] or
-                    values["log_percent"] >= lim["log_percent"] or values["blocking_seconds"] > lim["blocking_seconds"]):
+                    values["log_percent"] >= lim["log_percent"] or values["blocking_seconds"] > lim["blocking_seconds"] or
+                    any(values[key] >= self.approval["shared_limits"][key] for key in SHARED_LIMITS)):
                     self.stop("ENVIRONMENT_ABORT")
             except (SafetyError, TypeError, AttributeError):
                 self.stop("MONITORING_LOST")
@@ -649,13 +868,19 @@ class SafetyController:
             lim = self.approval["limits"]
             try:
                 authorize_window(self.approval, now)
+                if any(pair[0] in PROBE_SCENARIOS for _, _, pair in self.active.values()):
+                    authorize_probe_window(self.approval, now)
             except SafetyError:
                 self.stop("WINDOW_CLOSED")
                 return False
             if self.last_sample is None or not 0 <= (now-self.last_sample).total_seconds() <= lim["sample_interval_seconds"]:
                 self.stop("MONITORING_LOST")
             elif (self.block_started is not None and (now-self.block_started).total_seconds() >= lim["block_seconds"] or
-                  any((now-started).total_seconds() >= lim["mutation_seconds" if kind == "mutation" else "reader_seconds"] for started, kind in self.active.values())):
+                  any((now-started).total_seconds() >= (
+                      self.approval["progression"]["contention_ref"]["mutation_seconds"]
+                      if kind == "mutation" and pair[0] == "E09" else
+                      lim["mutation_seconds" if kind == "mutation" else "reader_seconds"])
+                      for started, kind, pair in self.active.values())):
                 self.stop("TIMEOUT")
             return not self.stopped
 
@@ -665,12 +890,34 @@ class SafetyController:
             require(self.check_deadlines(now), "STOPPED")
             require(kind in ("reader", "mutation"), "INVALID_WORKLOAD_KIND")
             require(dict(scenario=scenario, tier=tier) in self.approval["grants"], "GRANT_REQUIRED")
-            require(len(self.active) < self.approval["limits"]["connections"], "CONCURRENCY_LIMIT")
+            expectation = scope_expectation(self.approval, scenario, tier)
+            if scenario in PROBE_SCENARIOS:
+                authorize_probe_window(self.approval, now)
+            require(not self.active or all(pair == (scenario, tier) for _, _, pair in self.active.values()),
+                    "MIXED_WORKLOAD")
+            require(len(self.active) < expectation["max_active"], "CONCURRENCY_LIMIT")
             ticket = object()
             if self.block_started is None:
                 self.block_started = now
-            self.active[ticket] = (now, kind)
+            self.active[ticket] = (now, kind, (scenario, tier))
             return ticket
+
+    def check_operation_deadline(self, ticket, operation, started, now):
+        """Caller-supplied elapsed observation; physical enforcement is deferred."""
+        with self.lock:
+            require(ticket in self.active, "UNKNOWN_WORKLOAD")
+            require(operation in ("statement", "lock", "barrier"), "INVALID_OPERATION")
+            require(started.tzinfo is not None and now.tzinfo is not None and
+                    self.active[ticket][0] <= started <= now, "INVALID_TIME")
+            key = operation + "_seconds"
+            if operation == "statement" and self.active[ticket][2][1] in {"T2", "T3", "T4"}:
+                key = "large_statement_seconds"
+            limit = self.approval["limits"][key]
+            if operation == "lock" and self.active[ticket][2][0] == "E09":
+                limit = self.approval["progression"]["contention_ref"]["lock_seconds"]
+            if (now-started).total_seconds() >= limit:
+                self.stop("TIMEOUT")
+            return self.check_deadlines(now)
 
     def finish(self, ticket, *, physical_release_confirmed, timeout=False, error=False):
         with self.lock:
@@ -709,19 +956,30 @@ def performance_result(rule, samples, *, environmental_abort=False):
                       rule["maximum"] is not None and ordered[-1] > rule["maximum"]) else "PASS"
 
 
-def evidence_record(scenario, tier, status, metrics):
+def evidence_record(scenario, tier, status, metrics, *, probe_mode=None):
     """Allowlist numeric/boolean measurements, no free text or raw exception export."""
     require(type(scenario) is str and scenario in SCENARIOS and type(tier) is str and tier in TIERS and
-            type(status) is str and status in {"PASS", "FAIL", "ABORTED", "NOT RUN"}, "INVALID_EVIDENCE")
-    require(type(metrics) is dict and set(metrics) <= {"sample_count", "elapsed_seconds", "maximum_total_binds", "statement_count", "owned_session_count", "checkout_seconds", "release_seconds", "physical_coverage_equal", "cleanup_verified"}, "UNSAFE_EVIDENCE")
+            type(status) is str and status in {"PASS", "FAIL", "ABORTED", "NOT RUN", "BLOCKED"}, "INVALID_EVIDENCE")
+    if scenario in PROBE_SCENARIOS:
+        require(probe_mode in ("ROLLBACK_ONLY", "COMMITTED_STORAGE_ONLY") or
+                (probe_mode is None and status in {"BLOCKED", "NOT RUN"}), "PROBE_EVIDENCE_MODE")
+        require(probe_mode != "ROLLBACK_ONLY" or status != "PASS", "COMMITTED_PROBE_REQUIRED")
+    else:
+        require(probe_mode is None, "UNEXPECTED_PROBE_MODE")
+    require(type(metrics) is dict and set(metrics) <= {"sample_count", "elapsed_seconds", "maximum_total_binds", "statement_count", "owned_session_count", "checkout_seconds", "release_seconds", "physical_coverage_equal", "cleanup_verified", "io_latency_ms", "prod_latency_ms", "erp_latency_ms", "rollback_check_passed"}, "UNSAFE_EVIDENCE")
     for key, val in metrics.items():
-        if key in {"physical_coverage_equal", "cleanup_verified"}:
+        if key in {"physical_coverage_equal", "cleanup_verified", "rollback_check_passed"}:
+            require(key != "rollback_check_passed" or probe_mode == "ROLLBACK_ONLY", "PROBE_EVIDENCE_MODE")
             exact_bool(val)
         else:
             number(val, positive=False)
             if key in {"sample_count", "maximum_total_binds", "statement_count", "owned_session_count"}:
                 require(type(val) is int, "INVALID_EVIDENCE")
-    return dict(schema_version=1, execution_mode="OFFLINE_ONLY", scenario_id=scenario, fixture_tier=tier, status=status, metrics=dict(metrics))
+    record = dict(schema_version=1, execution_mode="OFFLINE_ONLY", scenario_id=scenario,
+                  fixture_tier=tier, status=status, metrics=dict(metrics))
+    if scenario in PROBE_SCENARIOS:
+        record.update(probe_mode=probe_mode, committed_acceptance=False)
+    return record
 
 
 def performance_evidence(rule, samples, *, environmental_abort=False):

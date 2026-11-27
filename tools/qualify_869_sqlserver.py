@@ -38,10 +38,13 @@ def main(argv=None):
         approval = safety.validate_approval(safety.read_json(args.approval_file))
         safety.validate_configuration(os.environ, approval["target"], approval["routing"])
         safety.verify_source(approval, safety.observe_source(Path(__file__).resolve().parents[1]))
-        safety.authorize_window(approval, datetime.now(timezone.utc))
+        now = datetime.now(timezone.utc)
+        safety.authorize_window(approval, now)
         plan = safety.read_json(args.manifest)
         # A not-yet-bound plan can be rehearsed but never authorizes mutation.
         safety.validate_plan(approval, plan, bound=approval["manifest_digest"] is not None)
+        if plan["probe"] is not None:
+            safety.authorize_probe_window(approval, now)
         print(json.dumps(safety.run_record(approval, plan), sort_keys=True))
         return 0
     except Exception:
