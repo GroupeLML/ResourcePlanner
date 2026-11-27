@@ -213,6 +213,79 @@ def evaluate_asset_qualification(
     )
 
 
+def _qualification_batches(keys):
+    wanted = tuple(sorted(set(keys)))
+    for offset in range(0, len(wanted), 900):
+        yield wanted[offset:offset + 900]
+
+
+def _qualification_entities(session, model, keys):
+    found = {}
+    for chunk in _qualification_batches(keys):
+        for row in session.scalars(select(model).where(model.id.in_(chunk))).all():
+            found.setdefault(row.id, row)
+    return found
+
+
+def _required_by_type(session, type_ids):
+    grouped = {}
+    seen = set()
+    for chunk in _qualification_batches(type_ids):
+        for type_id, link_id, competency in session.execute(
+            select(AssetTypeCompetency.asset_type_id,
+                   AssetTypeCompetency.competency_id, Competency)
+            .join(Competency, AssetTypeCompetency.competency_id == Competency.id)
+            .where(AssetTypeCompetency.asset_type_id.in_(chunk))
+            .order_by(
+                AssetTypeCompetency.asset_type_id,
+                Competency.sort_order,
+                Competency.name,
+                Competency.id,
+            )
+        ).all():
+            # Each matching type's entire ordered group arrives in one query.
+            # Later collation-overlapping chunks may repeat that group.
+            identity = (type_id, link_id, competency.id)
+            if identity not in seen:
+                seen.add(identity)
+                grouped.setdefault(type_id, []).append(competency)
+    return grouped
+
+
+def _held_by_resource(session, operator_ids):
+    grouped = {}
+    for chunk in _qualification_batches(operator_ids):
+        for resource_id, competency_id in session.execute(
+            select(ResourceCompetency.resource_id, ResourceCompetency.competency_id)
+            .where(ResourceCompetency.resource_id.in_(chunk))
+        ).all():
+            grouped.setdefault(resource_id, set()).add(competency_id)
+    return grouped
+
+
+def _human_assignment_rows(session, operator_ids, project_ids, min_start, max_end):
+    """Union all original AND-scope combinations, retaining exact physical pairs."""
+    statement = (
+        select(Shift, ResourceRequirement)
+        .join(ResourceRequirement, Shift.resource_requirement_id == ResourceRequirement.id)
+        .where(
+            Shift.work_date >= min_start,
+            Shift.work_date <= max_end,
+            ResourceRequirement.status != "Annulé",
+        )
+    )
+    project_chunks = tuple(_qualification_batches(project_ids)) or (None,)
+    found = {}
+    for operators in _qualification_batches(operator_ids):
+        for projects in project_chunks:
+            query = statement.where(Shift.resource_id.in_(operators))
+            if projects is not None:
+                query = query.where(ResourceRequirement.project_id.in_(projects))
+            for shift, requirement in session.execute(query).all():
+                found.setdefault((shift.id, requirement.id), (shift, requirement))
+    return tuple(found.values())
+
+
 def evaluate_asset_qualifications(
     session: Session,
     *,
@@ -225,44 +298,15 @@ def evaluate_asset_qualifications(
         return {}
 
     type_ids = {requirement.asset_type_id for requirement, _allocation in rows}
-    required_by_type: dict[str, list[Competency]] = {}
-    for asset_type_id, competency in session.execute(
-        select(AssetTypeCompetency.asset_type_id, Competency)
-        .join(Competency, AssetTypeCompetency.competency_id == Competency.id)
-        .where(AssetTypeCompetency.asset_type_id.in_(type_ids))
-        .order_by(
-            AssetTypeCompetency.asset_type_id,
-            Competency.sort_order,
-            Competency.name,
-            Competency.id,
-        )
-    ).all():
-        required_by_type.setdefault(asset_type_id, []).append(competency)
+    required_by_type = _required_by_type(session, type_ids)
 
     operator_ids = {
         allocation.operator_resource_id
         for _requirement, allocation in rows
         if allocation is not None and allocation.operator_resource_id
     }
-    operators = (
-        {
-            resource.id: resource
-            for resource in session.scalars(
-                select(Resource).where(Resource.id.in_(operator_ids))
-            ).all()
-        }
-        if operator_ids
-        else {}
-    )
-    held_by_resource: dict[str, set[str]] = {}
-    if operator_ids:
-        for resource_id, competency_id in session.execute(
-            select(
-                ResourceCompetency.resource_id,
-                ResourceCompetency.competency_id,
-            ).where(ResourceCompetency.resource_id.in_(operator_ids))
-        ).all():
-            held_by_resource.setdefault(resource_id, set()).add(competency_id)
+    operators = _qualification_entities(session, Resource, operator_ids)
+    held_by_resource = _held_by_resource(session, operator_ids)
 
     segment_ids = {
         requirement.resource_requirement_id
@@ -270,18 +314,7 @@ def evaluate_asset_qualifications(
         if requirement.origin == AssetRequirementOrigin.SEGMENT.value
         and requirement.resource_requirement_id
     }
-    segments = (
-        {
-            segment.id: segment
-            for segment in session.scalars(
-                select(ResourceRequirement).where(
-                    ResourceRequirement.id.in_(segment_ids)
-                )
-            ).all()
-        }
-        if segment_ids
-        else {}
-    )
+    segments = _qualification_entities(session, ResourceRequirement, segment_ids)
 
     human_pairs = tuple(
         (requirement, allocation)
@@ -308,22 +341,9 @@ def evaluate_asset_qualifications(
         }
         min_start = min(allocation.start_date for _requirement, allocation in human_pairs)
         max_end = max(allocation.end_date for _requirement, allocation in human_pairs)
-        statement = (
-            select(Shift, ResourceRequirement)
-            .join(
-                ResourceRequirement,
-                Shift.resource_requirement_id == ResourceRequirement.id,
-            )
-            .where(
-                Shift.resource_id.in_(human_operator_ids),
-                Shift.work_date >= min_start,
-                Shift.work_date <= max_end,
-                ResourceRequirement.status != "Annulé",
-            )
+        human_rows = _human_assignment_rows(
+            session, human_operator_ids, project_ids, min_start, max_end,
         )
-        if project_ids:
-            statement = statement.where(ResourceRequirement.project_id.in_(project_ids))
-        human_rows = tuple(session.execute(statement).all())
 
     result: dict[tuple[str, str | None], AssetQualification] = {}
     for requirement, allocation in rows:
