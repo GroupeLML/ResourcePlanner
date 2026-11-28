@@ -340,6 +340,7 @@ def build_project_communication_service(
     *,
     transport: CommunicationTransportPort | None = None,
     smtp_service: SmtpConfigurationService | None = None,
+    superintendent_competency_id: str | None = None,
 ) -> ProjectCommunicationService:
     """Compose the #290 project-centric communication projection."""
 
@@ -350,6 +351,7 @@ def build_project_communication_service(
         SqlProjectCommunicationRepository(
             session,
             operational_contacts=operational,
+            superintendent_competency_id=superintendent_competency_id,
         ),
         workflow_repository=SqlCommunicationRepository(session),
         transport=transport,

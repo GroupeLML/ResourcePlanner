@@ -33,6 +33,7 @@ from ...domain.project_communication import ProjectCommunicationProjection
 from ...domain.project_communication_messages import (
     ProjectCommunicationDraft,
     deserialize_project_projection,
+    project_projection_fingerprint,
     serialize_project_projection,
 )
 from ...domain.confirmation import effective_confirmation
@@ -420,10 +421,16 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
         )
         if batch is None or not batch.project_snapshot_json:
             return None
-        return (
-            batch.snapshot_fingerprint,
-            deserialize_project_projection(batch.project_snapshot_json),
-        )
+        snapshot = deserialize_project_projection(batch.project_snapshot_json)
+        # The stored fingerprint and week remain independent evidence of the
+        # snapshot claim, including a v5 payload erased to a valid older shape.
+        # Do not silently fall back to an earlier communicated batch.
+        if (
+            snapshot.week_start != batch.week_start
+            or project_projection_fingerprint(snapshot) != batch.snapshot_fingerprint
+        ):
+            raise ValueError("Empreinte ou semaine du snapshot projet incohérente")
+        return batch.snapshot_fingerprint, snapshot
 
     def create_project_prepared_batch(
         self,
@@ -437,6 +444,8 @@ class SqlCommunicationRepository(CommunicationRepositoryPort):
     ) -> CommunicationBatchRecord:
         if kind not in {"project_confirmation", "project_planning_change"}:
             raise ValueError(f"Type de lot projet invalide: {kind}")
+        if snapshot.week_start != week_start or project_projection_fingerprint(snapshot) != fingerprint:
+            raise ValueError("Empreinte ou semaine du snapshot projet incohérente")
         batch = CommunicationBatchRow(
             week_start=week_start,
             kind=kind,

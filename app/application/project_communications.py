@@ -10,6 +10,7 @@ import re
 from typing import Protocol, Sequence
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from ..domain.communication_recipient_provenance import RecipientPolicyContext
 from ..domain.project_communication import (
     ProjectCommunicationParticipant,
     ProjectCommunicationAssignment,
@@ -131,6 +132,10 @@ class ProjectCommunicationRepositoryPort(Protocol):
         week_start: date,
         week_end: date,
     ) -> Sequence[ProjectCommunicationAssignment]: ...
+
+    def capture_recipient_context(
+        self, projection: ProjectCommunicationProjection,
+    ) -> RecipientPolicyContext: ...
 
 
 class ProjectCommunicationWorkflowRepositoryPort(Protocol):
@@ -254,6 +259,31 @@ class ProjectCommunicationService:
             assignments=tuple(assignments),
             request_provenance_version=4,
         )
+
+    def capture_v5_projection(
+        self,
+        *,
+        week_start: date,
+        add_generator_cc: bool = False,
+        generator_principal: AuthPrincipal | None = None,
+    ) -> ProjectCommunicationProjection:
+        """Read-only Phase 2A path; deliberately not exposed by operational routes."""
+        if add_generator_cc:
+            # Preserve the current authenticated-email validation. The accepted
+            # v5 USER root cannot represent issuer/subject-only principals or
+            # distinguish authenticated email authority from AppUser.email.
+            self._generator_context(generator_principal)
+            raise ApplicationUnavailableError(
+                "La provenance du compte authentifié nécessite une autorité v5 explicite.",
+                code="project_communication_v5_generator_authority_unavailable",
+            )
+        projection = self.project_projection(week_start=week_start)
+        context = call_application_port(
+            lambda: self._repository.capture_recipient_context(projection),
+            code_prefix="project_communication_recipient_capture",
+            context={"week_start": projection.week_start.isoformat()},
+        )
+        return replace(projection, request_provenance_version=5, recipient_policy_context=context)
 
     @staticmethod
     def _generator_context(principal: AuthPrincipal | None) -> tuple[str, str]:

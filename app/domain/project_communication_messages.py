@@ -9,6 +9,7 @@ import math
 import re
 from typing import Sequence
 
+from .communication_recipient_provenance import RecipientPolicyContext
 from .confirmation import VALID_CONFIRMATIONS
 from .operational_contacts import (
     ContactResolution,
@@ -26,6 +27,7 @@ from .project_communication import (
     ProjectCommunicationResponsibilityAssignment,
     ProjectCommunicationTask,
     employee_assigned_assets,
+    _validate_provenance,
 )
 
 
@@ -273,240 +275,6 @@ def _project_payload(project: ProjectCommunicationProject) -> tuple[object, ...]
     )
 
 
-
-def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
-    version = projection.request_provenance_version
-    if (
-        type(version) is not int
-        or version not in (1, 2, 3, 4)
-        or projection.request_provenance_complete is not True
-    ):
-        raise ValueError("Version ou couverture de provenance chantier invalide")
-
-    seen: set[str] = set()
-    for project in projection.projects:
-        if version in (3, 4) and str(project.project_manager_erp_phone or "").strip():
-            raise ValueError(
-                "Téléphone ERP responsable projet interdit en provenance v3+"
-            )
-        for day in project.days:
-            for task in day.tasks:
-                expected = {
-                    shift_id
-                    for resource in task.resources
-                    for shift_id in resource.shift_ids
-                }
-                actual: set[str] = set()
-                hours_by_resource: dict[str, float] = {}
-                confirmations_by_resource: dict[str, list[str]] = {}
-                allocations_by_resource: dict[str, list[str]] = {}
-                outside_by_resource: dict[str, bool] = {}
-                v4_task_ids: set[str] = set()
-                v4_task_codes: set[str] = set()
-                for assignment in task.request_assignments:
-                    if not assignment.shift_id or assignment.shift_id in seen:
-                        raise ValueError("Shift de provenance manquant ou dupliqué")
-                    if (
-                        not assignment.requirement_id
-                        or not assignment.resource_id
-                        or not math.isfinite(float(assignment.hours))
-                        or assignment.hours <= 0
-                    ):
-                        raise ValueError("Attribution chantier invalide")
-                    if not assignment.workforce_request_id and (
-                        assignment.request_number
-                        or assignment.site_contact_name
-                        or assignment.site_contact_phone
-                    ):
-                        raise ValueError("Contact chantier sans provenance demande")
-                    if not any(
-                        resource.resource_id == assignment.resource_id
-                        and assignment.shift_id in resource.shift_ids
-                        for resource in task.resources
-                    ):
-                        raise ValueError("Ressource de provenance incohérente")
-
-                    if version in (1, 2, 3) and any(
-                        value is not None
-                        for value in (
-                            assignment.confirmation,
-                            assignment.allocation_type,
-                            assignment.outside_schedule,
-                            assignment.task_id,
-                            assignment.task_code,
-                            assignment.task_description,
-                        )
-                    ):
-                        raise ValueError(
-                            "Faits Shift v4 interdits dans une provenance historique"
-                        )
-
-                    if version in (2, 3, 4):
-                        standard_hours = assignment.standard_hours
-                        if (
-                            standard_hours is None
-                            or not math.isfinite(float(standard_hours))
-                            or float(standard_hours) < 0
-                        ):
-                            raise ValueError(
-                                "Heures standard v2+ manquantes ou invalides"
-                            )
-                        if not isinstance(assignment.assets, tuple):
-                            raise ValueError("Actifs Shift v2+ non explicites")
-                        if any(
-                            not asset.association_kind
-                            for asset in assignment.assets
-                        ):
-                            raise ValueError(
-                                "Provenance d'association d'actif v2+ manquante"
-                            )
-                        hours_by_resource[assignment.resource_id] = round(
-                            hours_by_resource.get(assignment.resource_id, 0.0)
-                            + float(assignment.hours),
-                            2,
-                        )
-
-                    if version in (3, 4):
-                        if not isinstance(
-                            assignment.include_project_manager_contact_phone,
-                            bool,
-                        ):
-                            raise ValueError(
-                                "Sélection téléphone responsable projet v3+ doit être booléenne"
-                            )
-                        if (
-                            assignment.workforce_request_id is None
-                            and (
-                                assignment.include_project_manager_contact_phone
-                                or assignment.project_manager_contact_phone
-                            )
-                        ):
-                            raise ValueError(
-                                "Téléphone responsable projet sans provenance demande"
-                            )
-                        if (
-                            assignment.include_project_manager_contact_phone
-                            and not (
-                                assignment.project_manager_contact_phone or ""
-                            ).strip()
-                        ):
-                            raise ValueError(
-                                "Téléphone responsable projet sélectionné mais vide"
-                            )
-
-                    if version == 4:
-                        if assignment.confirmation not in VALID_CONFIRMATIONS:
-                            raise ValueError("Confirmation Shift v4 invalide")
-                        if (
-                            not isinstance(assignment.allocation_type, str)
-                            or not assignment.allocation_type.strip()
-                        ):
-                            raise ValueError(
-                                "Type d'allocation Shift v4 manquant ou invalide"
-                            )
-                        if type(assignment.outside_schedule) is not bool:
-                            raise ValueError(
-                                "Hors horaire Shift v4 doit être booléen"
-                            )
-                        if assignment.task_id is not None and (
-                            not isinstance(assignment.task_id, str)
-                            or not assignment.task_id.strip()
-                        ):
-                            raise ValueError("Identité tâche Shift v4 invalide")
-                        if assignment.task_code is not None and (
-                            not isinstance(assignment.task_code, str)
-                            or not assignment.task_code.strip()
-                        ):
-                            raise ValueError("Code tâche Shift v4 invalide")
-                        if (
-                            not isinstance(assignment.task_description, str)
-                            or not assignment.task_description.strip()
-                        ):
-                            raise ValueError(
-                                "Description tâche Shift v4 manquante ou invalide"
-                            )
-                        if (
-                            assignment.task_description.strip().casefold()
-                            != task.task_description.strip().casefold()
-                        ):
-                            raise ValueError(
-                                "Description tâche Shift v4 incohérente avec le contexte"
-                            )
-                        if (
-                            assignment.task_id is not None
-                            and assignment.task_id not in task.task_ids
-                        ):
-                            raise ValueError(
-                                "Identité tâche Shift v4 incohérente avec le contexte"
-                            )
-                        if (
-                            assignment.task_code is not None
-                            and assignment.task_code not in task.task_codes
-                        ):
-                            raise ValueError(
-                                "Code tâche Shift v4 incohérent avec le contexte"
-                            )
-                        if assignment.task_id is not None:
-                            v4_task_ids.add(assignment.task_id)
-                        if assignment.task_code is not None:
-                            v4_task_codes.add(assignment.task_code)
-                        confirmations_by_resource.setdefault(
-                            assignment.resource_id, []
-                        ).append(assignment.confirmation)
-                        allocations_by_resource.setdefault(
-                            assignment.resource_id, []
-                        ).append(assignment.allocation_type)
-                        outside_by_resource[assignment.resource_id] = (
-                            outside_by_resource.get(assignment.resource_id, False)
-                            or assignment.outside_schedule
-                        )
-
-                    actual.add(assignment.shift_id)
-                    seen.add(assignment.shift_id)
-
-                if actual != expected:
-                    raise ValueError("Couverture de provenance chantier incomplète")
-                if version == 4:
-                    if set(task.task_ids) != v4_task_ids:
-                        raise ValueError(
-                            "Identités tâche v4 incohérentes avec les Shifts"
-                        )
-                    if set(task.task_codes) != v4_task_codes:
-                        raise ValueError(
-                            "Codes tâche v4 incohérents avec les Shifts"
-                        )
-                if version in (2, 3, 4):
-                    for resource in task.resources:
-                        if round(float(resource.hours), 2) != hours_by_resource.get(
-                            resource.resource_id,
-                            0.0,
-                        ):
-                            raise ValueError(
-                                "Heures Shift v2+ incohérentes avec le total ressource"
-                            )
-                        if version == 4:
-                            if set(resource.confirmations) != set(
-                                confirmations_by_resource.get(
-                                    resource.resource_id, []
-                                )
-                            ):
-                                raise ValueError(
-                                    "Confirmations Shift v4 incohérentes avec l'agrégat ressource"
-                                )
-                            if set(resource.allocation_types) != set(
-                                allocations_by_resource.get(
-                                    resource.resource_id, []
-                                )
-                            ):
-                                raise ValueError(
-                                    "Types d'allocation Shift v4 incohérents avec l'agrégat ressource"
-                                )
-                            if bool(resource.outside_schedule) != outside_by_resource.get(
-                                resource.resource_id, False
-                            ):
-                                raise ValueError(
-                                    "Hors horaire Shift v4 incohérent avec l'agrégat ressource"
-                                )
 
 def _contact_semantics(project: ProjectCommunicationProject) -> tuple[object, ...]:
     """Communication-owned semantics only; exclude replaceable physical identifiers."""
@@ -773,7 +541,23 @@ def project_projection_fingerprint(
     if version is not None:
         _validate_provenance(projection)
 
-    if version == 4:
+    if version == 5:
+        # P5 extends P4 business semantics with the frozen policy authority.
+        # Do not fingerprint traceability-only Shift/requirement fields via raw JSON.
+        context = projection.recipient_policy_context
+        assert context is not None  # Required by _validate_provenance.
+        payload = (
+            "project_provenance_v5",
+            projection.week_start.isoformat(),
+            projection.week_end.isoformat(),
+            tuple(
+                _project_v4_semantic_payload(project)
+                for project in sorted(projection.projects, key=lambda row: row.project_id)
+            ),
+            tuple(projection.diagnostics),
+            context.current_state_payload(),
+        )
+    elif version == 4:
         payload = (
             "project_provenance_v4",
             projection.week_start.isoformat(),
@@ -1579,7 +1363,7 @@ def _project_shift_deltas(
             new,
             previous_version=previous_version,
         )
-        refresh = previous_version < 4 and current_version == 4
+        refresh = previous_version < 4 and current_version in (4, 5)
         if "resource" in changed_fields:
             kind = "replaced"
         elif "day" in changed_fields:
@@ -2306,6 +2090,8 @@ def _batch_fingerprint(
 def build_project_confirmation_batch(
     projection: ProjectCommunicationProjection,
 ) -> ProjectCommunicationMessageBatch:
+    if projection.request_provenance_version == 5:
+        raise ValueError("Génération opérationnelle v5/P5 non prise en charge")
     drafts = tuple(
         _build_draft(
             project=project,
@@ -2341,14 +2127,14 @@ def compare_project_communication_projections(
     previous_version = previous.request_provenance_version
     if (
         type(current_version) is not int
-        or current_version not in (1, 2, 3, 4)
+        or current_version not in (1, 2, 3, 4, 5)
         or current.request_provenance_complete is not True
     ):
         raise ValueError("Projection courante sans provenance chantier complète")
     _validate_provenance(current)
     if previous_version is not None and (
         type(previous_version) is not int
-        or previous_version not in (1, 2, 3, 4)
+        or previous_version not in (1, 2, 3, 4, 5)
     ):
         raise ValueError("Version historique de provenance chantier non supportée")
     if previous_version is not None:
@@ -2369,10 +2155,10 @@ def compare_project_communication_projections(
             changes.append(ProjectCommunicationChange(project_id, "added", None, new))
         elif new is None:
             changes.append(ProjectCommunicationChange(project_id, "removed", old, None))
-        elif current_version == 4 and previous_version in (None, 1, 2, 3):
+        elif current_version in (4, 5) and previous_version in (None, 1, 2, 3):
             # Historical capability cannot prove all v4 per-Shift facts.
             changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
-        elif current_version == 4:
+        elif current_version in (4, 5):
             if _project_v4_semantic_payload(old) != _project_v4_semantic_payload(new):
                 changes.append(ProjectCommunicationChange(project_id, "modified", old, new))
         elif current_version == 3 and previous_version in (None, 1, 2):
@@ -2403,6 +2189,8 @@ def build_project_delta_batch(
     previous: ProjectCommunicationProjection,
     current: ProjectCommunicationProjection,
 ) -> ProjectCommunicationMessageBatch:
+    if 5 in (previous.request_provenance_version, current.request_provenance_version):
+        raise ValueError("Génération opérationnelle v5/P5 non prise en charge")
     changes = compare_project_communication_projections(previous, current)
     current_version = current.request_provenance_version
     previous_version = previous.request_provenance_version
@@ -2493,6 +2281,19 @@ def serialize_project_projection(
     if projection.request_provenance_version is not None:
         _validate_provenance(projection)
     serialized = convert(asdict(projection))
+    if projection.request_provenance_version == 5:
+        serialized["recipient_policy_context"] = projection.recipient_policy_context.to_payload()
+        # Canonical v5 numbers round trip through the existing float-based reader.
+        for project in serialized["projects"]:
+            for day in project["days"]:
+                for task in day["tasks"]:
+                    for resource in task["resources"]:
+                        resource["hours"] = float(resource["hours"])
+                    for assignment in task["request_assignments"]:
+                        assignment["hours"] = float(assignment["hours"])
+                        assignment["standard_hours"] = float(assignment["standard_hours"])
+    else:
+        serialized.pop("recipient_policy_context", None)
     # Absent #831 data must remain byte-for-byte compatible with previous
     # project_v2 JSON and previous P1 fingerprint inputs.
     for project in serialized["projects"]:
@@ -2554,8 +2355,38 @@ def serialize_project_projection(
 def deserialize_project_projection(payload: str) -> ProjectCommunicationProjection:
     """Restore a projection snapshot without consulting mutable business tables."""
 
-    data = json.loads(payload)
+    duplicate_keys: set[str] = set()
+
+    def read_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                duplicate_keys.add(key)
+            result[key] = value
+        return result
+
+    def contains_policy_context(value):
+        if isinstance(value, dict):
+            return "recipient_policy_context" in value or any(
+                contains_policy_context(item) for item in value.values()
+            )
+        if isinstance(value, list):
+            return any(contains_policy_context(item) for item in value)
+        return False
+
+    data = json.loads(payload, object_pairs_hook=read_object)
+    if not isinstance(data, dict):
+        raise ValueError("Snapshot de provenance chantier invalide")
     provenance_version = data.get("request_provenance_version")
+    if duplicate_keys & {"request_provenance_version", "request_provenance_complete", "recipient_policy_context"}:
+        raise ValueError("Capacité de provenance dupliquée")
+    recipient_policy_context = None
+    if type(provenance_version) is int and provenance_version == 5:
+        if duplicate_keys or "recipient_policy_context" not in data:
+            raise ValueError("Contexte destinataires v5 absent ou ambigu")
+        recipient_policy_context = RecipientPolicyContext.from_payload(data["recipient_policy_context"])
+    elif contains_policy_context(data):
+        raise ValueError("Contexte destinataires v5 interdit dans une provenance historique")
     provenance_complete = data.get("request_provenance_complete", False)
     if provenance_version is None:
         if provenance_complete or any(
@@ -2567,7 +2398,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
             raise ValueError("Snapshot chantier legacy incohérent")
     elif (
         type(provenance_version) is not int
-        or provenance_version not in (1, 2, 3, 4)
+        or provenance_version not in (1, 2, 3, 4, 5)
         or provenance_complete is not True
     ):
         raise ValueError("Version ou couverture de provenance chantier invalide")
@@ -2597,7 +2428,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 "Snapshot provenance v1 contient des faits de capacité ultérieure"
                             )
 
-    if provenance_version in (2, 3, 4):
+    if provenance_version in (2, 3, 4, 5):
         for project in data.get("projects") or ():
             for day in project.get("days") or ():
                 for task in day.get("tasks") or ():
@@ -2636,7 +2467,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 "Snapshot provenance v2 contient des faits de capacité ultérieure"
                             )
 
-    if provenance_version in (3, 4):
+    if provenance_version in (3, 4, 5):
         for project in data.get("projects") or ():
             if str(project.get("project_manager_erp_phone") or "").strip():
                 raise ValueError(
@@ -2679,7 +2510,7 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 "Snapshot provenance v3 contient des faits Shift v4"
                             )
 
-    if provenance_version == 4:
+    if provenance_version in (4, 5):
         for project in data.get("projects") or ():
             for day in project.get("days") or ():
                 for task in day.get("tasks") or ():
@@ -2840,12 +2671,12 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 site_contact_phone=value.get("site_contact_phone"),
                                 include_project_manager_contact_phone=(
                                     value["include_project_manager_contact_phone"]
-                                    if provenance_version in (3, 4)
+                                    if provenance_version in (3, 4, 5)
                                     else False
                                 ),
                                 project_manager_contact_phone=(
                                     value.get("project_manager_contact_phone")
-                                    if provenance_version in (3, 4)
+                                    if provenance_version in (3, 4, 5)
                                     else None
                                 ),
                                 assets=tuple(
@@ -2860,13 +2691,13 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                     )
                                     for asset in (
                                         value["assets"]
-                                        if provenance_version in (2, 3, 4)
+                                        if provenance_version in (2, 3, 4, 5)
                                         else value.get("assets") or ()
                                     )
                                 ),
                                 standard_hours=(
                                     float(value["standard_hours"])
-                                    if provenance_version in (2, 3, 4)
+                                    if provenance_version in (2, 3, 4, 5)
                                     else (
                                         float(value["standard_hours"])
                                         if value.get("standard_hours") is not None
@@ -2875,32 +2706,32 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
                                 ),
                                 confirmation=(
                                     value["confirmation"]
-                                    if provenance_version == 4
+                                    if provenance_version in (4, 5)
                                     else None
                                 ),
                                 allocation_type=(
                                     value["allocation_type"]
-                                    if provenance_version == 4
+                                    if provenance_version in (4, 5)
                                     else None
                                 ),
                                 outside_schedule=(
                                     value["outside_schedule"]
-                                    if provenance_version == 4
+                                    if provenance_version in (4, 5)
                                     else None
                                 ),
                                 task_id=(
                                     value["task_id"]
-                                    if provenance_version == 4
+                                    if provenance_version in (4, 5)
                                     else None
                                 ),
                                 task_code=(
                                     value["task_code"]
-                                    if provenance_version == 4
+                                    if provenance_version in (4, 5)
                                     else None
                                 ),
                                 task_description=(
                                     value["task_description"]
-                                    if provenance_version == 4
+                                    if provenance_version in (4, 5)
                                     else None
                                 ),
                             )
@@ -2943,7 +2774,13 @@ def deserialize_project_projection(payload: str) -> ProjectCommunicationProjecti
         request_provenance_version=provenance_version,
         request_provenance_complete=provenance_complete,
         diagnostics=tuple(data.get("diagnostics") or ()),
+        recipient_policy_context=recipient_policy_context,
     )
     if provenance_version is not None:
         _validate_provenance(projection)
+    if provenance_version == 5:
+        # No unknown fields, missing facts or permissive historical coercions in v5.
+        canonical = json.loads(serialize_project_projection(projection))
+        if json.dumps(canonical, sort_keys=True, allow_nan=False) != json.dumps(data, sort_keys=True, allow_nan=False):
+            raise ValueError("Snapshot destinataires v5 non canonique ou incomplet")
     return projection

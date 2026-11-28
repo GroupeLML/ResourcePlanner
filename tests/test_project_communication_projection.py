@@ -260,6 +260,13 @@ class ProjectCommunicationProjectionTests(unittest.TestCase):
                 week_start=WEEK,
                 week_end=date(2026, 9, 27),
                 assignments=(valid,),
+                request_provenance_version=6,
+            )
+        with self.assertRaisesRegex(ValueError, "Contexte destinataires incompatible"):
+            build_project_communication_projection(
+                week_start=WEEK,
+                week_end=date(2026, 9, 27),
+                assignments=(valid,),
                 request_provenance_version=5,
             )
         with self.assertRaisesRegex(ValueError, "non prise en charge"):

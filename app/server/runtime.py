@@ -83,6 +83,7 @@ ACUMATICA_MANAGER_FIELD_ENV = "RESOURCEPLANNER_ACUMATICA_PROJECT_MANAGER_FIELD"
 ACUMATICA_STATUS_FIELD_ENV = "RESOURCEPLANNER_ACUMATICA_PROJECT_STATUS_FIELD"
 ACUMATICA_PAGE_SIZE_ENV = "RESOURCEPLANNER_ACUMATICA_PAGE_SIZE"
 ACUMATICA_TIMEOUT_SECONDS_ENV = "RESOURCEPLANNER_ACUMATICA_TIMEOUT_SECONDS"
+SUPERINTENDENT_COMPETENCY_ID_ENV = "RESOURCEPLANNER_SUPERINTENDENT_COMPETENCY_ID"
 M365_TENANT_ID_ENV = "RESOURCEPLANNER_M365_TENANT_ID"
 M365_CLIENT_ID_ENV = "RESOURCEPLANNER_M365_CLIENT_ID"
 M365_CLIENT_SECRET_ENV = "RESOURCEPLANNER_M365_CLIENT_SECRET"
@@ -410,6 +411,8 @@ class ServerSettings:
         default_factory=ErpSyncEvidenceSettings
     )
 
+    superintendent_competency_id: str | None = None
+
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "ServerSettings":
         values = os.environ if environ is None else environ
@@ -586,6 +589,7 @@ class ServerSettings:
             embedding=embedding,
             acumatica=_acumatica_settings(values),
             m365=_m365_settings(values),
+            superintendent_competency_id=values.get(SUPERINTENDENT_COMPETENCY_ID_ENV),
             config_encryption_key=_text(values.get(CONFIG_ENCRYPTION_KEY_ENV)) or None,
             erp_sync=erp_sync,
             erp_sync_evidence=erp_sync_evidence,
@@ -709,6 +713,7 @@ def create_configured_app(settings: ServerSettings | None = None) -> FastAPI:
         break_glass_runtime=break_glass_runtime,
         dev_user_switcher_runtime=dev_user_switcher_runtime,
         communication_transport=communication_transport,
+        superintendent_competency_id=resolved.superintendent_competency_id,
         smtp_cipher=smtp_cipher,
         smtp_client=smtp_client,
         erp_sync_settings=(

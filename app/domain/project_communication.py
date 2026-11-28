@@ -5,6 +5,9 @@ from datetime import date
 import math
 from typing import Sequence
 
+from .communication_recipient_authority import ERPManagerAuthority
+from .communication_recipient_identity import RecipientIdentity
+from .communication_recipient_provenance import RecipientPolicyContext
 from .confirmation import VALID_CONFIRMATIONS
 from .operational_contacts import ContactResolution
 
@@ -176,7 +179,411 @@ class ProjectCommunicationProjection:
     request_provenance_version: int | None = None
     request_provenance_complete: bool = False
     diagnostics: tuple[str, ...] = ()
+    recipient_policy_context: RecipientPolicyContext | None = None
 
+    def __post_init__(self) -> None:
+        version = self.request_provenance_version
+        if version is not None and (type(version) is not int or version not in (1, 2, 3, 4, 5)):
+            raise ValueError("Version de provenance chantier non prise en charge")
+        if version == 5:
+            _validate_provenance(self)
+        elif self.recipient_policy_context is not None:
+            raise ValueError("Contexte destinataires v5 interdit dans une provenance historique")
+
+
+def _validate_v5_context(projection: ProjectCommunicationProjection) -> None:
+    context = projection.recipient_policy_context
+    if type(context) is not RecipientPolicyContext:
+        raise ValueError("Contexte destinataires v5 manquant ou invalide")
+    if not isinstance(projection.projects, tuple):
+        raise ValueError("Couverture projet v5 non immuable")
+    project_ids = [row.project_id for row in projection.projects]
+    if len(project_ids) != len(set(project_ids)) or sorted(project_ids) != [
+        row.project_id for row in context.message_inputs
+    ]:
+        raise ValueError("Couverture de provenance destinataires v5 incomplète")
+
+    # Bind current source roles to this snapshot, independently of composition.
+    # All known project participant identities are required; no generator authority.
+    by_project = {row.project_id: row for row in context.message_inputs}
+    index = context.current_index()
+    lookup = context.manager_presentation
+    canonical_presentation = context.presentation_mode == "CANONICAL_R2B"
+    presentation_roles = {} if lookup is None else {role.binding: role for role in lookup.roles}
+
+    def validate_manager_participant(participant, binding):
+        role = presentation_roles.get(binding)
+        if role is None:
+            raise ValueError("Missing originating effective manager presentation")
+        email, active = lookup.derive(role)
+        # These are the v4 presenter facts, not canonical transport authority.
+        # Phone and diagnostics remain their existing independent v4 fields.
+        if (participant.contact_id != role.contact_id
+                or participant.user_id != role.linked_user_id
+                or participant.email != email
+                or type(participant.active) is not bool or participant.active != active
+                or participant.display_name != role.display_name):
+            raise ValueError("Contradictory independent manager participant presentation")
+
+    for project in projection.projects:
+        expected: set[tuple[str, str, RecipientIdentity]] = set()
+
+        def expect(participant: ProjectCommunicationParticipant, role: str) -> None:
+            if role == "REQUESTER" and participant.user_id:
+                identity = RecipientIdentity("USER", participant.user_id)
+            elif participant.contact_id:
+                identity = RecipientIdentity("CONTACT", participant.contact_id)
+            elif participant.user_id:
+                identity = RecipientIdentity("USER", participant.user_id)
+            elif participant.active or participant.email:
+                raise ValueError("Identité de destinataire projet v5 manquante")
+            else:
+                # The existing unresolved participant and its diagnostics stay in v4 facts.
+                return
+            expected.add((role, "TO", identity))
+
+        typed_manager = next((row for row in by_project[project.project_id].candidates
+                              if type(row) is ERPManagerAuthority), None)
+        if typed_manager is not None:
+            participant = project.project_manager
+            if canonical_presentation:
+                validate_manager_participant(participant, (
+                    project.project_id, "MANAGER", typed_manager.principal.employee_external_id,
+                ))
+            else:
+                # Retain only the earlier inactive compatibility boundary.
+                # It cannot assert independently captured presentation authority.
+                resolved = typed_manager.candidate(context.identities, index)
+                if (participant.contact_id != typed_manager.contact_id
+                        or participant.user_id != typed_manager.linked_user_id
+                        or participant.active != resolved.active
+                        or (participant.email or "").strip() != (resolved.email or "").strip()
+                        or participant.display_name != typed_manager.display_name):
+                    raise ValueError("Contradictory ERP manager participant evidence")
+            expected.add(("MANAGER", "TO", typed_manager.principal.identity))
+        else:
+            if canonical_presentation:
+                participant = project.project_manager
+                if (participant.contact_id is not None or participant.user_id is not None
+                        or participant.email is not None or participant.phone is not None
+                        or participant.active is not False
+                        or participant.display_name != "Chargé de projet non défini"):
+                    raise ValueError("Contradictory absent canonical manager presentation")
+            else:
+                expect(project.project_manager, "MANAGER")
+        source = by_project[project.project_id].nomination_source
+        if source is None:
+            # Unavailable/provisional authority cannot justify a hidden role.
+            for participant in project.project_co_managers:
+                expect(participant, "CO_MANAGER")
+        else:
+            # C = N is enforced by MessageRecipientInputs. Bind the effective
+            # presentation independently: E = N - S, where S follows ADR-017's
+            # exact resolved AppUser OR BusinessContact predicate. Neither
+            # address equality nor a broader canonical Resource alias proves S.
+            nominations = set(source.contact_ids)
+            contacts = {row.contact_id for row in context.identities.contacts}
+            if not nominations <= contacts:
+                raise ValueError("Missing canonical RP nomination contact evidence")
+            linked = {}
+            for user in context.identities.users:
+                key = user.business_contact_id
+                if key in nominations:
+                    if key in linked:
+                        raise ValueError("Contradictory RP nomination user/contact binding")
+                    linked[key] = user.user_id
+            suppressed = set()
+            co_candidates = {row.primary.identity.id: row.primary
+                             for row in by_project[project.project_id].candidates
+                             if type(row) is not ERPManagerAuthority and row.primary.role == "CO_MANAGER"}
+            if typed_manager is not None:
+                for key in nominations:
+                    same_user = (typed_manager.linked_user_id is not None
+                                 and typed_manager.linked_user_id == linked.get(key))
+                    same_contact = typed_manager.contact_id is not None and typed_manager.contact_id == key
+                    if same_user or same_contact:
+                        # A coherent direct user link can have only one contact.
+                        # Missing or contradictory bindings are not suppression proof.
+                        if (not same_user or not same_contact
+                                or typed_manager.contact_status != "RESOLVED"):
+                            raise ValueError("Contradictory canonical manager/nomination suppression evidence")
+                        if co_candidates[key].active != bool(typed_manager.linked_user_active
+                                                            and typed_manager.contact_active):
+                            raise ValueError("Contradictory canonical manager/nomination activity")
+                        suppressed.add(key)
+            effective = set()
+            for participant in project.project_co_managers:
+                key = participant.contact_id
+                if (key not in nominations or key in effective
+                        or participant.user_id != linked.get(key)):
+                    raise ValueError("Contradictory effective RP nomination presentation")
+                if canonical_presentation:
+                    validate_manager_participant(participant, (project.project_id, "CO_MANAGER", key))
+                effective.add(key)
+            if effective != nominations - suppressed:
+                raise ValueError("Effective RP nomination coverage differs from persisted source")
+            expected.update(("CO_MANAGER", "TO", RecipientIdentity("CONTACT", key))
+                            for key in nominations)
+        for participant in project.requesters:
+            expect(participant, "REQUESTER")
+        for day in project.days:
+            for task in day.tasks:
+                for resource in task.resources:
+                    expected.add(("ASSIGNED", "CC", RecipientIdentity("RESOURCE", resource.resource_id)))
+                    if (type(resource.hours) not in (int, float)
+                            or not math.isfinite(resource.hours)):
+                        raise ValueError("Heures ressource v5 invalides")
+                for assignment in task.request_assignments:
+                    if (type(assignment.hours) not in (int, float)
+                            or type(assignment.standard_hours) not in (int, float)):
+                        raise ValueError("Heures Shift v5 invalides")
+        actual = set()
+        for row in by_project[project.project_id].candidates:
+            if type(row) is ERPManagerAuthority:
+                actual.add(("MANAGER", "TO", row.principal.identity))
+            else:
+                candidate = row.primary
+                actual.add((candidate.role, candidate.channel, candidate.identity))
+        if actual != expected:
+            raise ValueError("Provenance des rôles destinataires v5 incomplète ou incohérente")
+
+
+def _validate_provenance(projection: ProjectCommunicationProjection) -> None:
+    version = projection.request_provenance_version
+    if (
+        type(version) is not int
+        or version not in (1, 2, 3, 4, 5)
+        or projection.request_provenance_complete is not True
+    ):
+        raise ValueError("Version ou couverture de provenance chantier invalide")
+
+    if version == 5:
+        _validate_v5_context(projection)
+
+    seen: set[str] = set()
+    for project in projection.projects:
+        if version in (3, 4, 5) and str(project.project_manager_erp_phone or "").strip():
+            raise ValueError(
+                "Téléphone ERP responsable projet interdit en provenance v3+"
+            )
+        for day in project.days:
+            for task in day.tasks:
+                expected = {
+                    shift_id
+                    for resource in task.resources
+                    for shift_id in resource.shift_ids
+                }
+                actual: set[str] = set()
+                hours_by_resource: dict[str, float] = {}
+                confirmations_by_resource: dict[str, list[str]] = {}
+                allocations_by_resource: dict[str, list[str]] = {}
+                outside_by_resource: dict[str, bool] = {}
+                v4_task_ids: set[str] = set()
+                v4_task_codes: set[str] = set()
+                for assignment in task.request_assignments:
+                    if not assignment.shift_id or assignment.shift_id in seen:
+                        raise ValueError("Shift de provenance manquant ou dupliqué")
+                    if (
+                        not assignment.requirement_id
+                        or not assignment.resource_id
+                        or not math.isfinite(float(assignment.hours))
+                        or assignment.hours <= 0
+                    ):
+                        raise ValueError("Attribution chantier invalide")
+                    if not assignment.workforce_request_id and (
+                        assignment.request_number
+                        or assignment.site_contact_name
+                        or assignment.site_contact_phone
+                    ):
+                        raise ValueError("Contact chantier sans provenance demande")
+                    if not any(
+                        resource.resource_id == assignment.resource_id
+                        and assignment.shift_id in resource.shift_ids
+                        for resource in task.resources
+                    ):
+                        raise ValueError("Ressource de provenance incohérente")
+
+                    if version in (1, 2, 3) and any(
+                        value is not None
+                        for value in (
+                            assignment.confirmation,
+                            assignment.allocation_type,
+                            assignment.outside_schedule,
+                            assignment.task_id,
+                            assignment.task_code,
+                            assignment.task_description,
+                        )
+                    ):
+                        raise ValueError(
+                            "Faits Shift v4 interdits dans une provenance historique"
+                        )
+
+                    if version in (2, 3, 4, 5):
+                        standard_hours = assignment.standard_hours
+                        if (
+                            standard_hours is None
+                            or not math.isfinite(float(standard_hours))
+                            or float(standard_hours) < 0
+                        ):
+                            raise ValueError(
+                                "Heures standard v2+ manquantes ou invalides"
+                            )
+                        if not isinstance(assignment.assets, tuple):
+                            raise ValueError("Actifs Shift v2+ non explicites")
+                        if any(
+                            not asset.association_kind
+                            for asset in assignment.assets
+                        ):
+                            raise ValueError(
+                                "Provenance d'association d'actif v2+ manquante"
+                            )
+                        hours_by_resource[assignment.resource_id] = round(
+                            hours_by_resource.get(assignment.resource_id, 0.0)
+                            + float(assignment.hours),
+                            2,
+                        )
+
+                    if version in (3, 4, 5):
+                        if not isinstance(
+                            assignment.include_project_manager_contact_phone,
+                            bool,
+                        ):
+                            raise ValueError(
+                                "Sélection téléphone responsable projet v3+ doit être booléenne"
+                            )
+                        if (
+                            assignment.workforce_request_id is None
+                            and (
+                                assignment.include_project_manager_contact_phone
+                                or assignment.project_manager_contact_phone
+                            )
+                        ):
+                            raise ValueError(
+                                "Téléphone responsable projet sans provenance demande"
+                            )
+                        if (
+                            assignment.include_project_manager_contact_phone
+                            and not (
+                                assignment.project_manager_contact_phone or ""
+                            ).strip()
+                        ):
+                            raise ValueError(
+                                "Téléphone responsable projet sélectionné mais vide"
+                            )
+
+                    if version in (4, 5):
+                        if assignment.confirmation not in VALID_CONFIRMATIONS:
+                            raise ValueError("Confirmation Shift v4 invalide")
+                        if (
+                            not isinstance(assignment.allocation_type, str)
+                            or not assignment.allocation_type.strip()
+                        ):
+                            raise ValueError(
+                                "Type d'allocation Shift v4 manquant ou invalide"
+                            )
+                        if type(assignment.outside_schedule) is not bool:
+                            raise ValueError(
+                                "Hors horaire Shift v4 doit être booléen"
+                            )
+                        if assignment.task_id is not None and (
+                            not isinstance(assignment.task_id, str)
+                            or not assignment.task_id.strip()
+                        ):
+                            raise ValueError("Identité tâche Shift v4 invalide")
+                        if assignment.task_code is not None and (
+                            not isinstance(assignment.task_code, str)
+                            or not assignment.task_code.strip()
+                        ):
+                            raise ValueError("Code tâche Shift v4 invalide")
+                        if (
+                            not isinstance(assignment.task_description, str)
+                            or not assignment.task_description.strip()
+                        ):
+                            raise ValueError(
+                                "Description tâche Shift v4 manquante ou invalide"
+                            )
+                        if (
+                            assignment.task_description.strip().casefold()
+                            != task.task_description.strip().casefold()
+                        ):
+                            raise ValueError(
+                                "Description tâche Shift v4 incohérente avec le contexte"
+                            )
+                        if (
+                            assignment.task_id is not None
+                            and assignment.task_id not in task.task_ids
+                        ):
+                            raise ValueError(
+                                "Identité tâche Shift v4 incohérente avec le contexte"
+                            )
+                        if (
+                            assignment.task_code is not None
+                            and assignment.task_code not in task.task_codes
+                        ):
+                            raise ValueError(
+                                "Code tâche Shift v4 incohérent avec le contexte"
+                            )
+                        if assignment.task_id is not None:
+                            v4_task_ids.add(assignment.task_id)
+                        if assignment.task_code is not None:
+                            v4_task_codes.add(assignment.task_code)
+                        confirmations_by_resource.setdefault(
+                            assignment.resource_id, []
+                        ).append(assignment.confirmation)
+                        allocations_by_resource.setdefault(
+                            assignment.resource_id, []
+                        ).append(assignment.allocation_type)
+                        outside_by_resource[assignment.resource_id] = (
+                            outside_by_resource.get(assignment.resource_id, False)
+                            or assignment.outside_schedule
+                        )
+
+                    actual.add(assignment.shift_id)
+                    seen.add(assignment.shift_id)
+
+                if actual != expected:
+                    raise ValueError("Couverture de provenance chantier incomplète")
+                if version in (4, 5):
+                    if set(task.task_ids) != v4_task_ids:
+                        raise ValueError(
+                            "Identités tâche v4 incohérentes avec les Shifts"
+                        )
+                    if set(task.task_codes) != v4_task_codes:
+                        raise ValueError(
+                            "Codes tâche v4 incohérents avec les Shifts"
+                        )
+                if version in (2, 3, 4, 5):
+                    for resource in task.resources:
+                        if round(float(resource.hours), 2) != hours_by_resource.get(
+                            resource.resource_id,
+                            0.0,
+                        ):
+                            raise ValueError(
+                                "Heures Shift v2+ incohérentes avec le total ressource"
+                            )
+                        if version in (4, 5):
+                            if set(resource.confirmations) != set(
+                                confirmations_by_resource.get(
+                                    resource.resource_id, []
+                                )
+                            ):
+                                raise ValueError(
+                                    "Confirmations Shift v4 incohérentes avec l'agrégat ressource"
+                                )
+                            if set(resource.allocation_types) != set(
+                                allocations_by_resource.get(
+                                    resource.resource_id, []
+                                )
+                            ):
+                                raise ValueError(
+                                    "Types d'allocation Shift v4 incohérents avec l'agrégat ressource"
+                                )
+                            if bool(resource.outside_schedule) != outside_by_resource.get(
+                                resource.resource_id, False
+                            ):
+                                raise ValueError(
+                                    "Hors horaire Shift v4 incohérent avec l'agrégat ressource"
+                                )
 
 def _unique(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
@@ -200,12 +607,17 @@ def build_project_communication_projection(
     week_end: date,
     assignments: Sequence[ProjectCommunicationAssignment],
     request_provenance_version: int = 1,
+    recipient_policy_context: RecipientPolicyContext | None = None,
 ) -> ProjectCommunicationProjection:
     """Group authoritative shifts as Project -> Date -> Task -> assigned resources."""
 
-    if type(request_provenance_version) is not int or request_provenance_version not in (1, 2, 3, 4):
+    if type(request_provenance_version) is not int or request_provenance_version not in (1, 2, 3, 4, 5):
         raise ValueError("Version de provenance chantier non prise en charge")
-    if request_provenance_version in (2, 3, 4):
+    if (request_provenance_version == 5) != (type(recipient_policy_context) is RecipientPolicyContext):
+        raise ValueError("Contexte destinataires incompatible avec la provenance chantier")
+    if request_provenance_version != 5 and recipient_policy_context is not None:
+        raise ValueError("Contexte destinataires v5 interdit dans une provenance historique")
+    if request_provenance_version in (2, 3, 4, 5):
         for row in assignments:
             if (
                 row.standard_hours is None
@@ -217,7 +629,7 @@ def build_project_communication_projection(
                 )
             if not isinstance(row.assets, tuple):
                 raise ValueError("Actifs Shift v2+ non explicites")
-    if request_provenance_version in (3, 4):
+    if request_provenance_version in (3, 4, 5):
         for row in assignments:
             if not isinstance(row.include_project_manager_contact_phone, bool):
                 raise ValueError(
@@ -241,7 +653,7 @@ def build_project_communication_projection(
                 raise ValueError(
                     "Téléphone responsable projet sélectionné mais vide"
                 )
-    if request_provenance_version == 4:
+    if request_provenance_version in (4, 5):
         for row in assignments:
             if row.confirmation not in VALID_CONFIRMATIONS:
                 raise ValueError("Confirmation Shift v4 invalide")
@@ -330,13 +742,13 @@ def build_project_communication_projection(
         if row.task_id:
             task["task_ids"].add(
                 row.task_id.strip()
-                if request_provenance_version == 4
+                if request_provenance_version in (4, 5)
                 else row.task_id
             )
         if row.task_code:
             task["task_codes"].add(
                 row.task_code.strip()
-                if request_provenance_version == 4
+                if request_provenance_version in (4, 5)
                 else row.task_code
             )
         task["responsibles"][_resolution_key(row.operational_responsible)] = row.operational_responsible
@@ -353,37 +765,37 @@ def build_project_communication_projection(
                 site_contact_phone=row.site_contact_phone,
                 include_project_manager_contact_phone=(
                     row.include_project_manager_contact_phone
-                    if request_provenance_version in (3, 4)
+                    if request_provenance_version in (3, 4, 5)
                     else False
                 ),
                 project_manager_contact_phone=(
                     row.project_manager_contact_phone
-                    if request_provenance_version in (3, 4)
+                    if request_provenance_version in (3, 4, 5)
                     else None
                 ),
                 assets=tuple(row.assets),
                 standard_hours=row.standard_hours,
                 confirmation=(
-                    row.confirmation if request_provenance_version == 4 else None
+                    row.confirmation if request_provenance_version in (4, 5) else None
                 ),
                 allocation_type=(
-                    row.allocation_type if request_provenance_version == 4 else None
+                    row.allocation_type if request_provenance_version in (4, 5) else None
                 ),
                 outside_schedule=(
-                    row.outside_schedule if request_provenance_version == 4 else None
+                    row.outside_schedule if request_provenance_version in (4, 5) else None
                 ),
                 task_id=(
                     (row.task_id.strip() or None)
-                    if request_provenance_version == 4 and row.task_id is not None
+                    if request_provenance_version in (4, 5) and row.task_id is not None
                     else None
                 ),
                 task_code=(
                     (row.task_code.strip() or None)
-                    if request_provenance_version == 4 and row.task_code is not None
+                    if request_provenance_version in (4, 5) and row.task_code is not None
                     else None
                 ),
                 task_description=(
-                    row.task_description if request_provenance_version == 4 else None
+                    row.task_description if request_provenance_version in (4, 5) else None
                 ),
             )
         )
@@ -526,4 +938,5 @@ def build_project_communication_projection(
         request_provenance_version=request_provenance_version,
         request_provenance_complete=True,
         diagnostics=_unique(global_diagnostics),
+        recipient_policy_context=recipient_policy_context,
     )

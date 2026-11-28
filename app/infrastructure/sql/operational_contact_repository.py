@@ -59,6 +59,17 @@ def _unique(values: list[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
 
 
+def _read_materialized_rows(session: Session, model, keys):
+    """Bound IN reads while retaining physical rows and strong ORM references."""
+    wanted = tuple(dict.fromkeys(keys))
+    found = {}
+    for offset in range(0, len(wanted), 900):
+        chunk = wanted[offset:offset + 900]
+        for row in session.scalars(select(model).where(model.id.in_(chunk))).all():
+            found.setdefault(row.id, row)
+    return tuple(found.values())
+
+
 def _snapshot(row: BusinessContact | None) -> BusinessContactSnapshot | None:
     if row is None:
         return None
@@ -96,9 +107,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             and contact_id not in self._missing_contact_ids
         )
         if missing:
-            rows = self._session.scalars(
-                select(BusinessContact).where(BusinessContact.id.in_(missing))
-            ).all()
+            rows = _read_materialized_rows(self._session, BusinessContact, missing)
             found = {row.id: row for row in rows}
             self._contact_cache.update(found)
             self._missing_contact_ids.update(set(missing) - set(found))
@@ -557,46 +566,10 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
             row.resource_id for row in shifts if row.resource_id
         )
 
-        projects = (
-            tuple(
-                self._session.scalars(
-                    select(Project).where(Project.id.in_(tuple(project_ids)))
-                ).all()
-            )
-            if project_ids
-            else ()
-        )
-        requests = (
-            tuple(
-                self._session.scalars(
-                    select(WorkforceRequest).where(
-                        WorkforceRequest.id.in_(tuple(request_ids))
-                    )
-                ).all()
-            )
-            if request_ids
-            else ()
-        )
-        tasks = (
-            tuple(
-                self._session.scalars(
-                    select(TaskCatalogEntry).where(
-                        TaskCatalogEntry.id.in_(tuple(task_ids))
-                    )
-                ).all()
-            )
-            if task_ids
-            else ()
-        )
-        resources = (
-            tuple(
-                self._session.scalars(
-                    select(Resource).where(Resource.id.in_(tuple(resource_ids)))
-                ).all()
-            )
-            if resource_ids
-            else ()
-        )
+        projects = _read_materialized_rows(self._session, Project, project_ids)
+        requests = _read_materialized_rows(self._session, WorkforceRequest, request_ids)
+        tasks = _read_materialized_rows(self._session, TaskCatalogEntry, task_ids)
+        resources = _read_materialized_rows(self._session, Resource, resource_ids)
 
         task_by_id = {row.id: row for row in tasks}
         resource_by_id = {row.id: row for row in resources}
@@ -636,13 +609,7 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         )
         if not wanted:
             return ()
-        requirements = tuple(
-            self._session.scalars(
-                select(ResourceRequirement).where(
-                    ResourceRequirement.id.in_(wanted)
-                )
-            ).all()
-        )
+        requirements = _read_materialized_rows(self._session, ResourceRequirement, wanted)
         by_id = {row.id: row for row in requirements}
         primed = self._prime_materialized_context_rows(requirements)
         result = tuple(
@@ -672,28 +639,14 @@ class SqlOperationalContactRepository(OperationalContactRepositoryPort):
         )
         if not wanted:
             return ()
-        shifts = tuple(
-            self._session.scalars(
-                select(Shift).where(Shift.id.in_(wanted))
-            ).all()
-        )
+        shifts = _read_materialized_rows(self._session, Shift, wanted)
         shift_by_id = {row.id: row for row in shifts}
         requirement_ids = {
             row.resource_requirement_id
             for row in shifts
             if row.resource_requirement_id
         }
-        requirements = (
-            tuple(
-                self._session.scalars(
-                    select(ResourceRequirement).where(
-                        ResourceRequirement.id.in_(tuple(requirement_ids))
-                    )
-                ).all()
-            )
-            if requirement_ids
-            else ()
-        )
+        requirements = _read_materialized_rows(self._session, ResourceRequirement, requirement_ids)
         requirement_by_id = {row.id: row for row in requirements}
         primed = self._prime_materialized_context_rows(
             requirements,

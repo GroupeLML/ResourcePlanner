@@ -255,3 +255,8 @@ Recording this ADR does not implement #869, activate v5 writes, configure a prod
 - [ADR-036](ADR-036-project-communication-provenance-v2.md) and [ADR-037](ADR-037-project-communication-provenance-v4-and-shift-deltas.md).
 - [#901 — independent future security-role requirement](https://github.com/GroupeLML/ResourcePlanner/issues/901).
 - [AGENTS.md](../../AGENTS.md) and [architecture documentation conventions](README.md).
+
+
+### Forward asset qualification diagnostic ordering — ADR-037 addendum
+
+The PO-approved [ADR-037 forward asset qualification-diagnostic ordering addendum](ADR-037-project-communication-provenance-v4-and-shift-deltas.md#addendum--forward-asset-qualification-diagnostic-ordering-p01-a-f01-2026-11-27) applies to the shared originating business acquisition for v5 as well as live v4. Its per-Shift exact-code normalization, disclosed historical P4/P5 ordering transition and first-production-promotion prerequisites are authoritative. No historical normalization, new capability, changed P5 algorithm, altered recipient authority, version-only Shift refresh, stale bypass, automatic send or changed latest-COMMUNICATED baseline selection is authorized. All other ADR-039 decisions remain unchanged.
