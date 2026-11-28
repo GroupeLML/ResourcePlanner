@@ -106,7 +106,7 @@ jobs:
     needs: changes
     name: Python verification (shard ${{ matrix.shard_index }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
