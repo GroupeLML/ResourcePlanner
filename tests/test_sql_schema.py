@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 import unittest
 
-from sqlalchemy import ForeignKeyConstraint, create_engine, inspect
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, create_engine, inspect
 from sqlalchemy.dialects import mssql, postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -35,6 +35,8 @@ EXPECTED_TABLES = {
     "erp_sync_project_quality",
     "erp_sync_recovery_state",
     "erp_sync_compensation_receipts",
+    "emergency_broadcasts",
+    "emergency_broadcast_acknowledgments",
     "approval_decisions",
     "approval_requirement_approvers",
     "approval_requirements",
@@ -159,6 +161,12 @@ class SqlSchemaTests(unittest.TestCase):
         communication_batches = Base.metadata.tables["communication_batches"].c
         communication_messages = Base.metadata.tables["communication_messages"].c
         communication_snapshots = Base.metadata.tables["communication_snapshot_lines"].c
+        emergency_broadcasts = Base.metadata.tables["emergency_broadcasts"]
+        emergency_broadcast_columns = emergency_broadcasts.c
+        emergency_acknowledgments = Base.metadata.tables[
+            "emergency_broadcast_acknowledgments"
+        ]
+        emergency_ack_columns = emergency_acknowledgments.c
         planning_history = Base.metadata.tables["planning_change_history"].c
         planning_state = Base.metadata.tables["planning_mutation_state"].c
         planning_window_overrides = Base.metadata.tables["planning_window_overrides"].c
@@ -578,6 +586,50 @@ class SqlSchemaTests(unittest.TestCase):
         self.assertFalse(communication_messages.included.nullable)
         self.assertFalse(communication_snapshots.batch_id.nullable)
         self.assertFalse(communication_snapshots.resource_id.nullable)
+        self.assertFalse(emergency_broadcast_columns.id.nullable)
+        self.assertFalse(emergency_broadcast_columns.version.nullable)
+        self.assertFalse(emergency_broadcast_columns.title.nullable)
+        self.assertFalse(emergency_broadcast_columns.message.nullable)
+        self.assertFalse(emergency_broadcast_columns.created_by_user_id.nullable)
+        self.assertFalse(emergency_broadcast_columns.creation_command_id.nullable)
+        self.assertFalse(emergency_broadcast_columns.creation_payload_hash.nullable)
+        self.assertFalse(emergency_broadcast_columns.created_at.nullable)
+        self.assertFalse(emergency_broadcast_columns.activated_at.nullable)
+        self.assertFalse(emergency_broadcast_columns.state.nullable)
+        self.assertTrue(emergency_broadcast_columns.ended_at.nullable)
+        self.assertTrue(emergency_broadcast_columns.ended_by_user_id.nullable)
+        self.assertFalse(emergency_ack_columns.broadcast_id.nullable)
+        self.assertFalse(emergency_ack_columns.user_id.nullable)
+        self.assertFalse(emergency_ack_columns.acknowledged_at.nullable)
+        self.assertEqual(
+            tuple(column.name for column in emergency_acknowledgments.primary_key.columns),
+            ("broadcast_id", "user_id"),
+        )
+        self.assertEqual(
+            {
+                index.name
+                for index in emergency_broadcasts.indexes
+                if index.name
+            },
+            {
+                "ux_emergency_broadcasts_creator_command",
+                "ux_emergency_broadcasts_single_active",
+                "ix_emergency_broadcasts_history",
+            },
+        )
+        self.assertEqual(
+            {
+                constraint.name
+                for constraint in emergency_broadcasts.constraints
+                if isinstance(constraint, CheckConstraint)
+            },
+            {
+                "ck_emergency_broadcasts_version_one",
+                "ck_emergency_broadcasts_state_valid",
+                "ck_emergency_broadcasts_end_fields_match_state",
+                "ck_emergency_broadcasts_ended_after_activation",
+            },
+        )
         self.assertFalse(planning_history.entity_type.nullable)
         self.assertFalse(planning_history.entity_id.nullable)
         self.assertFalse(planning_history.entity_reference.nullable)

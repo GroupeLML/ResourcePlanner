@@ -21,7 +21,7 @@ MIGRATIONS = ROOT / "migrations"
 VERSIONS = MIGRATIONS / "versions"
 BASELINE_FILE = VERSIONS / "0001_v2_production_baseline.py"
 BASELINE_REVISION = "v2_production_baseline"
-HEAD_REVISION = "0037_workforce_request_project_manager_phone"
+HEAD_REVISION = "0038_emergency_broadcasts"
 
 
 def synthetic_phone(last_four: str = "0100") -> str:
@@ -110,6 +110,7 @@ class SqlMigrationTests(unittest.TestCase):
                 "0035_workforce_request_site_contact.py",
                 "0036_communication_message_body_html.py",
                 "0037_workforce_request_project_manager_phone.py",
+                "0038_emergency_broadcasts.py",
             ],
         )
 
@@ -128,6 +129,7 @@ class SqlMigrationTests(unittest.TestCase):
             [revision.revision for revision in script.walk_revisions()],
             [
                 HEAD_REVISION,
+                "0037_workforce_request_project_manager_phone",
                 "0036_communication_message_body_html",
                 "0035_workforce_request_site_contact",
                 "0034_request_shift_survivor_protections",
@@ -165,6 +167,127 @@ class SqlMigrationTests(unittest.TestCase):
                 "0002_work_package_weekly_loads",
                 BASELINE_REVISION,
             ],
+        )
+
+    def test_0038_empty_schema_can_downgrade_for_controlled_migration_verification(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "emergency-empty-downgrade.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                self.assertIn("emergency_broadcasts", inspect(engine).get_table_names())
+                self.assertIn(
+                    "emergency_broadcast_acknowledgments",
+                    inspect(engine).get_table_names(),
+                )
+            finally:
+                engine.dispose()
+
+            command.downgrade(
+                config,
+                "0037_workforce_request_project_manager_phone",
+            )
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                tables = set(inspect(engine).get_table_names())
+                self.assertNotIn("emergency_broadcasts", tables)
+                self.assertNotIn("emergency_broadcast_acknowledgments", tables)
+                revision = engine.connect().execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalar_one()
+                self.assertEqual(
+                    revision,
+                    "0037_workforce_request_project_manager_phone",
+                )
+            finally:
+                engine.dispose()
+
+    def test_0038_populated_schema_refuses_destructive_downgrade(self) -> None:
+        with TemporaryDirectory() as directory:
+            database_path = Path(directory) / "emergency-populated-downgrade.db"
+            config = alembic_config(database_path)
+            command.upgrade(config, "head")
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "INSERT INTO app_users "
+                            "(id, display_name, roles_json, active) "
+                            "VALUES ('USER-894-MIG', 'Admin 894', '[\"ADMIN\"]', 1)"
+                        )
+                    )
+                    connection.execute(
+                        text(
+                            "INSERT INTO emergency_broadcasts "
+                            "(id, version, title, message, created_by_user_id, "
+                            "creation_command_id, creation_payload_hash, state) "
+                            "VALUES ('B-894-MIG', 1, 'Avis', 'Message', "
+                            "'USER-894-MIG', '00000000-0000-0000-0000-000000000894', "
+                            ":payload_hash, 'ACTIVE')"
+                        ),
+                        {"payload_hash": "a" * 64},
+                    )
+                    connection.execute(
+                        text(
+                            "INSERT INTO emergency_broadcast_acknowledgments "
+                            "(broadcast_id, user_id) "
+                            "VALUES ('B-894-MIG', 'USER-894-MIG')"
+                        )
+                    )
+            finally:
+                engine.dispose()
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "refuses downgrade while durable #894",
+            ):
+                command.downgrade(
+                    config,
+                    "0037_workforce_request_project_manager_phone",
+                )
+
+            engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+            try:
+                with engine.connect() as connection:
+                    self.assertEqual(
+                        connection.scalar(
+                            text("SELECT COUNT(*) FROM emergency_broadcasts")
+                        ),
+                        1,
+                    )
+                    self.assertEqual(
+                        connection.scalar(
+                            text(
+                                "SELECT COUNT(*) "
+                                "FROM emergency_broadcast_acknowledgments"
+                            )
+                        ),
+                        1,
+                    )
+            finally:
+                engine.dispose()
+
+    def test_0038_offline_downgrade_refuses_uninspectable_data_loss(self) -> None:
+        output = StringIO()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "refuses offline downgrade generation",
+        ):
+            command.downgrade(
+                offline_config("mssql+pyodbc://", output),
+                "0038_emergency_broadcasts:0037_workforce_request_project_manager_phone",
+                sql=True,
+            )
+        generated = output.getvalue().upper()
+        self.assertNotIn("DROP TABLE EMERGENCY_BROADCASTS", generated)
+        self.assertNotIn(
+            "DROP TABLE EMERGENCY_BROADCAST_ACKNOWLEDGMENTS",
+            generated,
         )
 
     def test_0037_request_manager_phone_defaults_existing_rows_to_opt_out(self) -> None:
@@ -1699,6 +1822,9 @@ class SqlMigrationTests(unittest.TestCase):
             "RESOURCE_CLASS_VERSION",
             "FK_COMPETENCIES_RESOURCE_CLASS_CODE_RESOURCE_CLASS_CONFIGS",
             "RESIDENCE_CITY",
+            "CREATE TABLE EMERGENCY_BROADCASTS",
+            "CREATE TABLE EMERGENCY_BROADCAST_ACKNOWLEDGMENTS",
+            "UX_EMERGENCY_BROADCASTS_SINGLE_ACTIVE",
         ):
             self.assertIn(token, ddl)
         self.assertIn(BASELINE_REVISION.upper(), ddl)

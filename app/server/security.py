@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import inspect
+from time import perf_counter
 from typing import Any
 
 from fastapi import Request
@@ -26,6 +27,7 @@ from ..application.security import (
     PERMISSION_READ_WORK_PACKAGES,
     PERMISSION_SYNC_PROJECTS,
 )
+from .concurrency import run_sync_cancellation_safe
 from .performance import performance_phase
 
 
@@ -100,6 +102,13 @@ def required_permission(method: str, path: str) -> str | None:
         return None
     if path.startswith("/api/v1/dev/user-switcher"):
         return None
+    if path == "/api/v1/runtime/status" or (
+        path.startswith("/api/v1/runtime/broadcasts/")
+        and path.endswith("/acknowledgment")
+    ):
+        return None
+    if path.startswith("/api/v1/admin/runtime"):
+        return PERMISSION_ADMIN_SETTINGS
     if (
         path.startswith("/api/v1/admin/settings")
         or path.startswith("/api/v1/admin/approval-scopes")
@@ -235,18 +244,40 @@ def static_auth_resolver(principal: AuthPrincipal | None) -> AuthResolver:
     return resolve
 
 
-async def resolve_principal(resolver: AuthResolver, request: Request) -> AuthPrincipal | None:
-    resolved = resolver(request)
+async def resolve_principal(
+    resolver: AuthResolver,
+    request: Request,
+    *,
+    offload_sync: bool = False,
+) -> AuthPrincipal | None:
+    if offload_sync and not inspect.iscoroutinefunction(resolver):
+        resolved = await run_sync_cancellation_safe(resolver, request)
+    else:
+        resolved = resolver(request)
     if inspect.isawaitable(resolved):
         return await resolved
     return resolved
 
 
-async def _csrf_allowed(guard: CsrfGuard, request: Request) -> bool:
-    result = guard(request)
+async def _csrf_allowed(
+    guard: CsrfGuard,
+    request: Request,
+    *,
+    offload_sync: bool = False,
+) -> bool:
+    if offload_sync and not inspect.iscoroutinefunction(guard):
+        result = await run_sync_cancellation_safe(guard, request)
+    else:
+        result = guard(request)
     if inspect.isawaitable(result):
         return bool(await result)
     return bool(result)
+
+
+def _is_emergency_feature_path(path: str) -> bool:
+    return path == "/api/v1/runtime/status" or path.startswith(
+        "/api/v1/runtime/broadcasts/"
+    ) or path.startswith("/api/v1/admin/runtime")
 
 
 def install_authorization_middleware(
@@ -263,8 +294,29 @@ def install_authorization_middleware(
         if not path.startswith("/api/v1/"):
             return await call_next(request)
 
+        emergency_feature = _is_emergency_feature_path(path)
         with performance_phase("auth"):
-            principal = await resolve_principal(resolver, request)
+            resolver_started = perf_counter()
+            try:
+                principal = await resolve_principal(
+                    resolver,
+                    request,
+                    offload_sync=True,
+                )
+            except Exception:
+                if emergency_feature:
+                    return _error(
+                        503,
+                        "emergency_runtime_auth_unavailable",
+                        "L'authentification du statut d'urgence est temporairement indisponible.",
+                    )
+                raise
+            finally:
+                if emergency_feature:
+                    request.state.issue_894_auth_resolver_seconds = max(
+                        0.0,
+                        perf_counter() - resolver_started,
+                    )
             if principal is None:
                 return _error(
                     401,
@@ -293,7 +345,28 @@ def install_authorization_middleware(
                 and principal.auth_mode in {"oidc", "break_glass"}
                 and request.method.upper() in _UNSAFE_METHODS
             ):
-                if not await _csrf_allowed(csrf_guard, request):
+                csrf_started = perf_counter()
+                try:
+                    csrf_allowed = await _csrf_allowed(
+                        csrf_guard,
+                        request,
+                        offload_sync=True,
+                    )
+                except Exception:
+                    if emergency_feature:
+                        return _error(
+                            503,
+                            "emergency_runtime_auth_unavailable",
+                            "La validation de la session est temporairement indisponible.",
+                        )
+                    raise
+                finally:
+                    if emergency_feature:
+                        request.state.issue_894_csrf_seconds = max(
+                            0.0,
+                            perf_counter() - csrf_started,
+                        )
+                if not csrf_allowed:
                     return _error(
                         403,
                         "csrf_validation_failed",

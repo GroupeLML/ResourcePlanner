@@ -1,0 +1,1503 @@
+from __future__ import annotations
+
+import asyncio
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import re
+import sys
+import threading
+import time
+import traceback
+from typing import Any, Callable
+from uuid import uuid4
+
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
+
+
+_DIAGNOSTIC_ID = ContextVar("rp894_diagnostic_request_id", default="")
+_ROUTE_FAMILY = ContextVar("rp894_diagnostic_route_family", default="unknown")
+_EXECUTOR_PHASE = ContextVar("rp894_diagnostic_executor_phase", default="other")
+_ID_RE = re.compile(r"^[a-f0-9]{16,32}$")
+_STALL_WAIT_SECONDS = 1.0
+_FETCH_PROFILE_INTERVAL_SECONDS = 0.01
+_LEGACY_LIST_SHIFTS_FINGERPRINT = "6361f6c1e9d43777"
+_UNCHANGED_TARGET_FINGERPRINTS = frozenset({
+    "bb0e459d480f9470",
+    "44f262328b901259",
+})
+
+
+def _statement_target_role(statement: object) -> str:
+    normalized = " ".join(str(statement or "").split()).casefold()
+    required = (
+        "workforce_requests.id",
+        "workforce_requests.legacy_demand_number",
+        "workforce_requests.requester_name",
+        "workforce_requests.emergency_override_active",
+        " from shifts ",
+        " join resource_requirements ",
+        " join resources ",
+        " join projects ",
+        " join workforce_requests ",
+    )
+    if all(fragment in normalized for fragment in required):
+        return "list_shifts_initial"
+    return ""
+
+
+def _targeted_result_consumer(
+    fingerprint: str,
+    target_role: str,
+) -> bool:
+    return (
+        target_role == "list_shifts_initial"
+        or fingerprint == _LEGACY_LIST_SHIFTS_FINGERPRINT
+        or fingerprint in _UNCHANGED_TARGET_FINGERPRINTS
+    )
+
+
+def safe_diagnostic_id(candidate: object | None = None) -> str:
+    value = str(candidate or "").strip().casefold()
+    if _ID_RE.fullmatch(value):
+        return value
+    return uuid4().hex[:20]
+
+
+def route_family(path: str) -> str:
+    text = str(path or "")
+    if text.startswith("/api/v1/planning/"):
+        return "planning_read"
+    if text.startswith("/api/v1/projects"):
+        return "project_read"
+    if text.startswith("/api/v1/resources/"):
+        return "resource_save"
+    if text == "/api/v1/resources":
+        return "resource_collection"
+    if text.startswith("/api/v1/"):
+        return "other_api"
+    if text in {"/health", "/ready"}:
+        return text[1:]
+    return "other"
+
+
+@dataclass(slots=True)
+class _RequestAggregate:
+    request_id: str
+    route_family: str
+    request_started: float
+    first_statement_end: float | None = None
+    last_statement_end: float | None = None
+    orm_materialization_count: int = 0
+    first_materialization: float | None = None
+    last_materialization: float | None = None
+
+
+@dataclass(slots=True)
+class ConnectionTraceRecorder:
+    path: Path
+    started: float = field(default_factory=time.perf_counter)
+    _write_lock: threading.Lock = field(default_factory=threading.Lock)
+    _state_lock: threading.Lock = field(default_factory=threading.Lock)
+    _first_stall_lock: threading.Lock = field(default_factory=threading.Lock)
+    _first_stall_captured: bool = False
+    _executor_pending: int = 0
+    _executor_running: int = 0
+    _holders: dict[int, dict[str, object]] = field(default_factory=dict)
+    _requests: dict[str, _RequestAggregate] = field(default_factory=dict)
+    _consumer_local: threading.local = field(default_factory=threading.local)
+    fetch_profile_enabled: bool = False
+    _profile_lock: threading.Lock = field(default_factory=threading.Lock)
+    _profile_active: dict[int, dict[str, object]] = field(default_factory=dict)
+    _profile_thread: threading.Thread | None = None
+    _profile_next_id: int = 0
+
+    def _elapsed_ms(self) -> float:
+        return max(0.0, (time.perf_counter() - self.started) * 1000.0)
+
+    def record(self, kind: str, **payload: object) -> None:
+        now = time.perf_counter()
+        row = {
+            "schema": "issue-894-connection-trace-v1",
+            "kind": str(kind),
+            "monotonic": now,
+            "elapsed_ms": max(0.0, (now - self.started) * 1000.0),
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            **payload,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._write_lock:
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, sort_keys=True))
+                handle.write("\n")
+
+    def begin_request(self, request_id: str, family: str) -> tuple[object, object]:
+        request_token = _DIAGNOSTIC_ID.set(request_id)
+        family_token = _ROUTE_FAMILY.set(family)
+        now = time.perf_counter()
+        with self._state_lock:
+            self._requests[request_id] = _RequestAggregate(
+                request_id=request_id,
+                route_family=family,
+                request_started=now,
+            )
+        self.record(
+            "request_start",
+            request_id=request_id,
+            route_family=family,
+            thread_id=threading.get_ident(),
+        )
+        return request_token, family_token
+
+    def end_request(
+        self,
+        request_id: str,
+        *,
+        status: str,
+        error_type: str = "",
+    ) -> None:
+        now = time.perf_counter()
+        with self._state_lock:
+            aggregate = self._requests.pop(request_id, None)
+        payload: dict[str, object] = {
+            "request_id": request_id,
+            "route_family": (
+                aggregate.route_family if aggregate is not None else _ROUTE_FAMILY.get()
+            ),
+            "status": status,
+            "error_type": error_type,
+            "thread_id": threading.get_ident(),
+        }
+        if aggregate is not None:
+            payload["server_request_ms"] = max(
+                0.0,
+                (now - aggregate.request_started) * 1000.0,
+            )
+            payload["orm_materialization_count"] = aggregate.orm_materialization_count
+            if aggregate.first_materialization is not None:
+                payload["first_materialization_ms"] = max(
+                    0.0,
+                    (aggregate.first_materialization - aggregate.request_started) * 1000.0,
+                )
+                if aggregate.first_statement_end is not None:
+                    payload["statement_end_to_first_materialization_ms"] = max(
+                        0.0,
+                        (
+                            aggregate.first_materialization
+                            - aggregate.first_statement_end
+                        )
+                        * 1000.0,
+                    )
+            if aggregate.last_materialization is not None:
+                payload["last_materialization_ms"] = max(
+                    0.0,
+                    (aggregate.last_materialization - aggregate.request_started) * 1000.0,
+                )
+                if aggregate.first_materialization is not None:
+                    payload["materialization_span_ms"] = max(
+                        0.0,
+                        (
+                            aggregate.last_materialization
+                            - aggregate.first_materialization
+                        )
+                        * 1000.0,
+                    )
+                payload["last_materialization_to_request_end_ms"] = max(
+                    0.0,
+                    (now - aggregate.last_materialization) * 1000.0,
+                )
+            if aggregate.last_statement_end is not None:
+                payload["last_statement_end_to_request_end_ms"] = max(
+                    0.0,
+                    (now - aggregate.last_statement_end) * 1000.0,
+                )
+        self.record("request_end", **payload)
+
+    def reset_request_context(self, request_token: object, family_token: object) -> None:
+        _DIAGNOSTIC_ID.reset(request_token)
+        _ROUTE_FAMILY.reset(family_token)
+
+    def set_executor_phase(self, phase: str) -> object:
+        return _EXECUTOR_PHASE.set(str(phase))
+
+    def reset_executor_phase(self, token: object) -> None:
+        _EXECUTOR_PHASE.reset(token)
+
+    async def run_sync(
+        self,
+        original: Callable[..., Any],
+        func: Callable[..., Any],
+        /,
+        *args: object,
+        **kwargs: object,
+    ) -> Any:
+        request_id = _DIAGNOSTIC_ID.get()
+        family = _ROUTE_FAMILY.get()
+        phase = _EXECUTOR_PHASE.get()
+        submitted = time.perf_counter()
+        with self._state_lock:
+            self._executor_pending += 1
+            pending = self._executor_pending
+            running = self._executor_running
+        self.record(
+            "executor_submit",
+            request_id=request_id,
+            route_family=family,
+            phase=phase,
+            pending=pending,
+            running=running,
+            thread_id=threading.get_ident(),
+        )
+
+        def wrapped() -> Any:
+            worker_started = time.perf_counter()
+            with self._state_lock:
+                self._executor_pending -= 1
+                self._executor_running += 1
+                pending_now = self._executor_pending
+                running_now = self._executor_running
+            self.record(
+                "executor_worker_start",
+                request_id=request_id,
+                route_family=family,
+                phase=phase,
+                queue_wait_ms=max(0.0, (worker_started - submitted) * 1000.0),
+                pending=pending_now,
+                running=running_now,
+                thread_id=threading.get_ident(),
+            )
+            try:
+                return func(*args, **kwargs)
+            finally:
+                worker_done = time.perf_counter()
+                with self._state_lock:
+                    self._executor_running -= 1
+                    pending_done = self._executor_pending
+                    running_done = self._executor_running
+                self.record(
+                    "executor_worker_complete",
+                    request_id=request_id,
+                    route_family=family,
+                    phase=phase,
+                    worker_ms=max(0.0, (worker_done - worker_started) * 1000.0),
+                    submitted_to_complete_ms=max(
+                        0.0,
+                        (worker_done - submitted) * 1000.0,
+                    ),
+                    pending=pending_done,
+                    running=running_done,
+                    thread_id=threading.get_ident(),
+                )
+
+        try:
+            value = await original(wrapped)
+        except asyncio.CancelledError:
+            self.record(
+                "executor_coroutine_cancelled_after_drain",
+                request_id=request_id,
+                route_family=family,
+                phase=phase,
+                coroutine_ms=max(0.0, (time.perf_counter() - submitted) * 1000.0),
+                thread_id=threading.get_ident(),
+            )
+            raise
+        self.record(
+            "executor_coroutine_resume",
+            request_id=request_id,
+            route_family=family,
+            phase=phase,
+            coroutine_ms=max(0.0, (time.perf_counter() - submitted) * 1000.0),
+            thread_id=threading.get_ident(),
+        )
+        return value
+
+    def pool_checkout_request(self) -> float:
+        started = time.perf_counter()
+        self.record(
+            "pool_checkout_request",
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            thread_id=threading.get_ident(),
+        )
+        return started
+
+    def pool_checkout_complete(self, started: float) -> float:
+        wait_seconds = max(0.0, time.perf_counter() - started)
+        self.record(
+            "pool_checkout_complete",
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            wait_ms=wait_seconds * 1000.0,
+            thread_id=threading.get_ident(),
+        )
+        if wait_seconds >= _STALL_WAIT_SECONDS:
+            self.capture_first_stall(
+                trigger="pool_checkout_wait",
+                trigger_value_ms=wait_seconds * 1000.0,
+            )
+        return wait_seconds
+
+    def on_checkout(
+        self,
+        dbapi_connection: object,
+        connection_record: object,
+    ) -> None:
+        now = time.perf_counter()
+        request_id = _DIAGNOSTIC_ID.get()
+        info = getattr(connection_record, "info", {})
+        spid = int(info.get("rp894_spid") or 0)
+        connection_sequence = int(
+            info.get("rp894_connection_execution_sequence") or 0
+        )
+        if not spid:
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("SELECT @@SPID")
+                row = cursor.fetchone()
+                spid = int(row[0]) if row else 0
+            finally:
+                cursor.close()
+            info["rp894_spid"] = spid
+            connection_sequence += 1
+            info["rp894_connection_execution_sequence"] = connection_sequence
+            self.record(
+                "spid_probe",
+                connection_id=id(connection_record),
+                spid=spid,
+                connection_execution_sequence=connection_sequence,
+                thread_id=threading.get_ident(),
+            )
+        checkout_sequence = int(info.get("rp894_checkout_sequence") or 0) + 1
+        info["rp894_checkout_sequence"] = checkout_sequence
+        holder = {
+            "request_id": request_id,
+            "route_family": _ROUTE_FAMILY.get(),
+            "phase": _EXECUTOR_PHASE.get(),
+            "acquired": now,
+            "thread_id": threading.get_ident(),
+            "last_statement_end": None,
+            "last_statement_fingerprint": "",
+            "current_statement_fingerprint": "",
+            "statement_count": 0,
+            "statement_sequence": 0,
+            "connection_execution_sequence": connection_sequence,
+            "checkout_sequence": checkout_sequence,
+            "spid": spid,
+        }
+        with self._state_lock:
+            self._holders[id(connection_record)] = holder
+        self.record(
+            "connection_acquired",
+            request_id=request_id,
+            route_family=holder["route_family"],
+            phase=holder["phase"],
+            connection_id=id(connection_record),
+            spid=spid,
+            checkout_sequence=checkout_sequence,
+            connection_execution_sequence=connection_sequence,
+            thread_id=holder["thread_id"],
+        )
+
+    def on_statement_start(
+        self,
+        connection: object,
+        statement: object,
+    ) -> tuple[int, int, int]:
+        request_id = _DIAGNOSTIC_ID.get()
+        fingerprint = _statement_fingerprint(statement)
+        connection_id = _connection_record_id(connection)
+        sequence = 0
+        connection_sequence = 0
+        spid = 0
+        with self._state_lock:
+            holder = self._holders.get(connection_id)
+            if holder is not None:
+                holder["current_statement_fingerprint"] = fingerprint
+                sequence = int(holder.get("statement_sequence") or 0) + 1
+                holder["statement_sequence"] = sequence
+                connection_sequence = int(
+                    holder.get("connection_execution_sequence") or 0
+                ) + 1
+                holder["connection_execution_sequence"] = connection_sequence
+                spid = int(holder.get("spid") or 0)
+                record = getattr(connection, "connection", None)
+                connection_record = getattr(record, "_connection_record", None)
+                info = getattr(connection_record, "info", None)
+                if isinstance(info, dict):
+                    info["rp894_connection_execution_sequence"] = (
+                        connection_sequence
+                    )
+        self.record(
+            "statement_start",
+            request_id=request_id,
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=connection_id,
+            spid=spid,
+            statement_sequence=sequence,
+            connection_execution_sequence=connection_sequence,
+            statement_fingerprint=fingerprint,
+            thread_id=threading.get_ident(),
+        )
+        return sequence, spid, connection_sequence
+
+    def on_statement_end(
+        self,
+        connection: object,
+        statement: object,
+        started: float,
+        *,
+        error: bool = False,
+    ) -> None:
+        now = time.perf_counter()
+        connection_id = _connection_record_id(connection)
+        request_id = _DIAGNOSTIC_ID.get()
+        with self._state_lock:
+            holder = self._holders.get(connection_id)
+            if holder is not None:
+                holder["last_statement_end"] = now
+                holder["last_statement_fingerprint"] = _statement_fingerprint(statement)
+                holder["current_statement_fingerprint"] = ""
+                holder["statement_count"] = int(holder.get("statement_count") or 0) + 1
+            aggregate = self._requests.get(request_id)
+            if aggregate is not None:
+                if aggregate.first_statement_end is None:
+                    aggregate.first_statement_end = now
+                aggregate.last_statement_end = now
+        self.record(
+            "statement_end",
+            request_id=request_id,
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=connection_id,
+            statement_fingerprint=_statement_fingerprint(statement),
+            statement_ms=max(0.0, (now - started) * 1000.0),
+            error=bool(error),
+            thread_id=threading.get_ident(),
+        )
+
+    def record_driver_execute(
+        self,
+        execution_context: object,
+        *,
+        kind: str,
+        error_type: str = "",
+    ) -> None:
+        self.record(
+            kind,
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=int(
+                getattr(
+                    execution_context,
+                    "_rp894_trace_connection_id",
+                    0,
+                )
+                or 0
+            ),
+            spid=int(
+                getattr(execution_context, "_rp894_trace_spid", 0)
+                or 0
+            ),
+            statement_sequence=int(
+                getattr(
+                    execution_context,
+                    "_rp894_trace_statement_sequence",
+                    0,
+                )
+                or 0
+            ),
+            connection_execution_sequence=int(
+                getattr(
+                    execution_context,
+                    "_rp894_trace_connection_execution_sequence",
+                    0,
+                )
+                or 0
+            ),
+            statement_fingerprint=str(
+                getattr(
+                    execution_context,
+                    "_rp894_trace_fingerprint",
+                    "",
+                )
+                or ""
+            ),
+            error_type=str(error_type or ""),
+            thread_id=threading.get_ident(),
+        )
+
+    def on_transaction_end(self, connection: object, kind: str) -> None:
+        self.record(
+            "transaction_end",
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=_connection_record_id(connection),
+            transaction_kind=str(kind),
+            thread_id=threading.get_ident(),
+        )
+
+    def on_checkin(self, connection_record: object) -> None:
+        now = time.perf_counter()
+        connection_id = id(connection_record)
+        with self._state_lock:
+            holder = self._holders.pop(connection_id, None)
+        if holder is None:
+            self.record(
+                "connection_return",
+                request_id="",
+                route_family="unknown",
+                connection_id=connection_id,
+                holding_ms=None,
+                thread_id=threading.get_ident(),
+            )
+            return
+        acquired = float(holder["acquired"])
+        last_statement_end = holder.get("last_statement_end")
+        payload = {
+            "request_id": str(holder.get("request_id") or ""),
+            "route_family": str(holder.get("route_family") or "unknown"),
+            "phase": str(holder.get("phase") or "other"),
+            "connection_id": connection_id,
+            "holding_ms": max(0.0, (now - acquired) * 1000.0),
+            "statement_count": int(holder.get("statement_count") or 0),
+            "spid": int(holder.get("spid") or 0),
+            "thread_id": threading.get_ident(),
+        }
+        if isinstance(last_statement_end, float):
+            payload["post_statement_connection_residence_ms"] = max(
+                0.0,
+                (now - last_statement_end) * 1000.0,
+            )
+        self.record("connection_return", **payload)
+
+    def on_materialized(self) -> None:
+        request_id = _DIAGNOSTIC_ID.get()
+        if not request_id:
+            return
+        now = time.perf_counter()
+        with self._state_lock:
+            aggregate = self._requests.get(request_id)
+            if aggregate is None:
+                return
+            aggregate.orm_materialization_count += 1
+            if aggregate.first_materialization is None:
+                aggregate.first_materialization = now
+            aggregate.last_materialization = now
+
+    @staticmethod
+    def _proc_thread_snapshot(
+        native_thread_id: int,
+    ) -> dict[str, object]:
+        root = Path(f"/proc/self/task/{int(native_thread_id)}")
+        state = ""
+        cpu_seconds = 0.0
+        wait_channel = ""
+        native_stack_symbol = ""
+        try:
+            text = (root / "stat").read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+            after = text[text.rfind(")") + 2 :].split()
+            state = str(after[0]) if after else ""
+            if len(after) > 12:
+                ticks = int(after[11]) + int(after[12])
+                clock_ticks = int(
+                    __import__("os").sysconf("SC_CLK_TCK")
+                )
+                cpu_seconds = (
+                    ticks / clock_ticks if clock_ticks > 0 else 0.0
+                )
+        except (OSError, ValueError, IndexError):
+            state = ""
+            cpu_seconds = 0.0
+        try:
+            wait_channel = (root / "wchan").read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).strip()
+        except OSError:
+            wait_channel = ""
+        try:
+            stack_lines = (root / "stack").read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()
+            if stack_lines:
+                native_stack_symbol = stack_lines[0].strip()[:160]
+        except OSError:
+            native_stack_symbol = ""
+        return {
+            "state": state,
+            "cpu_seconds": cpu_seconds,
+            "wait_channel": wait_channel,
+            "native_stack_symbol": native_stack_symbol,
+        }
+
+    @staticmethod
+    def _profile_state_category(state: str) -> str:
+        if state == "R":
+            return "running"
+        if state in {"S", "D"}:
+            return "waiting"
+        return "unresolved"
+
+    @staticmethod
+    def _python_frame_category(
+        frame: object | None,
+    ) -> str:
+        if frame is None:
+            return "unresolved"
+        try:
+            code = frame.f_code
+            filename = Path(str(code.co_filename)).name
+            function = str(code.co_name)
+        except Exception:
+            return "unresolved"
+        return f"python:{filename}:{function}"[:160]
+
+    def _ensure_profile_sampler(self) -> None:
+        if not self.fetch_profile_enabled:
+            return
+        with self._profile_lock:
+            if (
+                self._profile_thread is not None
+                and self._profile_thread.is_alive()
+            ):
+                return
+            thread = threading.Thread(
+                target=self._profile_sampler_loop,
+                name="rp894-fetch-profile",
+                daemon=True,
+            )
+            self._profile_thread = thread
+            thread.start()
+
+    def _profile_sampler_loop(self) -> None:
+        while True:
+            time.sleep(_FETCH_PROFILE_INTERVAL_SECONDS)
+            frames = sys._current_frames()
+            with self._profile_lock:
+                active = list(self._profile_active.values())
+            for profile in active:
+                native_thread_id = int(
+                    profile.get("native_thread_id") or 0
+                )
+                thread_id = int(profile.get("thread_id") or 0)
+                if native_thread_id <= 0:
+                    continue
+                snapshot = self._proc_thread_snapshot(
+                    native_thread_id
+                )
+                state_category = self._profile_state_category(
+                    str(snapshot.get("state") or "")
+                )
+                wait_channel = str(
+                    snapshot.get("wait_channel") or ""
+                )
+                native_symbol = str(
+                    snapshot.get("native_stack_symbol") or ""
+                )
+                python_category = self._python_frame_category(
+                    frames.get(thread_id)
+                )
+                with self._profile_lock:
+                    current = self._profile_active.get(
+                        int(profile["profile_id"])
+                    )
+                    if current is None:
+                        continue
+                    current["samples"] = (
+                        int(current.get("samples") or 0) + 1
+                    )
+                    current[state_category] = (
+                        int(current.get(state_category) or 0) + 1
+                    )
+                    current["last_cpu_seconds"] = float(
+                        snapshot.get("cpu_seconds") or 0.0
+                    )
+                    if wait_channel and wait_channel != "0":
+                        counts = current["wait_channels"]
+                        counts[wait_channel[:160]] = (
+                            int(counts.get(wait_channel[:160]) or 0) + 1
+                        )
+                    if native_symbol:
+                        counts = current["native_stack_symbols"]
+                        counts[native_symbol] = (
+                            int(counts.get(native_symbol) or 0) + 1
+                        )
+                    counts = current["python_categories"]
+                    counts[python_category] = (
+                        int(counts.get(python_category) or 0) + 1
+                    )
+
+    def begin_fetch_profile(
+        self,
+        *,
+        fingerprint: str,
+        connection_id: int,
+        target_role: str,
+        spid: int,
+        statement_sequence: int,
+        connection_execution_sequence: int,
+    ) -> int | None:
+        if (
+            not self.fetch_profile_enabled
+            or not _targeted_result_consumer(
+                fingerprint,
+                target_role,
+            )
+        ):
+            return None
+        self._ensure_profile_sampler()
+        thread_id = threading.get_ident()
+        native_thread_id = threading.get_native_id()
+        snapshot = self._proc_thread_snapshot(native_thread_id)
+        with self._profile_lock:
+            self._profile_next_id += 1
+            profile_id = self._profile_next_id
+            self._profile_active[profile_id] = {
+                "profile_id": profile_id,
+                "thread_id": thread_id,
+                "native_thread_id": native_thread_id,
+                "fingerprint": str(fingerprint),
+                "connection_id": int(connection_id),
+                "target_role": str(target_role),
+                "spid": int(spid),
+                "statement_sequence": int(statement_sequence),
+                "connection_execution_sequence": int(
+                    connection_execution_sequence
+                ),
+                "started_monotonic": time.perf_counter(),
+                "started_cpu_seconds": float(
+                    snapshot.get("cpu_seconds") or 0.0
+                ),
+                "last_cpu_seconds": float(
+                    snapshot.get("cpu_seconds") or 0.0
+                ),
+                "samples": 0,
+                "running": 0,
+                "waiting": 0,
+                "unresolved": 0,
+                "wait_channels": {},
+                "native_stack_symbols": {},
+                "python_categories": {},
+            }
+        return profile_id
+
+    @staticmethod
+    def _top_profile_counts(
+        values: dict[str, object],
+        *,
+        limit: int = 5,
+    ) -> list[dict[str, object]]:
+        return [
+            {"category": key, "samples": int(value)}
+            for key, value in sorted(
+                values.items(),
+                key=lambda item: (-int(item[1]), item[0]),
+            )[:limit]
+        ]
+
+    def end_fetch_profile(
+        self,
+        profile_id: int | None,
+    ) -> None:
+        if profile_id is None:
+            return
+        ended = time.perf_counter()
+        with self._profile_lock:
+            profile = self._profile_active.pop(
+                int(profile_id),
+                None,
+            )
+        if profile is None:
+            return
+        snapshot = self._proc_thread_snapshot(
+            int(profile.get("native_thread_id") or 0)
+        )
+        ending_cpu = float(
+            snapshot.get("cpu_seconds")
+            or profile.get("last_cpu_seconds")
+            or 0.0
+        )
+        started_cpu = float(
+            profile.get("started_cpu_seconds") or 0.0
+        )
+        samples = int(profile.get("samples") or 0)
+        running = int(profile.get("running") or 0)
+        waiting = int(profile.get("waiting") or 0)
+        unresolved = int(profile.get("unresolved") or 0)
+        self.record(
+            "fetch_profile",
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=int(profile.get("connection_id") or 0),
+            statement_fingerprint=str(
+                profile.get("fingerprint") or ""
+            ),
+            target_role=str(profile.get("target_role") or ""),
+            spid=int(profile.get("spid") or 0),
+            statement_sequence=int(
+                profile.get("statement_sequence") or 0
+            ),
+            connection_execution_sequence=int(
+                profile.get("connection_execution_sequence") or 0
+            ),
+            thread_id=int(profile.get("thread_id") or 0),
+            native_thread_id=int(
+                profile.get("native_thread_id") or 0
+            ),
+            profile_started_monotonic=float(
+                profile.get("started_monotonic") or ended
+            ),
+            profile_ended_monotonic=ended,
+            wall_elapsed_ms=max(
+                0.0,
+                (
+                    ended
+                    - float(
+                        profile.get("started_monotonic")
+                        or ended
+                    )
+                )
+                * 1000.0,
+            ),
+            thread_cpu_ms=max(
+                0.0,
+                (ending_cpu - started_cpu) * 1000.0,
+            ),
+            sampling_interval_ms=(
+                _FETCH_PROFILE_INTERVAL_SECONDS * 1000.0
+            ),
+            sample_count=samples,
+            running_samples=running,
+            waiting_samples=waiting,
+            unresolved_samples=unresolved,
+            running_share=(
+                running / samples if samples else 0.0
+            ),
+            waiting_share=(
+                waiting / samples if samples else 0.0
+            ),
+            unresolved_share=(
+                unresolved / samples if samples else 1.0
+            ),
+            wait_channels=self._top_profile_counts(
+                profile["wait_channels"]
+            ),
+            native_stack_symbols=self._top_profile_counts(
+                profile["native_stack_symbols"]
+            ),
+            python_stack_categories=self._top_profile_counts(
+                profile["python_categories"]
+            ),
+            native_stack_available=bool(
+                profile["native_stack_symbols"]
+            ),
+            payload_capture=False,
+        )
+
+    def begin_result_consumer(self) -> dict[str, object]:
+        span: dict[str, object] = {
+            "started": time.perf_counter(),
+            "cpu_started": time.thread_time(),
+            "nested_fetch_ms": 0.0,
+            "nested_fetch_cpu_ms": 0.0,
+            "all_fetches": [],
+            "targeted_fetches": [],
+        }
+        stack = getattr(self._consumer_local, "stack", None)
+        if stack is None:
+            stack = []
+            self._consumer_local.stack = stack
+        stack.append(span)
+        return span
+
+    def record_dbapi_fetch(
+        self,
+        *,
+        fingerprint: str,
+        connection_id: int,
+        started: float,
+        ended: float,
+        cpu_started: float,
+        cpu_ended: float,
+        row_count: int,
+        call_site: str,
+        target_role: str = "",
+        spid: int = 0,
+        statement_sequence: int = 0,
+        connection_execution_sequence: int = 0,
+        error: bool = False,
+    ) -> None:
+        fetch_ms = max(0.0, (ended - started) * 1000.0)
+        fetch_cpu_ms = max(0.0, (cpu_ended - cpu_started) * 1000.0)
+        stack = getattr(self._consumer_local, "stack", ())
+        fetch_record = {
+            "fetch_started_monotonic": float(started),
+            "fetch_ended_monotonic": float(ended),
+            "fetch_elapsed_ms": fetch_ms,
+            "fetch_cpu_ms": fetch_cpu_ms,
+            "error": bool(error),
+        }
+        for span in stack:
+            span["nested_fetch_ms"] = float(span["nested_fetch_ms"]) + fetch_ms
+            span["nested_fetch_cpu_ms"] = (
+                float(span["nested_fetch_cpu_ms"]) + fetch_cpu_ms
+            )
+            span["all_fetches"].append(fetch_record)
+        if not _targeted_result_consumer(fingerprint, target_role):
+            return
+        targeted = {
+            "statement_fingerprint": fingerprint,
+            "connection_id": int(connection_id),
+            "fetch_started_monotonic": float(started),
+            "fetch_ended_monotonic": float(ended),
+            "fetch_elapsed_ms": fetch_ms,
+            "fetch_cpu_ms": fetch_cpu_ms,
+            "fetched_row_count": int(row_count),
+            "call_site": str(call_site),
+            "target_role": str(target_role),
+            "spid": int(spid),
+            "statement_sequence": int(statement_sequence),
+            "connection_execution_sequence": int(
+                connection_execution_sequence
+            ),
+            "error": bool(error),
+        }
+        for span in stack:
+            span["targeted_fetches"].append(targeted)
+        self.record(
+            "dbapi_fetch",
+            request_id=_DIAGNOSTIC_ID.get(),
+            route_family=_ROUTE_FAMILY.get(),
+            phase=_EXECUTOR_PHASE.get(),
+            connection_id=int(connection_id),
+            statement_fingerprint=fingerprint,
+            call_site=str(call_site),
+            target_role=str(target_role),
+            spid=int(spid),
+            statement_sequence=int(statement_sequence),
+            connection_execution_sequence=int(
+                connection_execution_sequence
+            ),
+            fetch_started_monotonic=float(started),
+            fetch_ended_monotonic=float(ended),
+            fetch_elapsed_ms=fetch_ms,
+            fetch_cpu_ms=fetch_cpu_ms,
+            fetched_row_count=int(row_count),
+            fetch_error=bool(error),
+            thread_id=threading.get_ident(),
+            native_thread_id=threading.get_native_id(),
+        )
+
+    def end_result_consumer(self, span: dict[str, object]) -> None:
+        ended = time.perf_counter()
+        cpu_ended = time.thread_time()
+        stack = getattr(self._consumer_local, "stack", None)
+        if stack:
+            if stack[-1] is span:
+                stack.pop()
+            elif span in stack:
+                stack.remove(span)
+        targeted_fetches = list(span.get("targeted_fetches") or ())
+        if not targeted_fetches:
+            return
+        total_ms = max(0.0, (ended - float(span["started"])) * 1000.0)
+        total_cpu_ms = max(
+            0.0,
+            (cpu_ended - float(span["cpu_started"])) * 1000.0,
+        )
+        nested_fetch_ms = float(span.get("nested_fetch_ms") or 0.0)
+        nested_fetch_cpu_ms = float(span.get("nested_fetch_cpu_ms") or 0.0)
+        non_nested_ms = max(0.0, total_ms - nested_fetch_ms)
+        non_nested_cpu_ms = max(0.0, total_cpu_ms - nested_fetch_cpu_ms)
+
+        grouped: dict[tuple[str, int, str], list[dict[str, object]]] = {}
+        for fetch in targeted_fetches:
+            key = (
+                str(fetch["statement_fingerprint"]),
+                int(fetch["connection_id"]),
+                str(fetch["call_site"]),
+                int(fetch.get("spid") or 0),
+                int(fetch.get("statement_sequence") or 0),
+                int(fetch.get("connection_execution_sequence") or 0),
+            )
+            grouped.setdefault(key, []).append(fetch)
+
+        for (
+            fingerprint,
+            connection_id,
+            call_site,
+            spid,
+            statement_sequence,
+            connection_execution_sequence,
+        ), fetches in grouped.items():
+            last_fetch_end = max(
+                float(fetch["fetch_ended_monotonic"])
+                for fetch in fetches
+            )
+            later_nested_fetch_ms = sum(
+                float(fetch.get("fetch_elapsed_ms") or 0.0)
+                for fetch in (span.get("all_fetches") or ())
+                if float(fetch.get("fetch_started_monotonic") or 0.0)
+                >= last_fetch_end
+            )
+            self.record(
+                "result_consumer",
+                request_id=_DIAGNOSTIC_ID.get(),
+                route_family=_ROUTE_FAMILY.get(),
+                phase=_EXECUTOR_PHASE.get(),
+                connection_id=connection_id,
+                spid=spid,
+                statement_sequence=statement_sequence,
+                connection_execution_sequence=connection_execution_sequence,
+                statement_fingerprint=fingerprint,
+                call_site=call_site,
+                target_role=str(fetches[0].get("target_role") or ""),
+                fetch_count=len(fetches),
+                fetched_row_count=sum(
+                    int(fetch["fetched_row_count"]) for fetch in fetches
+                ),
+                consumer_elapsed_ms=total_ms,
+                nested_fetch_elapsed_ms=nested_fetch_ms,
+                non_nested_consumer_elapsed_ms=non_nested_ms,
+                immediate_projection_elapsed_ms=max(
+                    0.0,
+                    (ended - last_fetch_end) * 1000.0
+                    - later_nested_fetch_ms,
+                ),
+                worker_cpu_ms=total_cpu_ms,
+                nested_fetch_cpu_ms=nested_fetch_cpu_ms,
+                non_nested_worker_cpu_ms=non_nested_cpu_ms,
+                thread_id=threading.get_ident(),
+            )
+
+    def capture_first_stall(self, *, trigger: str, trigger_value_ms: float) -> None:
+        with self._first_stall_lock:
+            if self._first_stall_captured:
+                return
+            self._first_stall_captured = True
+        now = time.perf_counter()
+        with self._state_lock:
+            holders = [
+                {
+                    "connection_id": connection_id,
+                    "request_id": str(holder.get("request_id") or ""),
+                    "route_family": str(holder.get("route_family") or "unknown"),
+                    "phase": str(holder.get("phase") or "other"),
+                    "holding_ms": max(
+                        0.0,
+                        (now - float(holder["acquired"])) * 1000.0,
+                    ),
+                    "statement_count": int(holder.get("statement_count") or 0),
+                    "current_statement_fingerprint": str(
+                        holder.get("current_statement_fingerprint") or ""
+                    ),
+                    "last_statement_fingerprint": str(
+                        holder.get("last_statement_fingerprint") or ""
+                    ),
+                }
+                for connection_id, holder in self._holders.items()
+            ]
+            executor = {
+                "pending": self._executor_pending,
+                "running": self._executor_running,
+            }
+        holders.sort(key=lambda row: float(row["holding_ms"]), reverse=True)
+        frames = sys._current_frames()
+        thread_dump = []
+        for thread in list(threading.enumerate())[:64]:
+            frame = frames.get(thread.ident or -1)
+            if frame is None:
+                continue
+            thread_dump.append(
+                {
+                    "thread_id": thread.ident,
+                    "thread_name": thread.name,
+                    "stack": traceback.format_stack(frame, limit=12),
+                }
+            )
+        self.record(
+            "first_stall_snapshot",
+            trigger=str(trigger),
+            trigger_value_ms=max(0.0, float(trigger_value_ms)),
+            executor=executor,
+            holders=holders[:32],
+            thread_dump=thread_dump,
+        )
+
+    def summary(self) -> dict[str, object]:
+        with self._state_lock:
+            holders = len(self._holders)
+            pending = self._executor_pending
+            running = self._executor_running
+        return {
+            "trace_path": str(self.path),
+            "first_stall_captured": self._first_stall_captured,
+            "active_holders": holders,
+            "executor_pending": pending,
+            "executor_running": running,
+        }
+
+
+def _repository_call_site() -> str:
+    frames = traceback.extract_stack(limit=32)
+    for frame in reversed(frames):
+        filename = str(frame.filename).replace("\\", "/")
+        marker = "/app/infrastructure/sql/"
+        if marker not in filename:
+            continue
+        relative = filename[filename.rfind("/app/") + 1 :]
+        return f"{relative}:{frame.name}:{frame.lineno}"
+    return "unmapped"
+
+
+def _statement_fingerprint(statement: object) -> str:
+    import hashlib
+
+    normalized = " ".join(str(statement or "").split()).casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _connection_record_id(connection: object) -> int:
+    try:
+        fairy = connection.connection
+        record = fairy._connection_record
+        return id(record)
+    except Exception:
+        return 0
+
+
+def install_connection_trace(app: Any, engine: Engine, recorder: ConnectionTraceRecorder) -> Callable[[], None]:
+    from sqlalchemy.engine.cursor import CursorFetchStrategy
+    from sqlalchemy.engine.result import Result
+
+    from app.server import security as security_module
+
+    original_resolve = security_module.resolve_principal
+    original_csrf = security_module._csrf_allowed
+    original_run_sync = security_module.run_sync_cancellation_safe
+    original_fetchall = CursorFetchStrategy.fetchall
+    original_allrows = Result._allrows
+
+    async def traced_resolve(*args: object, **kwargs: object) -> Any:
+        token = recorder.set_executor_phase("auth")
+        try:
+            return await original_resolve(*args, **kwargs)
+        finally:
+            recorder.reset_executor_phase(token)
+
+    async def traced_csrf(*args: object, **kwargs: object) -> Any:
+        token = recorder.set_executor_phase("csrf")
+        try:
+            return await original_csrf(*args, **kwargs)
+        finally:
+            recorder.reset_executor_phase(token)
+
+    async def traced_run_sync(func: Callable[..., Any], /, *args: object, **kwargs: object) -> Any:
+        return await recorder.run_sync(original_run_sync, func, *args, **kwargs)
+
+    security_module.resolve_principal = traced_resolve
+    security_module._csrf_allowed = traced_csrf
+    security_module.run_sync_cancellation_safe = traced_run_sync
+
+    def traced_allrows(result):
+        span = recorder.begin_result_consumer()
+        try:
+            return original_allrows(result)
+        finally:
+            recorder.end_result_consumer(span)
+
+    def traced_fetchall(strategy, result, dbapi_cursor):
+        context = getattr(result, "context", None)
+        fingerprint = str(
+            getattr(context, "_rp894_trace_fingerprint", "") or ""
+        )
+        connection_id = int(
+            getattr(context, "_rp894_trace_connection_id", 0) or 0
+        )
+        target_role = str(
+            getattr(context, "_rp894_trace_target_role", "") or ""
+        )
+        spid = int(getattr(context, "_rp894_trace_spid", 0) or 0)
+        statement_sequence = int(
+            getattr(context, "_rp894_trace_statement_sequence", 0) or 0
+        )
+        connection_execution_sequence = int(
+            getattr(
+                context,
+                "_rp894_trace_connection_execution_sequence",
+                0,
+            )
+            or 0
+        )
+        profile_id = recorder.begin_fetch_profile(
+            fingerprint=fingerprint,
+            connection_id=connection_id,
+            target_role=target_role,
+            spid=spid,
+            statement_sequence=statement_sequence,
+            connection_execution_sequence=connection_execution_sequence,
+        )
+        started = time.perf_counter()
+        cpu_started = time.thread_time()
+        try:
+            rows = original_fetchall(strategy, result, dbapi_cursor)
+        except Exception:
+            recorder.end_fetch_profile(profile_id)
+            ended = time.perf_counter()
+            cpu_ended = time.thread_time()
+            recorder.record_dbapi_fetch(
+                fingerprint=fingerprint,
+                connection_id=connection_id,
+                started=started,
+                ended=ended,
+                cpu_started=cpu_started,
+                cpu_ended=cpu_ended,
+                row_count=0,
+                call_site=_repository_call_site(),
+                target_role=target_role,
+                spid=spid,
+                statement_sequence=statement_sequence,
+                connection_execution_sequence=connection_execution_sequence,
+                error=True,
+            )
+            raise
+        recorder.end_fetch_profile(profile_id)
+        ended = time.perf_counter()
+        cpu_ended = time.thread_time()
+        recorder.record_dbapi_fetch(
+            fingerprint=fingerprint,
+            connection_id=connection_id,
+            started=started,
+            ended=ended,
+            cpu_started=cpu_started,
+            cpu_ended=cpu_ended,
+            row_count=len(rows),
+            call_site=_repository_call_site(),
+            target_role=target_role,
+            spid=spid,
+            statement_sequence=statement_sequence,
+            connection_execution_sequence=connection_execution_sequence,
+            error=False,
+        )
+        return rows
+
+    Result._allrows = traced_allrows
+    CursorFetchStrategy.fetchall = traced_fetchall
+
+    @event.listens_for(engine.pool, "checkout")
+    def _checkout(dbapi_connection, connection_record, _connection_proxy) -> None:
+        recorder.on_checkout(dbapi_connection, connection_record)
+
+    @event.listens_for(engine.pool, "checkin")
+    def _checkin(_dbapi_connection, connection_record) -> None:
+        recorder.on_checkin(connection_record)
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _before_cursor_execute(
+        conn,
+        _cursor,
+        statement,
+        _parameters,
+        execution_context,
+        _executemany,
+    ) -> None:
+        started = time.perf_counter()
+        fingerprint = _statement_fingerprint(statement)
+        execution_context._rp894_trace_started = started
+        execution_context._rp894_trace_fingerprint = fingerprint
+        execution_context._rp894_trace_connection_id = _connection_record_id(conn)
+        execution_context._rp894_trace_target_role = _statement_target_role(
+            statement
+        )
+        sequence, spid, connection_sequence = recorder.on_statement_start(
+            conn,
+            statement,
+        )
+        execution_context._rp894_trace_statement_sequence = sequence
+        execution_context._rp894_trace_spid = spid
+        execution_context._rp894_trace_connection_execution_sequence = (
+            connection_sequence
+        )
+
+    @event.listens_for(engine, "do_execute")
+    def _do_execute(
+        cursor,
+        statement,
+        parameters,
+        execution_context,
+    ) -> bool:
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_entry",
+        )
+        try:
+            execution_context.dialect.do_execute(
+                cursor,
+                statement,
+                parameters,
+                execution_context,
+            )
+        except Exception as exc:
+            recorder.record_driver_execute(
+                execution_context,
+                kind="driver_execute_error",
+                error_type=type(exc).__name__,
+            )
+            raise
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_return",
+        )
+        return True
+
+    @event.listens_for(engine, "do_execute_no_params")
+    def _do_execute_no_params(
+        cursor,
+        statement,
+        execution_context,
+    ) -> bool:
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_entry",
+        )
+        try:
+            execution_context.dialect.do_execute_no_params(
+                cursor,
+                statement,
+                execution_context,
+            )
+        except Exception as exc:
+            recorder.record_driver_execute(
+                execution_context,
+                kind="driver_execute_error",
+                error_type=type(exc).__name__,
+            )
+            raise
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_return",
+        )
+        return True
+
+    @event.listens_for(engine, "do_executemany")
+    def _do_executemany(
+        cursor,
+        statement,
+        parameters,
+        execution_context,
+    ) -> bool:
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_entry",
+        )
+        try:
+            execution_context.dialect.do_executemany(
+                cursor,
+                statement,
+                parameters,
+                execution_context,
+            )
+        except Exception as exc:
+            recorder.record_driver_execute(
+                execution_context,
+                kind="driver_execute_error",
+                error_type=type(exc).__name__,
+            )
+            raise
+        recorder.record_driver_execute(
+            execution_context,
+            kind="driver_execute_return",
+        )
+        return True
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def _after_cursor_execute(
+        conn,
+        _cursor,
+        statement,
+        _parameters,
+        execution_context,
+        _executemany,
+    ) -> None:
+        started = getattr(execution_context, "_rp894_trace_started", time.perf_counter())
+        recorder.on_statement_end(conn, statement, started)
+        execution_context._rp894_trace_started = None
+
+    @event.listens_for(engine, "handle_error")
+    def _handle_error(exception_context) -> None:
+        execution_context = exception_context.execution_context
+        if execution_context is None:
+            return
+        started = getattr(execution_context, "_rp894_trace_started", time.perf_counter())
+        recorder.on_statement_end(
+            exception_context.connection,
+            exception_context.statement or "",
+            started,
+            error=True,
+        )
+        execution_context._rp894_trace_started = None
+
+    @event.listens_for(engine, "commit")
+    def _commit(conn) -> None:
+        recorder.on_transaction_end(conn, "commit")
+
+    @event.listens_for(engine, "rollback")
+    def _rollback(conn) -> None:
+        recorder.on_transaction_end(conn, "rollback")
+
+    @event.listens_for(Session, "loaded_as_persistent")
+    def _loaded_as_persistent(_session, _instance) -> None:
+        recorder.on_materialized()
+
+    def uninstall() -> None:
+        security_module.resolve_principal = original_resolve
+        security_module._csrf_allowed = original_csrf
+        security_module.run_sync_cancellation_safe = original_run_sync
+        Result._allrows = original_allrows
+        CursorFetchStrategy.fetchall = original_fetchall
+        event.remove(engine.pool, "checkout", _checkout)
+        event.remove(engine.pool, "checkin", _checkin)
+        event.remove(engine, "before_cursor_execute", _before_cursor_execute)
+        event.remove(engine, "do_execute", _do_execute)
+        event.remove(engine, "do_execute_no_params", _do_execute_no_params)
+        event.remove(engine, "do_executemany", _do_executemany)
+        event.remove(engine, "after_cursor_execute", _after_cursor_execute)
+        event.remove(engine, "handle_error", _handle_error)
+        event.remove(engine, "commit", _commit)
+        event.remove(engine, "rollback", _rollback)
+        event.remove(Session, "loaded_as_persistent", _loaded_as_persistent)
+
+    return uninstall
+
+
+def request_context(recorder: ConnectionTraceRecorder, request_id: str, family: str):
+    class _Context:
+        def __enter__(self):
+            self.tokens = recorder.begin_request(request_id, family)
+            return self
+
+        def __exit__(self, exc_type, exc, _tb):
+            status = "500" if exc is not None else "completed"
+            recorder.end_request(
+                request_id,
+                status=status,
+                error_type=type(exc).__name__ if exc is not None else "",
+            )
+            recorder.reset_request_context(*self.tokens)
+            return False
+
+    return _Context()

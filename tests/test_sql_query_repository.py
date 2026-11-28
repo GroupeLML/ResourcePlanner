@@ -4,6 +4,8 @@ from datetime import date, time, timedelta
 from decimal import Decimal
 import unittest
 
+from sqlalchemy import event
+
 from app.infrastructure.sql import (
     AppUser,
     Asset,
@@ -22,6 +24,7 @@ from app.infrastructure.sql import (
     Shift,
     SqlDemandRepository,
     SqlPlannerQueryRepository,
+    WorkforceRequest,
     create_session_factory,
     create_sql_engine,
     transactional_session,
@@ -77,7 +80,6 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             )
             request = SqlDemandRepository(session).get(demand_number)
             assert request is not None
-            from app.infrastructure.sql.models import WorkforceRequest
             request_row = session.query(WorkforceRequest).filter_by(
                 legacy_demand_number=demand_number
             ).one()
@@ -557,6 +559,252 @@ class SqlPlannerQueryRepositoryTests(unittest.TestCase):
             self.assertEqual(rows[0].hours, 4.0)
 
             self.assertEqual(queries.list_shifts(resource_name="Unknown"), ())
+
+    def test_list_shifts_narrows_request_projection_without_deferred_selects(self) -> None:
+        with transactional_session(self.factory) as session:
+            request_row = session.query(WorkforceRequest).filter_by(
+                legacy_demand_number=self.demand_number
+            ).one()
+            request_row.legacy_demand_number = ""
+            request_row.requester_name = "Coordonnateur"
+            request_row.emergency_override_active = True
+            requirement_row = session.get(ResourceRequirement, "REQ1")
+            assert requirement_row is not None
+            requirement_row.confirmation = "Tentative"
+            session.add(
+                ResourceRequirement(
+                    id="REQ-ADHOC",
+                    legacy_segment_id="SEG-ADHOC",
+                    project_id="P1",
+                    workforce_request_id=None,
+                    assigned_resource_id="R1",
+                    start_date=D1,
+                    end_date=D1,
+                    planned_hours=Decimal("2"),
+                    status="Planifié",
+                    planning_type="Flexible",
+                    priority="Normale",
+                    origin="AD_HOC",
+                    created_by_name="Créateur direct",
+                )
+            )
+            session.flush()
+            session.add(
+                Shift(
+                    id="S-ADHOC",
+                    legacy_allocation_id="MAN-ADHOC",
+                    resource_requirement_id="REQ-ADHOC",
+                    resource_id="R1",
+                    work_date=D1,
+                    hours=Decimal("2"),
+                    source="MANUAL",
+                    locked=True,
+                )
+            )
+            request_id = request_row.id
+
+        statements: list[str] = []
+
+        def capture_statement(
+            _conn,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            statements.append(str(statement))
+
+        event.listen(self.engine, "before_cursor_execute", capture_statement)
+        try:
+            with self.factory() as session:
+                rows = SqlPlannerQueryRepository(session).list_shifts(
+                    start=D1,
+                    end=D1,
+                    resource_id="R1",
+                )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", capture_statement)
+
+        self.assertEqual(len(statements), 1)
+        sql = " ".join(statements[0].lower().split())
+        select_clause = sql.split(" from ", 1)[0]
+        for column in (
+            "resources.id",
+            "resources.name",
+        ):
+            self.assertIn(column, select_clause)
+        for column in (
+            "resources.resource_class",
+            "resources.competencies",
+            "resources.note",
+            "resources.active",
+            "resources.erp_active",
+            "resources.sort_order",
+        ):
+            self.assertNotIn(column, select_clause)
+
+        for column in (
+            "resource_requirements.id",
+            "resource_requirements.legacy_segment_id",
+            "resource_requirements.project_id",
+            "resource_requirements.workforce_request_id",
+            "resource_requirements.confirmation",
+            "resource_requirements.created_by_name",
+            "resource_requirements.status",
+        ):
+            self.assertIn(column, select_clause)
+        for column in (
+            "resource_requirements.assigned_resource_id",
+            "resource_requirements.start_date",
+            "resource_requirements.end_date",
+            "resource_requirements.planned_hours",
+            "resource_requirements.planning_type",
+            "resource_requirements.priority",
+            "resource_requirements.origin",
+        ):
+            self.assertNotIn(column, select_clause)
+
+        for column in (
+            "workforce_requests.id",
+            "workforce_requests.legacy_demand_number",
+            "workforce_requests.requester_name",
+            "workforce_requests.emergency_override_active",
+        ):
+            self.assertIn(column, select_clause)
+        for column in (
+            "workforce_requests.project_id",
+            "workforce_requests.description",
+            "workforce_requests.status",
+            "workforce_requests.desired_start",
+            "workforce_requests.desired_end",
+            "workforce_requests.estimated_hours",
+            "workforce_requests.cancellation_state",
+            "workforce_requests.emergency_override_reason",
+        ):
+            self.assertNotIn(column, select_clause)
+
+        self.assertIn("order by shifts.work_date, resources.sort_order", sql)
+
+        by_allocation = {row.allocation_id: row for row in rows}
+        self.assertEqual(set(by_allocation), {"MAN-1", "MAN-ADHOC"})
+
+        requested = by_allocation["MAN-1"]
+        self.assertEqual(requested.demand_id, request_id)
+        self.assertEqual(requested.demand_number, request_id)
+        self.assertEqual(requested.requester, "Coordonnateur")
+        self.assertTrue(requested.emergency_override_active)
+        self.assertEqual(requested.segment_id, "SEG-1")
+        self.assertEqual(requested.requirement_id, "REQ1")
+        self.assertEqual(requested.resource_name, "Alice")
+        self.assertEqual(requested.project_id, "P1")
+        self.assertEqual(requested.project_number, "P-1")
+        self.assertEqual(requested.hours, 4.0)
+        self.assertEqual(requested.confirmation, "Tentative")
+        self.assertTrue(requested.locked)
+        self.assertIsNone(requested.asset_assignment)
+        self.assertEqual(requested.related_asset_reservations, ())
+
+        requestless = by_allocation["MAN-ADHOC"]
+        self.assertIsNone(requestless.demand_id)
+        self.assertIsNone(requestless.demand_number)
+        self.assertEqual(requestless.requester, "Créateur direct")
+        self.assertFalse(requestless.emergency_override_active)
+        self.assertEqual(requestless.segment_id, "SEG-ADHOC")
+        self.assertEqual(requestless.requirement_id, "REQ-ADHOC")
+        self.assertEqual(requestless.hours, 2.0)
+        self.assertIsNone(requestless.asset_assignment)
+        self.assertEqual(requestless.related_asset_reservations, ())
+
+    def test_list_shifts_narrow_projection_preserves_shared_operator_asset_context(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                AssetType(
+                    id="AT-PROJ",
+                    code="VEH-PROJ",
+                    label="Véhicule projection",
+                    category="VEHICLE",
+                )
+            )
+            session.flush()
+            session.add(
+                Asset(
+                    id="A-PROJ",
+                    code="ASSET-PROJ",
+                    label="Actif projection",
+                    asset_type_id="AT-PROJ",
+                )
+            )
+            session.flush()
+            session.add(
+                AssetRequirement(
+                    id="AR-PROJ",
+                    origin="RESOURCE_PERIOD",
+                    context_resource_id="R1",
+                    asset_type_id="AT-PROJ",
+                    start_date=D1,
+                    end_date=D1,
+                    resource_period_mode="BOUNDED",
+                    status="Planifié",
+                )
+            )
+            session.flush()
+            session.add(
+                AssetAllocation(
+                    id="AA-PROJ",
+                    asset_requirement_id="AR-PROJ",
+                    asset_id="A-PROJ",
+                    operator_resource_id="R1",
+                    start_date=D1,
+                    end_date=D1,
+                    locked=True,
+                )
+            )
+
+        statements: list[str] = []
+
+        def capture_statement(
+            _conn,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            statements.append(str(statement))
+
+        event.listen(self.engine, "before_cursor_execute", capture_statement)
+        try:
+            with self.factory() as session:
+                rows = SqlPlannerQueryRepository(session).list_shifts(
+                    start=D1,
+                    end=D1,
+                    resource_id="R1",
+                    can_manage_planning=True,
+                )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", capture_statement)
+
+        self.assertEqual(len(statements), 2)
+        self.assertEqual(len(rows), 1)
+        shift = rows[0]
+        self.assertEqual(shift.resource_id, "R1")
+        self.assertEqual(shift.resource_name, "Alice")
+        self.assertIsNone(shift.asset_assignment)
+        self.assertEqual(len(shift.related_asset_reservations), 1)
+        reservation = shift.related_asset_reservations[0]
+        self.assertEqual(reservation.requirement_id, "AR-PROJ")
+        self.assertEqual(reservation.allocation_id, "AA-PROJ")
+        self.assertEqual(
+            reservation.association_kind,
+            "INHERITED_RESOURCE_PERIOD",
+        )
+        self.assertEqual(reservation.operator_resource_id, "R1")
+        self.assertEqual(reservation.qualification_state, "SATISFIED")
+        self.assertEqual(reservation.asset_id, "A-PROJ")
+        self.assertEqual(reservation.asset_code, "ASSET-PROJ")
+        self.assertEqual(reservation.asset_label, "Actif projection")
+        self.assertEqual(shift.asset_diagnostics, ())
 
     def test_shift_manager_marker_tracks_stable_erp_identity_not_display_name(self) -> None:
         with transactional_session(self.factory) as session:

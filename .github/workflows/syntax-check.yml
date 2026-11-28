@@ -43,6 +43,9 @@ jobs:
       frontend: ${{ steps.classify.outputs.frontend }}
       runtime: ${{ steps.classify.outputs.runtime }}
       conservative: ${{ steps.classify.outputs.conservative }}
+      issue_894_inventory_only: ${{ steps.phase.outputs.issue_894_inventory_only }}
+      issue_894_perf_preflight_only: ${{ steps.phase.outputs.issue_894_perf_preflight_only }}
+      issue_894_gdb_preflight_only: ${{ steps.phase.outputs.issue_894_gdb_preflight_only }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,6 +61,28 @@ jobs:
           git diff --name-only --no-renames "$base_sha" "$head_sha" > /tmp/changed-files.txt
           cat /tmp/changed-files.txt
           python tools/ci_change_classifier.py < /tmp/changed-files.txt | tee -a "$GITHUB_OUTPUT"
+      - name: Detect bounded #894 diagnostic phase
+        id: phase
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="${{ github.event.pull_request.head.sha }}"
+          message="$(git log -1 --format=%B "$head_sha")"
+          if printf '%s\n' "$message" | grep -Fxq 'RP894_ENVIRONMENT_INVENTORY_ONLY'; then
+            printf 'issue_894_inventory_only=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'issue_894_inventory_only=false\n' >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "$message" | grep -Fxq 'RP894_PERF_PREFLIGHT_ONLY'; then
+            printf 'issue_894_perf_preflight_only=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'issue_894_perf_preflight_only=false\n' >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "$message" | grep -Fxq 'RP894_GDB_PREFLIGHT_ONLY'; then
+            printf 'issue_894_gdb_preflight_only=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'issue_894_gdb_preflight_only=false\n' >> "$GITHUB_OUTPUT"
+          fi
 
   server-isolation:
     needs: changes
@@ -94,6 +119,12 @@ jobs:
           tools/check_web_runtime.py
           tools/check_installed_web.py
           tools/smoke_running_web.py
+          tools/issue_894_phase4_server.py
+          tools/issue_894_phase4_load.py
+          tools/issue_894_phase4_stats.py
+          tools/issue_894_phase4_performance_report.py
+          tools/issue_894_connection_trace.py
+          tools/issue_894_connection_trial.py
           tools/cutover_inventory.py
       - name: Guard Web/SQL boundaries from V1 imports
         run: python tools/cutover_inventory.py --check-boundaries
@@ -418,7 +449,7 @@ jobs:
   sqlserver-live-573e:
     name: SQL Server live 363F / 573E / 594D
     needs: changes
-    if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') || startsWith(github.event.pull_request.title, '655C') || startsWith(github.event.pull_request.title, '#778') || startsWith(github.event.pull_request.title, '#777') || startsWith(github.event.pull_request.title, '#793') || startsWith(github.event.pull_request.title, '#781') || startsWith(github.event.pull_request.title, '#742') || startsWith(github.event.pull_request.title, '#830') || startsWith(github.event.pull_request.title, '#855') || startsWith(github.event.pull_request.title, '#877') || startsWith(github.event.pull_request.title, '#880') || startsWith(github.event.pull_request.title, '643A') || startsWith(github.event.pull_request.title, '643B') || startsWith(github.event.pull_request.title, '643C') }}
+    if: ${{ startsWith(github.event.pull_request.title, '363F') || startsWith(github.event.pull_request.title, '573E') || startsWith(github.event.pull_request.title, '594D') || startsWith(github.event.pull_request.title, '655C') || startsWith(github.event.pull_request.title, '#778') || startsWith(github.event.pull_request.title, '#777') || startsWith(github.event.pull_request.title, '#793') || startsWith(github.event.pull_request.title, '#781') || startsWith(github.event.pull_request.title, '#742') || startsWith(github.event.pull_request.title, '#830') || startsWith(github.event.pull_request.title, '#855') || startsWith(github.event.pull_request.title, '#877') || startsWith(github.event.pull_request.title, '#880') || startsWith(github.event.pull_request.title, '#894') || startsWith(github.event.pull_request.title, '643A') || startsWith(github.event.pull_request.title, '643B') || startsWith(github.event.pull_request.title, '643C') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -523,8 +554,1645 @@ jobs:
                 tests.test_issue_855_sqlserver_migration \
                 tests.test_issue_877_sqlserver \
                 tests.test_issue_880_sqlserver_migration \
+                tests.test_emergency_broadcast_sqlserver_concurrency \
                 tests.test_same_resource_periods \
                 tests.test_verification_execution_sqlserver_concurrency &&
               python tools/diagnose_project_manager_legacy_links.py --json
             '
 
+
+
+  issue-894-environment-inventory:
+    name: Issue #894 environment inventory
+    needs: changes
+    if: ${{ startsWith(github.event.pull_request.title, '#894') && needs.changes.outputs.issue_894_inventory_only == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate bounded inventory contract and routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          python tools/issue_894_environment_inventory.py self-test
+          python tools/issue_894_environment_inventory.py validate-workflow \
+            --workflow .github/workflows/syntax-check.yml
+          python -m py_compile tools/issue_894_environment_inventory.py
+
+      - name: Build exact-head backend image for inventory only
+        id: image
+        shell: bash
+        env:
+          RP894_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          image_ref="resourceplanner-894-inventory-backend:$RP894_HEAD_SHA"
+          docker build \
+            -f Dockerfile.backend \
+            --build-arg "RESOURCEPLANNER_GIT_REVISION=$RP894_HEAD_SHA" \
+            -t "$image_ref" \
+            .
+          revision="$(docker image inspect "$image_ref" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          test "$revision" = "$RP894_HEAD_SHA"
+          printf 'image_ref=%s\n' "$image_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Start bounded exact-image inventory target
+        id: target
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          container_name="rp894-inventory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run -d \
+            --name "$container_name" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -w /app \
+            "$IMAGE_REF" \
+            python /workspace/tools/issue_894_environment_inventory.py \
+              target --seconds 180 \
+            >/dev/null
+          sleep 2
+          host_pid="$(docker inspect --format '{{.State.Pid}}' "$container_name")"
+          test "$host_pid" -gt 0
+          test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "true"
+          printf 'container_name=%s\n' "$container_name" >> "$GITHUB_OUTPUT"
+          printf 'host_pid=%s\n' "$host_pid" >> "$GITHUB_OUTPUT"
+
+      - name: Collect allowlisted read-only environment inventory in host sudo context
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+          CONTAINER_NAME: ${{ steps.target.outputs.container_name }}
+          TARGET_PID: ${{ steps.target.outputs.host_pid }}
+          RP894_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=CI,GITHUB_ACTIONS,GITHUB_SHA,ImageOS,ImageVersion,RUNNER_ARCH,RUNNER_OS \
+            "$(command -v python)" tools/issue_894_environment_inventory.py collect \
+              --target-pid "$TARGET_PID" \
+              --container-name "$CONTAINER_NAME" \
+              --image-ref "$IMAGE_REF" \
+              --expected-head "$RP894_HEAD_SHA" \
+              --historical-ci-3221-digest \
+                sha256:911273639c9186aecb45cafc30f32d42c1044ed31c84d8848b604815d3462c5a \
+              --historical-ci-3222-digest \
+                sha256:1006b7f5be832aab83ce6618287ce475d1f60aa072371abf14494b07572eda01 \
+              --require-elevated \
+              --output issue-894-environment-inventory.json
+          python tools/issue_894_environment_inventory.py validate \
+            --input issue-894-environment-inventory.json
+
+      - name: Retain exact new diagnostic-reference image bytes
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+          RP894_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          reference_dir="$GITHUB_WORKSPACE/issue-894-diagnostic-reference"
+          mkdir -p "$reference_dir"
+          archive="$reference_dir/resourceplanner-894-inventory-backend.tar.gz"
+          docker image save "$IMAGE_REF" | gzip -n -1 > "$archive"
+          test -s "$archive"
+          python tools/issue_894_environment_inventory.py bind-image-archive \
+            --archive "$archive" \
+            --image-ref "$IMAGE_REF" \
+            --expected-head "$RP894_HEAD_SHA" \
+            --output "$reference_dir/manifest.json"
+          python tools/issue_894_environment_inventory.py validate-reference \
+            --input "$reference_dir/manifest.json"
+
+      - name: Upload bounded environment inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-894-environment-inventory-${{ github.event.pull_request.head.sha }}
+          path: issue-894-environment-inventory.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload immutable diagnostic-reference runtime
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-894-diagnostic-reference-runtime-${{ github.event.pull_request.head.sha }}
+          path: issue-894-diagnostic-reference/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Clean inventory target
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f "rp894-inventory-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            >/dev/null 2>&1 || true
+
+
+  issue-894-perf-preflight:
+    name: Issue #894 perf/DWARF capability preflight
+    needs: changes
+    if: ${{ startsWith(github.event.pull_request.title, '#894') && needs.changes.outputs.issue_894_perf_preflight_only == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RP894_REFERENCE_RUN_ID: "45226493406"
+      RP894_REFERENCE_ARTIFACT_ID: "14840644971"
+      RP894_REFERENCE_ARTIFACT_DIGEST: "6189228090813637c8cdfa08d78127a4aff7c389166bba9858a07bd6365cef6c"
+      RP894_REFERENCE_ARCHIVE_SHA256: "483b9ae6cc3ada5ad5918d68f1f812de649ffeb120d3f82eb4c60ea49ae0af09"
+      RP894_REFERENCE_HEAD: "1cb01861ddba17babb0b6b3b09d062bd15107f20"
+      RP894_REFERENCE_IMAGE_ID: "sha256:194211a0c3a5a5113388ff876b7154edfb297cac0ebb4be6d11c4aa431bd51db"
+      RP894_REFERENCE_PLATFORM: "sha256:40e271b9ec31384a0b2289906a5b8d7e888faced3c626ab538871b3ad5dfba7d"
+      RP894_REFERENCE_CONFIG: "sha256:799bad6afa00d775059d3d6d43f2e1fa7defe34e56074686e53c4101bf3e2768"
+    steps:
+      - name: Checkout exact preflight head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate preflight-only implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          python -m py_compile tools/issue_894_perf_preflight.py
+          python tools/issue_894_perf_preflight.py self-test
+          python tools/issue_894_perf_preflight.py validate-workflow \
+            --workflow .github/workflows/syntax-check.yml
+
+      # RP894_PREFLIGHT_EXECUTION_BEGIN
+      - name: Restore and verify immutable CI #3224 reference
+        id: reference
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RP894_CURRENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          reference="$RUNNER_TEMP/rp894-reference"
+          rm -rf "$reference"
+          mkdir -p "$reference"
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$RP894_REFERENCE_ARTIFACT_ID/zip" \
+            -o "$reference/artifact.zip"
+          printf '%s  %s\n' "$RP894_REFERENCE_ARTIFACT_DIGEST" "$reference/artifact.zip" | sha256sum -c -
+          unzip -q "$reference/artifact.zip" -d "$reference/extracted"
+          archive="$reference/extracted/resourceplanner-894-inventory-backend.tar.gz"
+          manifest="$reference/extracted/manifest.json"
+          printf '%s  %s\n' "$RP894_REFERENCE_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          python tools/issue_894_environment_inventory.py validate-reference --input "$manifest"
+          python - "$manifest" <<'PY'
+          import json
+          import sys
+
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = {
+              "pr_head": "1cb01861ddba17babb0b6b3b09d062bd15107f20",
+              "live_image_id": "sha256:194211a0c3a5a5113388ff876b7154edfb297cac0ebb4be6d11c4aa431bd51db",
+              "archive_platform_manifest_digest": "sha256:40e271b9ec31384a0b2289906a5b8d7e888faced3c626ab538871b3ad5dfba7d",
+              "archive_config_digest": "sha256:799bad6afa00d775059d3d6d43f2e1fa7defe34e56074686e53c4101bf3e2768",
+              "archive_sha256": "483b9ae6cc3ada5ad5918d68f1f812de649ffeb120d3f82eb4c60ea49ae0af09",
+              "live_revision_label": "1cb01861ddba17babb0b6b3b09d062bd15107f20",
+              "archive_revision_label": "1cb01861ddba17babb0b6b3b09d062bd15107f20",
+          }
+          for key, value in expected.items():
+              if manifest.get(key) != value:
+                  raise SystemExit(f"retained reference mismatch: {key}")
+          if not all(manifest.get("identity_chain", {}).values()):
+              raise SystemExit("retained OCI identity chain is incomplete")
+          PY
+          gunzip -c "$archive" | docker load >/dev/null
+          image_ref="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_ref"])' "$manifest")"
+          image_id="$(docker image inspect "$image_ref" --format '{{.Id}}')"
+          revision="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          test "$image_id" = "$RP894_REFERENCE_IMAGE_ID"
+          test "$revision" = "$RP894_REFERENCE_HEAD"
+          printf 'image_ref=%s\n' "$image_ref" >> "$GITHUB_OUTPUT"
+          printf 'reference_manifest=%s\n' "$manifest" >> "$GITHUB_OUTPUT"
+
+      - name: Start disposable SQL fixture
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.reference.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          network="rp894-perf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          server="rp894-perf-sql-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          value="RpP1_$(openssl rand -hex 16)"
+          printf '::add-mask::%s\n' "$value"
+          env_file="$RUNNER_TEMP/rp894-perf-sql.env"
+          printf 'MSSQL_SA_%s=%s\n' 'PASSWORD' "$value" > "$env_file"
+          chmod 600 "$env_file"
+          docker network create "$network" >/dev/null
+          docker run -d \
+            --name "$server" \
+            --network "$network" \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_PID=Developer \
+            --env-file "$env_file" \
+            mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+          ready=0
+          for attempt in $(seq 1 60); do
+            if docker run --rm \
+              --network "$network" \
+              -e SQL_SERVER="$server" \
+              -e SQL_PASSWORD="$value" \
+              "$IMAGE_REF" \
+              python -c 'import os,pyodbc; k="P"+"WD"; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;"+k+"="+os.environ["SQL_PASSWORD"]+";Encrypt=yes;TrustServerCertificate=yes",timeout=3); c.close()' \
+              >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = "1"
+          {
+            printf 'RP894_PREFLIGHT_NETWORK=%s\n' "$network"
+            printf 'RP894_PREFLIGHT_SQL_SERVER=%s\n' "$server"
+            printf 'RP894_PREFLIGHT_SQL_PASSWORD=%s\n' "$value"
+            printf 'RP894_PREFLIGHT_SQL_ENV_FILE=%s\n' "$env_file"
+          } >> "$GITHUB_ENV"
+
+      - name: Run unobserved synthetic control
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.reference.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/issue-894-perf-preflight-evidence"
+          mkdir -p "$evidence"
+          chmod 0777 "$evidence"
+          rm -f "$evidence"/control-{ready,gate,done,stop} "$evidence/control-markers.jsonl"
+          container="rp894-perf-control-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run -d \
+            --name "$container" \
+            --network "$RP894_PREFLIGHT_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$evidence:/evidence" \
+            -w /app \
+            -e SQL_SERVER="$RP894_PREFLIGHT_SQL_SERVER" \
+            -e SQL_PASSWORD="$RP894_PREFLIGHT_SQL_PASSWORD" \
+            "$IMAGE_REF" \
+            python /workspace/tools/issue_894_perf_preflight.py probe \
+              --marker /evidence/control-markers.jsonl \
+              --ready /evidence/control-ready \
+              --gate /evidence/control-gate \
+              --done /evidence/control-done \
+              --stop /evidence/control-stop \
+              --sql-server "$RP894_PREFLIGHT_SQL_SERVER" >/dev/null
+          for attempt in $(seq 1 100); do
+            test -f "$evidence/control-ready" && break
+            test "$attempt" != "100"
+            sleep 0.05
+          done
+          control_start="$(date +%s%N)"
+          touch "$evidence/control-gate"
+          for attempt in $(seq 1 200); do
+            test -f "$evidence/control-done" && break
+            test "$attempt" != "200"
+            sleep 0.05
+          done
+          control_end="$(date +%s%N)"
+          test $((control_end - control_start)) -le 10000000000
+          touch "$evidence/control-stop"
+          status="$(docker wait "$container")"
+          test "$status" = "0"
+          docker rm "$container" >/dev/null
+          rm -f "$evidence"/control-{ready,gate,done,stop}
+
+      - name: Run one filtered perf/DWARF capability preflight
+        id: preflight
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.reference.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/issue-894-perf-preflight-evidence"
+          raw_dir="$(mktemp -d "$RUNNER_TEMP/rp894-perf-raw-XXXXXX")"
+          chmod 0700 "$raw_dir"
+          container="rp894-perf-observed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            set +e
+            touch "$evidence/observed-stop" 2>/dev/null || true
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            rm -rf "$raw_dir"
+            rm -f "$evidence"/observed-{ready,gate,done,stop} 2>/dev/null || true
+            if [ ! -e "$raw_dir" ]; then
+              printf '{"raw_perf_data_deleted":true,"raw_perf_data_uploaded":false}\n' > "$evidence/cleanup.json"
+            else
+              printf '{"raw_perf_data_deleted":false,"raw_perf_data_uploaded":false}\n' > "$evidence/cleanup.json"
+            fi
+          }
+          trap cleanup EXIT
+          rm -f "$evidence"/observed-{ready,gate,done,stop} "$evidence/observed-markers.jsonl"
+          docker run -d \
+            --name "$container" \
+            --network "$RP894_PREFLIGHT_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$evidence:/evidence" \
+            -w /app \
+            -e SQL_SERVER="$RP894_PREFLIGHT_SQL_SERVER" \
+            -e SQL_PASSWORD="$RP894_PREFLIGHT_SQL_PASSWORD" \
+            "$IMAGE_REF" \
+            python /workspace/tools/issue_894_perf_preflight.py probe \
+              --marker /evidence/observed-markers.jsonl \
+              --ready /evidence/observed-ready \
+              --gate /evidence/observed-gate \
+              --done /evidence/observed-done \
+              --stop /evidence/observed-stop \
+              --sql-server "$RP894_PREFLIGHT_SQL_SERVER" >/dev/null
+          for attempt in $(seq 1 100); do
+            test -f "$evidence/observed-ready" && break
+            test "$attempt" != "100"
+            sleep 0.05
+          done
+          host_pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
+          sudo "$(command -v python)" tools/issue_894_perf_preflight.py identity \
+            --host-pid "$host_pid" \
+            --output "$evidence/identity.json"
+          tids="$(python -c 'import json,sys; print(",".join(str(v) for v in json.load(open(sys.argv[1]))["host_tids"]))' "$evidence/identity.json")"
+          perf_executable="$(command -v perf)"
+          mkfifo "$raw_dir/perf-control.fifo" "$raw_dir/perf-ack.fifo"
+          python tools/issue_894_perf_preflight.py command \
+            --tids "$tids" \
+            --perf-executable "$perf_executable" \
+            --control-fifo "$raw_dir/perf-control.fifo" \
+            --ack-fifo "$raw_dir/perf-ack.fifo" \
+            --raw "$raw_dir/perf.data" \
+            --output "$evidence/perf-command.json" \
+            --argv-lines "$raw_dir/perf-argv.txt" \
+            --parser-argv-lines "$raw_dir/perf-parser-argv.txt"
+          perf_version="$("$perf_executable" version)"
+          perf_build_options="$("$perf_executable" version --build-options | tr '\n' ';' | head -c 4000)"
+          mapfile -t parser_args < "$raw_dir/perf-parser-argv.txt"
+          test "${parser_args[0]}" = "$perf_executable"
+          set +e
+          sudo "${parser_args[@]}" >"$raw_dir/perf-parser-stdout.txt" 2>"$raw_dir/perf-parser-stderr.txt"
+          parser_status=$?
+          set -e
+          python - "$raw_dir/perf-parser-argv.txt" "$raw_dir/perf-parser-stdout.txt" "$raw_dir/perf-parser-stderr.txt" "$evidence/perf-parser-check.json" "$perf_executable" "$parser_status" <<'PY'
+          import json
+          import sys
+
+          argv = open(sys.argv[1], encoding="utf-8").read().splitlines()
+          stdout = open(sys.argv[2], encoding="utf-8", errors="replace").read()[-4000:]
+          stderr = open(sys.argv[3], encoding="utf-8", errors="replace").read()[-4000:]
+          status = int(sys.argv[6])
+          with open(sys.argv[4], "w", encoding="utf-8") as handle:
+              json.dump(
+                  {
+                      "schema": "issue-894-perf-parser-check-v1",
+                      "argv": argv,
+                      "perf_executable": sys.argv[5],
+                      "execution_context": "host-sudo",
+                      "returncode": status,
+                      "stdout": stdout,
+                      "stderr": stderr,
+                      "accepted": status == 0,
+                  },
+                  handle,
+                  sort_keys=True,
+              )
+          PY
+          test "$parser_status" = "0"
+          mapfile -t perf_args < "$raw_dir/perf-argv.txt"
+          test "${perf_args[0]}" = "$perf_executable"
+          set +e
+          /usr/bin/time -v -o "$raw_dir/perf-time.txt" \
+            sudo "${perf_args[@]}" \
+            >"$raw_dir/perf-stdout.txt" 2>"$raw_dir/perf-stderr.txt" &
+          perf_pid=$!
+          python tools/issue_894_perf_preflight.py activate \
+            --control-fifo "$raw_dir/perf-control.fifo" \
+            --ack-fifo "$raw_dir/perf-ack.fifo" \
+            --output "$evidence/perf-readiness.json" \
+            --probe-gate "$evidence/observed-gate" \
+            --perf-executable "$perf_executable" \
+            --launcher-pid "$perf_pid"
+          activation_status=$?
+          if [ "$activation_status" != "0" ]; then
+            printf 'stop\n' > "$raw_dir/perf-control.fifo" || true
+            kill "$perf_pid" >/dev/null 2>&1 || true
+            wait "$perf_pid" >/dev/null 2>&1 || true
+            set -e
+            exit 1
+          fi
+          observed_start="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["probe_release_monotonic_ns"])' "$evidence/perf-readiness.json")"
+          for attempt in $(seq 1 200); do
+            test -f "$evidence/observed-done" && break
+            test "$attempt" != "200"
+            sleep 0.05
+          done
+          observed_end="$(python -c 'import time; print(time.monotonic_ns())')"
+          wait "$perf_pid"
+          perf_status=$?
+          set -e
+          test $((observed_end - observed_start)) -le 10000000000
+          if [ "$perf_status" != "0" ]; then
+            python - "$raw_dir/perf-stderr.txt" "$evidence/preflight-failure.json" <<'PY'
+          import json
+          import sys
+
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()[-4000:]
+          with open(sys.argv[2], "w", encoding="utf-8") as handle:
+              json.dump(
+                  {
+                      "schema": "issue-894-perf-dwarf-preflight-failure-v1",
+                      "result": "FAIL/INCOMPLETE — CAPABILITY NOT DEMONSTRATED",
+                      "stage": "perf_record",
+                      "observer_error": text,
+                  },
+                  handle,
+                  indent=2,
+                  sort_keys=True,
+              )
+              handle.write("\n")
+          PY
+            exit 1
+          fi
+          test -s "$raw_dir/perf.data"
+          cat > "$raw_dir/perf-channel-meta.py" <<'PY'
+          import json
+          import struct
+          import sys
+
+          ALLOWED = {
+              "sched:sched_switch",
+              "sched:sched_wakeup",
+              "sched:sched_wakeup_new",
+          }
+          ENDIAN = "<" if sys.byteorder == "little" else ">"
+
+          def _u32(raw, offset):
+              return struct.unpack_from(ENDIAN + "I", raw, offset)[0]
+
+          def _u64(raw, offset):
+              return struct.unpack_from(ENDIAN + "Q", raw, offset)[0]
+
+          def trace_unhandled(event_name, context, event_fields_dict, perf_sample_dict):
+              ev_name = str(perf_sample_dict.get("ev_name", event_name))
+              if ev_name not in ALLOWED:
+                  return
+              sample = perf_sample_dict.get("sample") or {}
+              attr = perf_sample_dict.get("attr") or b""
+              if isinstance(attr, str):
+                  attr = attr.encode("latin1")
+              attr = bytes(attr)
+              row = {
+                  "event": ev_name,
+                  "id": int(sample.get("id") or 0),
+                  "stream_id": int(sample.get("stream_id") or 0),
+                  "time_ns": int(sample.get("time") or 0),
+                  "tid": int(sample.get("tid") or 0),
+                  "attr_bytes": len(attr),
+                  "attr_size": _u32(attr, 4) if len(attr) >= 8 else 0,
+                  "event_type": _u32(attr, 0) if len(attr) >= 4 else 0,
+                  "event_config": _u64(attr, 8) if len(attr) >= 16 else 0,
+                  "sample_type": _u64(attr, 24) if len(attr) >= 32 else 0,
+                  "sample_regs_user": _u64(attr, 80) if len(attr) >= 88 else 0,
+                  "sample_stack_user": _u32(attr, 88) if len(attr) >= 92 else 0,
+              }
+              print(json.dumps(row, sort_keys=True))
+          PY
+          sudo "$perf_executable" script \
+            -s "python:$raw_dir/perf-channel-meta.py" \
+            -i "$raw_dir/perf.data" \
+            > "$raw_dir/perf-channel-samples.jsonl"
+          sudo "$perf_executable" script \
+            --ns \
+            --show-lost-events \
+            --symfs "/proc/$host_pid/root" \
+            -i "$raw_dir/perf.data" \
+            > "$raw_dir/perf-script.txt"
+          sudo "$perf_executable" buildid-list \
+            -i "$raw_dir/perf.data" \
+            > "$raw_dir/buildids.txt"
+          python tools/issue_894_perf_preflight.py summarize \
+            --identity "$evidence/identity.json" \
+            --readiness "$evidence/perf-readiness.json" \
+            --channel-samples "$raw_dir/perf-channel-samples.jsonl" \
+            --perf-script "$raw_dir/perf-script.txt" \
+            --buildids "$raw_dir/buildids.txt" \
+            --control-markers "$evidence/control-markers.jsonl" \
+            --observed-markers "$evidence/observed-markers.jsonl" \
+            --perf-time "$raw_dir/perf-time.txt" \
+            --perf-stderr "$raw_dir/perf-stderr.txt" \
+            --perf-version "$perf_version" \
+            --perf-build-options "$perf_build_options" \
+            --output "$evidence/preflight-summary.json"
+
+      - name: Validate bounded derived evidence surface
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/issue-894-perf-preflight-evidence"
+          test -d "$evidence"
+          ! find "$evidence" -type f \( -name 'perf.data*' -o -name '*.core' -o -name '*.dump' \) -print -quit | grep -q .
+          if [ -f "$evidence/cleanup.json" ]; then
+            grep -Fq '"raw_perf_data_deleted":true' "$evidence/cleanup.json"
+            grep -Fq '"raw_perf_data_uploaded":false' "$evidence/cleanup.json"
+          fi
+
+      - name: Upload bounded derived perf preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-894-perf-dwarf-preflight-${{ github.event.pull_request.head.sha }}
+          path: issue-894-perf-preflight-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean disposable preflight runtime
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f \
+            "rp894-perf-control-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "rp894-perf-observed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "$RP894_PREFLIGHT_SQL_SERVER" >/dev/null 2>&1 || true
+          if [ -n "${RP894_PREFLIGHT_NETWORK:-}" ]; then
+            docker network rm "$RP894_PREFLIGHT_NETWORK" >/dev/null 2>&1 || true
+          fi
+          if [ -n "${RP894_PREFLIGHT_SQL_ENV_FILE:-}" ]; then
+            rm -f "$RP894_PREFLIGHT_SQL_ENV_FILE"
+          fi
+
+      # RP894_PREFLIGHT_EXECUTION_END
+
+
+  issue-894-gdb-capability-preflight:
+    name: Issue #894 GDB capability preflight
+    needs: changes
+    if: ${{ startsWith(github.event.pull_request.title, '#894') && needs.changes.outputs.issue_894_gdb_preflight_only == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RP894_REFERENCE_ARTIFACT_ID: "14840644971"
+      RP894_REFERENCE_ARTIFACT_DIGEST: "6189228090813637c8cdfa08d78127a4aff7c389166bba9858a07bd6365cef6c"
+      RP894_REFERENCE_ARCHIVE_SHA256: "483b9ae6cc3ada5ad5918d68f1f812de649ffeb120d3f82eb4c60ea49ae0af09"
+      RP894_REFERENCE_HEAD: "1cb01861ddba17babb0b6b3b09d062bd15107f20"
+      RP894_REFERENCE_IMAGE_ID: "sha256:194211a0c3a5a5113388ff876b7154edfb297cac0ebb4be6d11c4aa431bd51db"
+      RP894_REFERENCE_PLATFORM: "sha256:40e271b9ec31384a0b2289906a5b8d7e888faced3c626ab538871b3ad5dfba7d"
+      RP894_REFERENCE_CONFIG: "sha256:799bad6afa00d775059d3d6d43f2e1fa7defe34e56074686e53c4101bf3e2768"
+      RP894_GDB_PACKAGE_VERSION: "15.0.50.20240403-0ubuntu1"
+    steps:
+      - name: Checkout exact GDB preflight head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate bounded GDB helper and focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          python -m py_compile tools/issue_894_gdb_capability_preflight.py tests/test_issue_894_gdb_capability_preflight.py
+          python -m unittest -v tests.test_issue_894_gdb_capability_preflight
+
+      - name: Provision pinned host-only GDB package
+        id: gdb
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends "gdb=$RP894_GDB_PACKAGE_VERSION"
+          executable="$(command -v gdb)"
+          package_identity="$(dpkg-query -W -f='${Package}=${Version}:${Architecture}' gdb)"
+          test "$package_identity" = "gdb=$RP894_GDB_PACKAGE_VERSION:amd64"
+          version="$("$executable" --version | head -n 1)"
+          binary_sha256="$(sha256sum "$executable" | awk '{print $1}')"
+          evidence="$GITHUB_WORKSPACE/issue-894-gdb-preflight-evidence"
+          mkdir -p "$evidence"
+          python tools/issue_894_gdb_capability_preflight.py observer-identity --package-identity "$package_identity" --gdb-version "$version" --binary-sha256 "$binary_sha256" --output "$evidence/gdb-observer-identity.json"
+          sudo chown "$(id -u):10001" "$evidence"
+          chmod 0770 "$evidence"
+          printf 'executable=%s\n' "$executable" >> "$GITHUB_OUTPUT"
+          printf 'package_identity=%s\n' "$package_identity" >> "$GITHUB_OUTPUT"
+          printf 'binary_sha256=%s\n' "$binary_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Align Docker image store with retained OCI identity semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("/etc/docker/daemon.json")
+          data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+          features = dict(data.get("features") or {})
+          features["containerd-snapshotter"] = True
+          data["features"] = features
+          path.write_text(
+              json.dumps(data, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          sudo systemctl restart docker
+          docker info -f '{{ .DriverStatus }}' | grep -Fq 'io.containerd.snapshotter.v1'
+
+      - name: Restore immutable diagnostic reference runtime
+        id: reference
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          reference="$RUNNER_TEMP/rp894-gdb-reference"
+          rm -rf "$reference"
+          mkdir -p "$reference"
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$RP894_REFERENCE_ARTIFACT_ID/zip" -o "$reference/artifact.zip"
+          printf '%s  %s\n' "$RP894_REFERENCE_ARTIFACT_DIGEST" "$reference/artifact.zip" | sha256sum -c -
+          unzip -q "$reference/artifact.zip" -d "$reference/extracted"
+          archive="$reference/extracted/resourceplanner-894-inventory-backend.tar.gz"
+          manifest="$reference/extracted/manifest.json"
+          printf '%s  %s\n' "$RP894_REFERENCE_ARCHIVE_SHA256" "$archive" | sha256sum -c -
+          python tools/issue_894_environment_inventory.py validate-reference --input "$manifest"
+          python - "$manifest" <<'PY'
+          import json
+          import os
+          import sys
+
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = {
+              "pr_head": os.environ["RP894_REFERENCE_HEAD"],
+              "live_image_id": os.environ["RP894_REFERENCE_IMAGE_ID"],
+              "archive_platform_manifest_digest": os.environ["RP894_REFERENCE_PLATFORM"],
+              "archive_config_digest": os.environ["RP894_REFERENCE_CONFIG"],
+              "archive_sha256": os.environ["RP894_REFERENCE_ARCHIVE_SHA256"],
+              "live_revision_label": os.environ["RP894_REFERENCE_HEAD"],
+              "archive_revision_label": os.environ["RP894_REFERENCE_HEAD"],
+          }
+          for key, value in expected.items():
+              if manifest.get(key) != value:
+                  raise SystemExit(f"retained reference mismatch: {key}")
+          if not all(manifest.get("identity_chain", {}).values()):
+              raise SystemExit("retained OCI identity chain is incomplete")
+          PY
+          gunzip -c "$archive" | docker load >/dev/null
+          image_ref="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_ref"])' "$manifest")"
+          image_id="$(docker image inspect "$image_ref" --format '{{.Id}}')"
+          revision="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          test "$image_id" = "$RP894_REFERENCE_IMAGE_ID"
+          test "$revision" = "$RP894_REFERENCE_HEAD"
+          printf 'image_ref=%s\n' "$image_ref" >> "$GITHUB_OUTPUT"
+          printf 'reference_manifest=%s\n' "$manifest" >> "$GITHUB_OUTPUT"
+
+      - name: Start disposable SQL fixture
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.reference.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          network="rp894-gdb-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          server="rp894-gdb-sql-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          env_file="$RUNNER_TEMP/rp894-gdb-sql.env"
+          value="RpGdb1_$(openssl rand -hex 16)"
+          printf 'MSSQL_SA_PASSWORD=%s\n' "$value" > "$env_file"
+          chmod 600 "$env_file"
+          docker network create "$network" >/dev/null
+          docker run -d --name "$server" --network "$network" -e ACCEPT_EULA=Y -e MSSQL_PID=Developer --env-file "$env_file" mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+          ready=0
+          for attempt in $(seq 1 90); do
+            if docker run --rm --network "$network" -e SQL_SERVER="$server" -e SQL_PASSWORD="$value" "$IMAGE_REF" python -c 'import os,pyodbc; k="P"+"WD"; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;"+k+"="+os.environ["SQL_PASSWORD"]+";Encrypt=yes;TrustServerCertificate=yes",timeout=3); c.close()' >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = "1"
+          {
+            printf 'RP894_GDB_NETWORK=%s\n' "$network"
+            printf 'RP894_GDB_SQL_SERVER=%s\n' "$server"
+            printf 'RP894_GDB_SQL_PASSWORD=%s\n' "$value"
+            printf 'RP894_GDB_SQL_ENV_FILE=%s\n' "$env_file"
+          } >> "$GITHUB_ENV"
+
+      - name: Run one unobserved synthetic control
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.reference.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/issue-894-gdb-preflight-evidence"
+          raw_dir="$(mktemp -d "$RUNNER_TEMP/rp894-gdb-control-XXXXXX")"
+          sudo chown "$(id -u):10001" "$raw_dir"
+          chmod 0770 "$raw_dir"
+          container="rp894-gdb-control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cleanup() {
+            set +e
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            rm -rf "$raw_dir"
+          }
+          trap cleanup EXIT
+          docker run -d --name "$container" --network "$RP894_GDB_NETWORK" -v "$GITHUB_WORKSPACE:/workspace:ro" -v "$evidence:/evidence" -v "$raw_dir:/raw" -w /app -e SQL_PASSWORD="$RP894_GDB_SQL_PASSWORD" "$IMAGE_REF" python /workspace/tools/issue_894_gdb_capability_preflight.py probe --markers /evidence/control-markers.jsonl --sentinel /raw/control-sentinel.jsonl --ready /raw/control-ready.json --gate /raw/control-gate --done /raw/control-done --stop /raw/control-stop --sql-server "$RP894_GDB_SQL_SERVER" >/dev/null
+          for attempt in $(seq 1 200); do
+            test -s "$raw_dir/control-ready.json" && break
+            test "$attempt" != "200"
+            sleep 0.01
+          done
+          touch "$raw_dir/control-gate"
+          sleep 8
+          touch "$raw_dir/control-stop"
+          test "$(docker wait "$container")" = "0"
+
+      - name: Run one observed GDB/scheduler synthetic preflight
+        id: capability
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.reference.outputs.image_ref }}
+          GDB_EXECUTABLE: ${{ steps.gdb.outputs.executable }}
+          GDB_PACKAGE: ${{ steps.gdb.outputs.package_identity }}
+          GDB_SHA256: ${{ steps.gdb.outputs.binary_sha256 }}
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/issue-894-gdb-preflight-evidence"
+          raw_dir="$(mktemp -d "$RUNNER_TEMP/rp894-gdb-observed-XXXXXX")"
+          sudo chown "$(id -u):10001" "$raw_dir"
+          chmod 0770 "$raw_dir"
+          container="rp894-gdb-observed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cleanup() {
+            set +e
+            touch "$raw_dir/observed-stop" 2>/dev/null || true
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            rm -rf "$raw_dir"
+          }
+          trap cleanup EXIT
+          docker run -d --name "$container" --network "$RP894_GDB_NETWORK" -v "$GITHUB_WORKSPACE:/workspace:ro" -v "$evidence:/evidence" -v "$raw_dir:/raw" -w /app -e SQL_PASSWORD="$RP894_GDB_SQL_PASSWORD" "$IMAGE_REF" python /workspace/tools/issue_894_gdb_capability_preflight.py probe --markers /evidence/observed-markers.jsonl --sentinel /raw/observed-sentinel.jsonl --ready /raw/observed-ready.json --gate /raw/observed-gate --done /raw/observed-done --stop /raw/observed-stop --sql-server "$RP894_GDB_SQL_SERVER" >/dev/null
+          for attempt in $(seq 1 200); do
+            test -s "$raw_dir/observed-ready.json" && break
+            test "$attempt" != "200"
+            sleep 0.01
+          done
+          host_pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
+          target_ns_tid="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["target_namespace_tid"])' "$raw_dir/observed-ready.json")"
+          sentinel_ns_tid="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sentinel_namespace_tid"])' "$raw_dir/observed-ready.json")"
+          sudo "$(command -v python)" tools/issue_894_gdb_capability_preflight.py identity --host-pid "$host_pid" --target-namespace-tid "$target_ns_tid" --sentinel-namespace-tid "$sentinel_ns_tid" --output "$evidence/identity.json"
+          target_tid="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["target_host_tid"])' "$evidence/identity.json")"
+          sentinel_tid="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sentinel_host_tid"])' "$evidence/identity.json")"
+          cat > "$raw_dir/scheduler.py" <<'PY'
+          import json
+          ALLOWED = {"sched:sched_switch", "sched:sched_wakeup", "sched:sched_wakeup_new"}
+          def trace_unhandled(event_name, context, event_fields_dict, perf_sample_dict):
+              name = str(perf_sample_dict.get("ev_name", event_name))
+              if name not in ALLOWED:
+                  return
+              sample = perf_sample_dict.get("sample") or {}
+              row = {"event": name.split(":", 1)[1], "time_ns": int(sample.get("time") or 0)}
+              if name == "sched:sched_switch":
+                  row.update({"prev_pid": int(event_fields_dict.get("prev_pid") or 0), "next_pid": int(event_fields_dict.get("next_pid") or 0), "prev_state": int(event_fields_dict.get("prev_state") or 0)})
+              else:
+                  row["pid"] = int(event_fields_dict.get("pid") or 0)
+              print(json.dumps(row, sort_keys=True))
+          PY
+          set +e
+          sudo perf record -o "$raw_dir/scheduler.data" -a --clockid mono -e sched:sched_switch --filter "prev_pid == $target_tid || next_pid == $target_tid" -e sched:sched_wakeup --filter "pid == $target_tid" -e sched:sched_wakeup_new --filter "pid == $target_tid" -- sleep 8 >"$raw_dir/perf-stdout.txt" 2>"$raw_dir/perf-stderr.txt" &
+          perf_pid=$!
+          sudo "$(command -v python)" tools/issue_894_gdb_capability_preflight.py observe --pid "$host_pid" --tid "$target_tid" --sentinel-tid "$sentinel_tid" --markers "$evidence/observed-markers.jsonl" --sentinel "$raw_dir/observed-sentinel.jsonl" --gate "$raw_dir/observed-gate" --done "$raw_dir/observed-done" --gdb "$GDB_EXECUTABLE" --gdb-package "$GDB_PACKAGE" --gdb-sha256 "$GDB_SHA256" --output "$evidence/gdb-observation.json"
+          observe_status=$?
+          wait "$perf_pid"
+          perf_status=$?
+          if [ -s "$raw_dir/scheduler.data" ]; then
+            sudo perf script -s "python:$raw_dir/scheduler.py" -i "$raw_dir/scheduler.data" > "$raw_dir/scheduler.jsonl" 2>>"$raw_dir/perf-stderr.txt"
+            script_status=$?
+          else
+            : > "$raw_dir/scheduler.jsonl"
+            script_status=1
+          fi
+          touch "$raw_dir/observed-stop"
+          probe_status="$(docker wait "$container")"
+          lost="$(grep -Ec 'PERF_RECORD_LOST|LOST [0-9]+' "$raw_dir/perf-stderr.txt" || true)"
+          throttled="$(grep -Ec 'PERF_RECORD_THROTTLE|PERF_RECORD_UNTHROTTLE' "$raw_dir/perf-stderr.txt" || true)"
+          if [ "$script_status" != "0" ]; then perf_status=1; fi
+          python tools/issue_894_gdb_capability_preflight.py summarize --control-markers "$evidence/control-markers.jsonl" --observed-markers "$evidence/observed-markers.jsonl" --scheduler "$raw_dir/scheduler.jsonl" --observation "$evidence/gdb-observation.json" --tid "$target_tid" --perf-status "$perf_status" --probe-status "$probe_status" --perf-lost "$lost" --perf-throttled "$throttled" --output "$evidence/preflight-summary.json"
+          summary_status=$?
+          set -e
+          test "$observe_status" = "0"
+          test "$summary_status" = "0"
+
+      - name: Validate bounded GDB evidence privacy
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/issue-894-gdb-preflight-evidence"
+          test -d "$evidence"
+          ! find "$evidence" -type f \( -name 'scheduler.data*' -o -name '*.core' -o -name '*.dump' -o -name '*transcript*' -o -name '*gdb*.txt' -o -name '*perf*.txt' \) -print -quit | grep -q .
+          ! grep -R -Ei '"(args|arguments|locals|registers|memory|password|credentials|parameters|sql)"[[:space:]]*:' "$evidence"
+
+      - name: Upload bounded derived GDB capability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-894-gdb-capability-preflight-${{ github.event.pull_request.head.sha }}
+          path: issue-894-gdb-preflight-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean disposable GDB preflight runtime
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          docker rm -f "rp894-gdb-control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "rp894-gdb-observed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$RP894_GDB_SQL_SERVER" >/dev/null 2>&1 || true
+          if [ -n "$RP894_GDB_NETWORK" ]; then docker network rm "$RP894_GDB_NETWORK" >/dev/null 2>&1 || true; fi
+          if [ -n "$RP894_GDB_SQL_ENV_FILE" ]; then rm -f "$RP894_GDB_SQL_ENV_FILE"; fi
+
+  issue-894-phase4:
+    name: Issue #894 Phase 4 load / rollback
+    needs: changes
+    if: ${{ startsWith(github.event.pull_request.title, '#894') && needs.changes.outputs.issue_894_inventory_only != 'true' && needs.changes.outputs.issue_894_perf_preflight_only != 'true' && needs.changes.outputs.issue_894_gdb_preflight_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pin immutable event PR head and base
+        shell: bash
+        env:
+          RP894_EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RP894_EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          initial_checkout_sha="$(git rev-parse HEAD)"
+          event_actions_sha="$GITHUB_SHA"
+
+          git cat-file -e "$RP894_EVENT_PR_HEAD_SHA^{commit}" 2>/dev/null \
+            || git fetch --no-tags origin "$RP894_EVENT_PR_HEAD_SHA"
+          git checkout --detach "$RP894_EVENT_PR_HEAD_SHA"
+          head_sha="$(git rev-parse HEAD)"
+          test "$head_sha" = "$RP894_EVENT_PR_HEAD_SHA"
+
+          git cat-file -e "$RP894_EVENT_BASE_SHA^{commit}" 2>/dev/null \
+            || git fetch --no-tags origin "$RP894_EVENT_BASE_SHA"
+          base_sha="$RP894_EVENT_BASE_SHA"
+          counts="$(git rev-list --left-right --count "$base_sha...$head_sha")"
+          behind="$(printf '%s' "$counts" | awk '{print $1}')"
+          test "$behind" = "0"
+
+          printf 'RP894_HEAD_SHA=%s\n' "$head_sha" >> "$GITHUB_ENV"
+          printf 'RP894_BASE_SHA=%s\n' "$base_sha" >> "$GITHUB_ENV"
+          mkdir -p "$GITHUB_WORKSPACE/phase4-evidence"
+          chmod 0777 "$GITHUB_WORKSPACE/phase4-evidence"
+          {
+            printf 'workflow_event_actions_sha=%s\n' "$event_actions_sha"
+            printf 'initial_checkout_sha=%s\n' "$initial_checkout_sha"
+            printf 'event_pr_head_sha=%s\n' "$RP894_EVENT_PR_HEAD_SHA"
+            printf 'checked_out_source_sha=%s\n' "$head_sha"
+            printf 'event_base_sha=%s\n' "$RP894_EVENT_BASE_SHA"
+            printf 'base_sha=%s\n' "$base_sha"
+            printf 'ahead_behind=%s\n' "$counts"
+            printf 'workload_command=connection-diagnostic\n'
+          } > "$GITHUB_WORKSPACE/phase4-evidence/git-state.txt"
+
+      - name: Build exact-head feature images and verify provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build             -f Dockerfile.backend             --build-arg "RESOURCEPLANNER_GIT_REVISION=$RP894_HEAD_SHA"             -t resourceplanner-894-feature-backend .
+          docker build             -f frontend/Dockerfile             --build-arg "RESOURCEPLANNER_GIT_REVISION=$RP894_HEAD_SHA"             -t resourceplanner-894-feature-frontend .
+          backend_revision="$(docker image inspect resourceplanner-894-feature-backend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          frontend_revision="$(docker image inspect resourceplanner-894-feature-frontend --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          test "$backend_revision" = "$RP894_HEAD_SHA"
+          test "$frontend_revision" = "$RP894_HEAD_SHA"
+          printf 'backend=%s\nfrontend=%s\n' "$backend_revision" "$frontend_revision"             > "$GITHUB_WORKSPACE/phase4-evidence/feature-image-provenance.txt"
+
+      - name: Start disposable SQL Server and prove empty/predecessor migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          network="rp894-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          server="rp894-sql-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sql_value="RpA1_$(openssl rand -hex 16)"
+          secrets_dir="/tmp/rp894-secrets-${GITHUB_RUN_ID}"
+          mkdir -p "$secrets_dir"
+          chmod 0777 "$secrets_dir"
+          sql_env_file="$secrets_dir/sql.env"
+          printf 'MSSQL_SA_%s=%s\n' 'PASSWORD' "$sql_value" > "$sql_env_file"
+          chmod 600 "$sql_env_file"
+
+          printf 'RP894_NETWORK=%s\n' "$network" >> "$GITHUB_ENV"
+          printf 'RP894_SQL_SERVER=%s\n' "$server" >> "$GITHUB_ENV"
+          printf 'RP894_SQL_PASSWORD=%s\n' "$sql_value" >> "$GITHUB_ENV"
+          printf 'RP894_SECRETS_DIR=%s\n' "$secrets_dir" >> "$GITHUB_ENV"
+
+          docker network create "$network" >/dev/null
+          docker run -d             --name "$server"             --network "$network"             -e ACCEPT_EULA=Y             -e MSSQL_PID=Developer             --env-file "$sql_env_file"             mcr.microsoft.com/mssql/server:2022-latest >/dev/null
+
+          ready=0
+          for attempt in $(seq 1 90); do
+            if docker run --rm               --network "$network"               -e SQL_SERVER="$server"               -e SQL_VALUE="$sql_value"               resourceplanner-894-feature-backend               python -c 'import os, pyodbc; k="P"+"WD"; c=pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER="+os.environ["SQL_SERVER"]+",1433;UID=sa;"+k+"="+os.environ["SQL_VALUE"]+";Encrypt=yes;TrustServerCertificate=yes", timeout=3); c.close()'               >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = "1"
+
+          docker run --rm -i             --network "$network"             -e SQL_SERVER="$server"             -e SQL_VALUE="$sql_value"             resourceplanner-894-feature-backend             python - <<'PY'
+          import os
+          import pyodbc
+
+          connection = pyodbc.connect(
+              "DRIVER={ODBC Driver 18 for SQL Server};"
+              f"SERVER={os.environ['SQL_SERVER']},1433;"
+              "UID=sa;"
+              f"{'P' + 'WD'}={os.environ['SQL_VALUE']};"
+              "Encrypt=yes;TrustServerCertificate=yes",
+              autocommit=True,
+          )
+          try:
+              cursor = connection.cursor()
+              for database in ("ResourcePlanner894Load", "ResourcePlanner894Migration"):
+                  cursor.execute(
+                      f"IF DB_ID('{database}') IS NULL CREATE DATABASE [{database}]"
+                  )
+          finally:
+              connection.close()
+          PY
+
+          load_url="mssql+pyodbc://sa:${sql_value}@${server}:1433/ResourcePlanner894Load?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+          migration_url="mssql+pyodbc://sa:${sql_value}@${server}:1433/ResourcePlanner894Migration?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+          printf 'RP894_DATABASE_URL=%s\n' "$load_url" >> "$GITHUB_ENV"
+          printf 'RP894_MIGRATION_URL=%s\n' "$migration_url" >> "$GITHUB_ENV"
+
+          docker run --rm             --network "$network"             -e RESOURCEPLANNER_DATABASE_URL="$load_url"             resourceplanner-894-feature-backend             python -m alembic upgrade head
+
+          docker run --rm             --network "$network"             -e RESOURCEPLANNER_DATABASE_URL="$migration_url"             resourceplanner-894-feature-backend             python -m alembic upgrade 0037_workforce_request_project_manager_phone
+
+          docker run --rm             --network "$network"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py seed-predecessor               --database-url "$migration_url"
+
+          docker run --rm             --network "$network"             -e RESOURCEPLANNER_DATABASE_URL="$migration_url"             resourceplanner-894-feature-backend             python -m alembic upgrade head
+
+          docker run --rm             --network "$network"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py verify-migration               --database-url "$migration_url"               --output /evidence/predecessor-migration.json
+
+          docker run --rm             --network "$network"             -e RESOURCEPLANNER_DATABASE_URL="$load_url"             resourceplanner-894-feature-backend             python tools/check_server_runtime.py
+
+      - name: Seed SQL-backed load identities and run bounded Phase 4 tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets"             -w /workspace             -e PYTHONPATH=/app:/workspace             -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py seed               --database-url "$RP894_DATABASE_URL"               --users 500               --output /secrets/sessions.json
+
+          sh -n tools/build_issue_894_rollback_bundle.sh
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python -m unittest -v               tests.test_issue_894_phase4_capacity               tests.test_issue_894_phase4_tooling               tests.test_issue_894_connection_trace
+
+      - name: Re-run exact ERP lease-renewal verification
+        id: erp_lease_rerun
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$GITHUB_WORKSPACE/phase4-evidence"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -w /workspace \
+            -e PYTHONPATH=/app:/workspace \
+            resourceplanner-894-feature-backend \
+            python -m unittest -v \
+              tests.test_project_task_sync_api.ProjectTaskSyncApiTests.test_legacy_targeted_task_sync_runs_on_managed_worker_and_renews_lease
+          status=$?
+          printf 'named_test_status=%s\n' "$status" \
+            > "$GITHUB_WORKSPACE/phase4-evidence/erp-lease-rerun-status.txt"
+          exit "$status"
+
+      - name: Run short canonical versus instrumented connection-residence diagnostics
+        id: load
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/phase4-evidence"
+          mkdir -p "$evidence/performance"
+          chmod 0777 "$evidence/performance"
+          trace="$evidence/performance/issue894-connection-trace.jsonl"
+          pyspy_venv="$RUNNER_TEMP/rp894-pyspy-0.4.4"
+          python -m venv "$pyspy_venv"
+          "$pyspy_venv/bin/python" -m pip install --disable-pip-version-check --no-cache-dir "py-spy==0.4.4"
+          pyspy="$pyspy_venv/bin/py-spy"
+          pyspy_version="$("$pyspy" --version)"
+          test "$pyspy_version" = "py-spy 0.4.4"
+
+          wait_backend_ready() {
+            mode="$1"
+            for attempt in $(seq 1 60); do
+              if docker run --rm --network "$RP894_NETWORK" \
+                resourceplanner-894-feature-backend \
+                curl --fail --silent --show-error --max-time 3 \
+                http://backend:8000/ready >/dev/null 2>&1; then
+                printf '%s backend ready after attempt %s\n' "$mode" "$attempt" \
+                  >> "$evidence/connection-trial-readiness.txt"
+                return 0
+              fi
+              sleep 1
+            done
+            docker logs --tail=300 backend \
+              > "$evidence/connection-trial-${mode}-startup-failure.txt" 2>&1 || true
+            return 1
+          }
+
+          start_backend() {
+            mode="$1"
+            docker rm -f backend >/dev/null 2>&1 || true
+            common_args=(
+              --name backend
+              --network "$RP894_NETWORK"
+              -v "$evidence/performance:/home/resourceplanner/.resourceplanner/logs"
+              -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL"
+              -e RESOURCEPLANNER_HOST=0.0.0.0
+              -e RESOURCEPLANNER_PORT=8000
+              -e RESOURCEPLANNER_LOG_LEVEL=info
+              -e RESOURCEPLANNER_AUTH_MODE=oidc
+              -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration
+              -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-phase4
+              -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback
+              -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false
+              -e RESOURCEPLANNER_API_DOCS_ENABLED=false
+              -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false
+            )
+            if [ "$mode" = "canonical" ]; then
+              docker run -d "${common_args[@]}" \
+                resourceplanner-894-feature-backend \
+                python -m app.server >/dev/null
+            else
+              trace_name="issue894-connection-trace.jsonl"
+              profile_args=()
+              if [ "$mode" = "profile-baseline" ]; then
+                trace_name="issue894-profile-baseline-trace.jsonl"
+              elif [ "$mode" = "profiled" ]; then
+                trace_name="issue894-profiled-trace.jsonl"
+                profile_args=(
+                  -e RESOURCEPLANNER_PHASE4_FETCH_PROFILE=true
+                )
+              elif [ "$mode" = "external-profile-preflight" ]; then
+                trace_name="issue894-native-preflight-trace.jsonl"
+              elif [ "$mode" = "external-profile-baseline" ]; then
+                trace_name="issue894-native-baseline-trace.jsonl"
+              elif [ "$mode" = "external-profiled" ]; then
+                trace_name="issue894-native-profiled-trace.jsonl"
+              fi
+              : > "$evidence/performance/$trace_name"
+              chmod 0666 "$evidence/performance/$trace_name"
+              docker run -d "${common_args[@]}" \
+                -v "$GITHUB_WORKSPACE:/workspace:ro" \
+                -w /app \
+                -e PYTHONPATH=/app:/workspace \
+                -e RESOURCEPLANNER_PHASE4_CONNECTION_TRACE=true \
+                -e RESOURCEPLANNER_PHASE4_CONNECTION_TRACE_PATH="/home/resourceplanner/.resourceplanner/logs/$trace_name" \
+                "${profile_args[@]}" \
+                resourceplanner-894-feature-backend \
+                python /workspace/tools/issue_894_phase4_server.py >/dev/null
+            fi
+            wait_backend_ready "$mode"
+          }
+
+          ensure_frontend() {
+            docker rm -f frontend >/dev/null 2>&1 || true
+            docker run -d \
+              --name frontend \
+              --network "$RP894_NETWORK" \
+              -e RESOURCEPLANNER_ENVIRONMENT=PROD \
+              resourceplanner-894-feature-frontend >/dev/null
+            for attempt in $(seq 1 60); do
+              if docker run --rm --network "$RP894_NETWORK" \
+                resourceplanner-894-feature-backend \
+                curl --fail --silent --show-error --max-time 3 \
+                http://frontend:8080/ready >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 1
+            done
+            return 1
+          }
+
+          run_trial() {
+            mode="$1"
+            output="$2"
+            trace_file="${3:-}"
+            trace_args=()
+            if [ -n "$trace_file" ]; then
+              trace_args=(--trace-file "$trace_file")
+            fi
+            docker run --rm \
+              --network "$RP894_NETWORK" \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$RP894_SECRETS_DIR:/secrets:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL" \
+              -e RESOURCEPLANNER_PHASE4_ISOLATED_LOAD=ISSUE_894_DISPOSABLE_SQLSERVER \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py trial \
+                --credentials /secrets/sessions.json \
+                --database-url "$RP894_DATABASE_URL" \
+                --output "$output" \
+                --mode "$mode" \
+                --duration-seconds 30 \
+                --offered-rps 10 \
+                --concurrency 32 \
+                "${trace_args[@]}"
+          }
+
+          set +e
+
+          start_backend canonical
+          canonical_start_status=$?
+          if [ "$canonical_start_status" = "0" ]; then
+            ensure_frontend
+            canonical_frontend_status=$?
+          else
+            canonical_frontend_status=1
+          fi
+          if [ "$canonical_start_status" = "0" ] && [ "$canonical_frontend_status" = "0" ]; then
+            run_trial canonical /evidence/connection-trial-canonical.json
+            canonical_execution_status=$?
+          else
+            canonical_execution_status=1
+          fi
+          docker logs --tail=500 backend \
+            > "$evidence/connection-trial-canonical-backend.txt" 2>&1 || true
+
+          docker exec "$RP894_SQL_SERVER" sh -c \
+            'rm -f /var/opt/mssql/log/rp894_short_correlation*.xel'
+          xe_preclean_status=$?
+
+          docker run --rm \
+            --network "$RP894_NETWORK" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$evidence:/evidence" \
+            -w /workspace \
+            -e PYTHONPATH=/app:/workspace \
+            resourceplanner-894-feature-backend \
+            python tools/issue_894_connection_trial.py xe-start \
+              --database-url "$RP894_DATABASE_URL" \
+              --output /evidence/sqlserver-xe-start.json
+          xe_start_status=$?
+
+          start_backend instrumented
+          instrumented_start_status=$?
+          if [ "$instrumented_start_status" = "0" ]; then
+            ensure_frontend
+            instrumented_frontend_status=$?
+          else
+            instrumented_frontend_status=1
+          fi
+          if [ "$instrumented_start_status" = "0" ] && [ "$instrumented_frontend_status" = "0" ]; then
+            run_trial instrumented /evidence/connection-trial-instrumented.json /evidence/performance/issue894-connection-trace.jsonl
+            instrumented_execution_status=$?
+          else
+            instrumented_execution_status=1
+          fi
+          docker logs --tail=700 backend \
+            > "$evidence/connection-trial-instrumented-backend.txt" 2>&1 || true
+
+          if [ "$xe_start_status" = "0" ]; then
+            docker run --rm \
+              --network "$RP894_NETWORK" \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py xe-stop \
+                --database-url "$RP894_DATABASE_URL" \
+                --output /evidence/sqlserver-xe-capture.json
+            xe_stop_status=$?
+          else
+            xe_stop_status=1
+          fi
+
+          if [ "$xe_stop_status" = "0" ]; then
+            docker exec "$RP894_SQL_SERVER" sh -c \
+              'rm -f /var/opt/mssql/log/rp894_short_correlation*.xel'
+            xe_file_cleanup_status=$?
+          else
+            xe_file_cleanup_status=1
+          fi
+
+          if [ "$xe_file_cleanup_status" = "0" ]; then
+            docker run --rm \
+              --network "$RP894_NETWORK" \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py xe-finalize-cleanup \
+                --database-url "$RP894_DATABASE_URL" \
+                --capture /evidence/sqlserver-xe-capture.json
+            xe_finalize_cleanup_status=$?
+          else
+            xe_finalize_cleanup_status=1
+          fi
+
+          if [ "$instrumented_execution_status" = "0" ] \
+            && [ "$xe_start_status" = "0" ] \
+            && [ "$xe_stop_status" = "0" ] \
+            && [ "$xe_finalize_cleanup_status" = "0" ]; then
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py correlate \
+                --trial /evidence/connection-trial-instrumented.json \
+                --trace /evidence/performance/issue894-connection-trace.jsonl \
+                --server /evidence/sqlserver-xe-capture.json \
+                --output /evidence/connection-trial-instrumented.json
+            correlation_status=$?
+          else
+            correlation_status=1
+          fi
+          if [ "$xe_preclean_status" != "0" ] \
+            || [ "$xe_start_status" != "0" ] \
+            || [ "$xe_stop_status" != "0" ] \
+            || [ "$xe_file_cleanup_status" != "0" ] \
+            || [ "$xe_finalize_cleanup_status" != "0" ] \
+            || [ "$correlation_status" != "0" ]; then
+            instrumented_execution_status=1
+          fi
+
+          if [ -f "$evidence/connection-trial-canonical.json" ] \
+            && [ -f "$evidence/connection-trial-instrumented.json" ]; then
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py compare \
+                --canonical /evidence/connection-trial-canonical.json \
+                --instrumented /evidence/connection-trial-instrumented.json \
+                --output /evidence/connection-trial-comparison.json
+            comparison_execution_status=$?
+          else
+            comparison_execution_status=1
+          fi
+
+          start_backend profile-baseline
+          profile_baseline_start_status=$?
+          if [ "$profile_baseline_start_status" = "0" ]; then
+            ensure_frontend
+            profile_baseline_frontend_status=$?
+          else
+            profile_baseline_frontend_status=1
+          fi
+          if [ "$profile_baseline_start_status" = "0" ] \
+            && [ "$profile_baseline_frontend_status" = "0" ]; then
+            run_trial instrumented \
+              /evidence/connection-trial-profile-baseline.json \
+              /evidence/performance/issue894-profile-baseline-trace.jsonl
+            profile_baseline_execution_status=$?
+          else
+            profile_baseline_execution_status=1
+          fi
+          docker logs --tail=700 backend \
+            > "$evidence/connection-trial-profile-baseline-backend.txt" 2>&1 || true
+
+          start_backend profiled
+          profiled_start_status=$?
+          if [ "$profiled_start_status" = "0" ]; then
+            ensure_frontend
+            profiled_frontend_status=$?
+          else
+            profiled_frontend_status=1
+          fi
+          if [ "$profiled_start_status" = "0" ] \
+            && [ "$profiled_frontend_status" = "0" ]; then
+            run_trial profiled \
+              /evidence/connection-trial-profiled.json \
+              /evidence/performance/issue894-profiled-trace.jsonl
+            profiled_execution_status=$?
+          else
+            profiled_execution_status=1
+          fi
+          docker logs --tail=700 backend \
+            > "$evidence/connection-trial-profiled-backend.txt" 2>&1 || true
+
+          if [ "$profile_baseline_execution_status" = "0" ] \
+            && [ "$profiled_execution_status" = "0" ]; then
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -v "$evidence:/evidence" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py compare-profiled \
+                --instrumented /evidence/connection-trial-profile-baseline.json \
+                --profiled /evidence/connection-trial-profiled.json \
+                --output /evidence/connection-trial-profile-comparison.json
+            profile_comparison_status=$?
+          else
+            profile_comparison_status=1
+          fi
+
+          start_backend external-profile-preflight
+          native_preflight_backend_status=$?
+          native_preflight_attach_status=1
+          native_preflight_status=1
+          if [ "$native_preflight_backend_status" = "0" ]; then
+            backend_pid="$(docker inspect --format '{{.State.Pid}}' backend)"
+            native_preflight_start_ns="$(date +%s%N)"
+            sudo "$pyspy" record \
+              --pid "$backend_pid" \
+              --native \
+              --idle \
+              --rate 100 \
+              --duration 2 \
+              --format speedscope \
+              -o "$evidence/native-profile-preflight.speedscope.json"
+            native_preflight_attach_status=$?
+            native_preflight_end_ns="$(date +%s%N)"
+            if [ -f "$evidence/native-profile-preflight.speedscope.json" ]; then
+              docker run --rm \
+                -v "$GITHUB_WORKSPACE:/workspace:ro" \
+                -v "$evidence:/evidence" \
+                -w /workspace \
+                -e PYTHONPATH=/app:/workspace \
+                resourceplanner-894-feature-backend \
+                python tools/issue_894_native_profile.py preflight \
+                  --profile /evidence/native-profile-preflight.speedscope.json \
+                  --output /evidence/native-profile-preflight.json \
+                  --observer-version "$pyspy_version" \
+                  --attach-status "$native_preflight_attach_status" \
+                  --command-start-ns "$native_preflight_start_ns" \
+                  --command-end-ns "$native_preflight_end_ns" \
+                  --native-requested \
+                  --idle-requested
+              native_preflight_status=$?
+            fi
+          fi
+
+          native_baseline_execution_status=1
+          native_profiled_execution_status=1
+          native_observer_status=1
+          native_summary_status=1
+          native_comparison_status=1
+          if [ "$native_preflight_status" = "0" ]; then
+            start_backend external-profile-baseline
+            native_baseline_start_status=$?
+            if [ "$native_baseline_start_status" = "0" ]; then
+              ensure_frontend
+              native_baseline_frontend_status=$?
+            else
+              native_baseline_frontend_status=1
+            fi
+            if [ "$native_baseline_start_status" = "0" ] \
+              && [ "$native_baseline_frontend_status" = "0" ]; then
+              run_trial instrumented \
+                /evidence/connection-trial-native-baseline.json \
+                /evidence/performance/issue894-native-baseline-trace.jsonl
+              native_baseline_execution_status=$?
+            fi
+
+            start_backend external-profiled
+            native_profiled_start_status=$?
+            if [ "$native_profiled_start_status" = "0" ]; then
+              ensure_frontend
+              native_profiled_frontend_status=$?
+            else
+              native_profiled_frontend_status=1
+            fi
+            if [ "$native_profiled_start_status" = "0" ] \
+              && [ "$native_profiled_frontend_status" = "0" ]; then
+              backend_pid="$(docker inspect --format '{{.State.Pid}}' backend)"
+              native_profile_start_ns="$(date +%s%N)"
+              sudo "$pyspy" record \
+                --pid "$backend_pid" \
+                --native \
+                --idle \
+                --rate 100 \
+                --duration 35 \
+                --format speedscope \
+                -o "$evidence/native-profile.speedscope.json" &
+              native_observer_pid=$!
+              sleep 1
+              run_trial instrumented \
+                /evidence/connection-trial-native-profiled.json \
+                /evidence/performance/issue894-native-profiled-trace.jsonl
+              native_profiled_execution_status=$?
+              wait "$native_observer_pid"
+              native_observer_status=$?
+              native_profile_end_ns="$(date +%s%N)"
+            fi
+
+            if [ "$native_profiled_execution_status" = "0" ] \
+              && [ "$native_observer_status" = "0" ] \
+              && [ -f "$evidence/native-profile.speedscope.json" ]; then
+              docker run --rm \
+                -v "$GITHUB_WORKSPACE:/workspace:ro" \
+                -v "$evidence:/evidence" \
+                -w /workspace \
+                -e PYTHONPATH=/app:/workspace \
+                resourceplanner-894-feature-backend \
+                python tools/issue_894_native_profile.py summarize \
+                  --profile /evidence/native-profile.speedscope.json \
+                  --preflight /evidence/native-profile-preflight.json \
+                  --trace /evidence/performance/issue894-native-profiled-trace.jsonl \
+                  --command-start-ns "$native_profile_start_ns" \
+                  --command-end-ns "$native_profile_end_ns" \
+                  --output /evidence/native-profile-summary.json
+              native_summary_status=$?
+            fi
+
+            if [ "$native_baseline_execution_status" = "0" ] \
+              && [ "$native_profiled_execution_status" = "0" ]; then
+              docker run --rm \
+                -v "$GITHUB_WORKSPACE:/workspace:ro" \
+                -v "$evidence:/evidence" \
+                -w /workspace \
+                -e PYTHONPATH=/app:/workspace \
+                resourceplanner-894-feature-backend \
+                python tools/issue_894_native_profile.py compare \
+                  --baseline /evidence/connection-trial-native-baseline.json \
+                  --profiled /evidence/connection-trial-native-profiled.json \
+                  --output /evidence/native-profile-comparison.json
+              native_comparison_status=$?
+            fi
+          fi
+
+          set -e
+
+          {
+            printf 'label=DIAGNOSTIC - NOT CERTIFICATION\n'
+            printf 'trial_outcome_source=connection-trial-*.json:diagnostic_acceptance_behavior_failed\n'
+            printf 'canonical_execution_status=%s\n' "$canonical_execution_status"
+            printf 'instrumented_execution_status=%s\n' "$instrumented_execution_status"
+            printf 'xe_preclean_status=%s\n' "$xe_preclean_status"
+            printf 'xe_start_status=%s\n' "$xe_start_status"
+            printf 'xe_stop_status=%s\n' "$xe_stop_status"
+            printf 'xe_file_cleanup_status=%s\n' "$xe_file_cleanup_status"
+            printf 'xe_finalize_cleanup_status=%s\n' "$xe_finalize_cleanup_status"
+            printf 'correlation_status=%s\n' "$correlation_status"
+            printf 'comparison_execution_status=%s\n' "$comparison_execution_status"
+            printf 'profile_baseline_execution_status=%s\n' "$profile_baseline_execution_status"
+            printf 'profiled_execution_status=%s\n' "$profiled_execution_status"
+            printf 'profile_comparison_status=%s\n' "$profile_comparison_status"
+            printf 'native_preflight_attach_status=%s\n' "$native_preflight_attach_status"
+            printf 'native_preflight_status=%s\n' "$native_preflight_status"
+            printf 'native_baseline_execution_status=%s\n' "$native_baseline_execution_status"
+            printf 'native_profiled_execution_status=%s\n' "$native_profiled_execution_status"
+            printf 'native_observer_status=%s\n' "$native_observer_status"
+            printf 'native_summary_status=%s\n' "$native_summary_status"
+            printf 'native_comparison_status=%s\n' "$native_comparison_status"
+            printf 'full_mixed_load=NOT RUN\n'
+            printf 'ack_campaign=NOT RUN\n'
+            printf 'v2_campaign=NOT RUN\n'
+            printf 'rollback_campaign=NOT RUN\n'
+          } > "$evidence/connection-trial-status.txt"
+
+          test "$canonical_execution_status" = "0"
+          test "$instrumented_execution_status" = "0"
+          test "$comparison_execution_status" = "0"
+          test "$profile_baseline_execution_status" = "0"
+          test "$profiled_execution_status" = "0"
+          test "$profile_comparison_status" = "0"
+          test "$native_preflight_attach_status" = "0"
+          test "$native_preflight_status" = "0"
+          test "$native_baseline_execution_status" = "0"
+          test "$native_profiled_execution_status" = "0"
+          test "$native_observer_status" = "0"
+          test "$native_summary_status" = "0"
+          test "$native_comparison_status" = "0"
+
+      - name: Run existing V2 API performance budget
+        id: benchmark
+        if: ${{ false }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          docker run --rm             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$GITHUB_WORKSPACE/phase4-evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/benchmark_v2_api.py               --iterations 3               --ci               --output /evidence/v2-api-benchmark.json
+
+      - name: Build and test schema-compatible rollback bundle
+        id: rollback
+        if: ${{ false }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$GITHUB_WORKSPACE/phase4-evidence"
+          rollback_dir="$evidence/rollback"
+          mkdir -p "$rollback_dir"
+
+          sh tools/build_issue_894_rollback_bundle.sh             --prev-sha "$RP894_BASE_SHA"             --feature-sha "$RP894_HEAD_SHA"             --output-dir "$rollback_dir"
+
+          tag="$(cat "$rollback_dir/issue-894-rollback-tag.txt")"
+          rollback_backend="resourceplanner-backend:$tag"
+          rollback_frontend="resourceplanner-frontend:$tag"
+
+          docker stop --time 30 frontend backend >/dev/null 2>&1 || true
+          docker rm -f frontend backend >/dev/null 2>&1 || true
+
+          docker run -d             --name backend             --network "$RP894_NETWORK"             -e RESOURCEPLANNER_DATABASE_URL="$RP894_DATABASE_URL"             -e RESOURCEPLANNER_HOST=0.0.0.0             -e RESOURCEPLANNER_PORT=8000             -e RESOURCEPLANNER_LOG_LEVEL=info             -e RESOURCEPLANNER_AUTH_MODE=oidc             -e RESOURCEPLANNER_OIDC_DISCOVERY_URL=https://identity.example.invalid/.well-known/openid-configuration             -e RESOURCEPLANNER_OIDC_CLIENT_ID=issue-894-rollback             -e RESOURCEPLANNER_OIDC_REDIRECT_URI=http://frontend:8080/api/v1/auth/callback             -e RESOURCEPLANNER_OIDC_SECURE_COOKIE=false             -e RESOURCEPLANNER_API_DOCS_ENABLED=false             -e RESOURCEPLANNER_ERP_SYNC_ENABLED=false             "$rollback_backend" >/dev/null
+
+          for attempt in $(seq 1 60); do
+            if docker run --rm --network "$RP894_NETWORK"               "$rollback_backend"               python -c "from urllib.request import urlopen; r=urlopen('http://backend:8000/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"               >/dev/null 2>&1; then
+              break
+            fi
+            test "$attempt" != "60"
+            sleep 2
+          done
+
+          docker run -d             --name frontend             --network "$RP894_NETWORK"             -e RESOURCEPLANNER_ENVIRONMENT=PROD             "$rollback_frontend" >/dev/null
+
+          for attempt in $(seq 1 60); do
+            if docker run --rm --network "$RP894_NETWORK"               "$rollback_backend"               python -c "from urllib.request import urlopen; r=urlopen('http://frontend:8080/ready', timeout=3); raise SystemExit(0 if r.status == 200 else 1)"               >/dev/null 2>&1; then
+              break
+            fi
+            test "$attempt" != "60"
+            sleep 2
+          done
+
+          docker run --rm             --network "$RP894_NETWORK"             -v "$GITHUB_WORKSPACE:/workspace:ro"             -v "$RP894_SECRETS_DIR:/secrets:ro"             -v "$evidence:/evidence"             -w /workspace             -e PYTHONPATH=/app:/workspace             resourceplanner-894-feature-backend             python tools/issue_894_phase4_load.py rollback-smoke               --credentials /secrets/sessions.json               --output /evidence/rollback-smoke.json
+
+          {
+            docker inspect backend --format 'backend image={{.Config.Image}} image_id={{.Image}} status={{.State.Status}}'
+            docker inspect frontend --format 'frontend image={{.Config.Image}} image_id={{.Image}} status={{.State.Status}}'
+            docker image inspect "$rollback_backend" --format 'backend_revision={{ index .Config.Labels "org.opencontainers.image.revision" }}'
+            docker image inspect "$rollback_frontend" --format 'frontend_revision={{ index .Config.Labels "org.opencontainers.image.revision" }}'
+          } > "$evidence/rollback-runtime-provenance.txt"
+
+      - name: Upload Phase 4 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-894-phase4-evidence-${{ github.event.pull_request.head.sha }}
+          path: phase4-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean disposable Phase 4 runtime
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f frontend backend >/dev/null 2>&1 || true
+          if [ -n "${RP894_DATABASE_URL:-}" ] \
+            && [ -n "${RP894_NETWORK:-}" ]; then
+            docker run --rm \
+              --network "$RP894_NETWORK" \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -w /workspace \
+              -e PYTHONPATH=/app:/workspace \
+              resourceplanner-894-feature-backend \
+              python tools/issue_894_connection_trial.py xe-cleanup \
+                --database-url "$RP894_DATABASE_URL" \
+              >/dev/null 2>&1 || true
+          fi
+          if [ -n "${RP894_SQL_SERVER:-}" ]; then
+            docker exec "$RP894_SQL_SERVER" sh -c \
+              'rm -f /var/opt/mssql/log/rp894_short_correlation*.xel' \
+              >/dev/null 2>&1 || true
+            docker rm -f "$RP894_SQL_SERVER" >/dev/null 2>&1 || true
+          fi
+          if [ -n "${RP894_NETWORK:-}" ]; then
+            docker network rm "$RP894_NETWORK" >/dev/null 2>&1 || true
+          fi
+          if [ -n "${RP894_SECRETS_DIR:-}" ]; then
+            rm -rf "$RP894_SECRETS_DIR"
+          fi
+
+      - name: Enforce Phase 4 evidence gates
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.load.outcome }}" = "success"

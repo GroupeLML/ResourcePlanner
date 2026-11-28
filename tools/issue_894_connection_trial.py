@@ -1,0 +1,3472 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+from pathlib import Path
+import statistics
+import time
+from datetime import datetime, timedelta, timezone
+import xml.etree.ElementTree as ET
+from typing import Any
+from uuid import uuid4
+
+import httpx
+from sqlalchemy import create_engine
+
+from tools.issue_894_phase4_load import (
+    ORDINARY_RPS,
+    Credential,
+    _cookies,
+    _ensure_synthetic_resource,
+    _headers,
+    _latencies,
+    _load_credentials,
+    _sql_wait_snapshot,
+)
+
+
+DIAGNOSTIC_LABEL = "DIAGNOSTIC — NOT CERTIFICATION"
+DEFAULT_DURATION_SECONDS = 30.0
+DEFAULT_CONCURRENCY = 32
+FAILURE_RATE_MATERIAL_DELTA = 0.10
+LEGACY_LIST_SHIFTS_FINGERPRINT = "6361f6c1e9d43777"
+UNCHANGED_RESULT_FINGERPRINTS = (
+    "bb0e459d480f9470",
+    "44f262328b901259",
+)
+TARGET_RESULT_FINGERPRINTS = (
+    LEGACY_LIST_SHIFTS_FINGERPRINT,
+    *UNCHANGED_RESULT_FINGERPRINTS,
+)
+XE_SESSION_NAME = "rp894_short_correlation"
+XE_CLOCK_UNCERTAINTY_MS = 250.0
+XE_EVENT_FILE_DIRECTORY = "/var/opt/mssql/log"
+XE_EVENT_FILE_BASENAME = "rp894_short_correlation"
+XE_EVENT_FILE_SIZE_MB = 8
+XE_EVENT_FILE_ROLLOVER_COUNT = 8
+_PREPARED_EXECUTION_RPC_NAMES = frozenset(
+    {"sp_prepexec", "sp_execute", "sp_executesql"}
+)
+_PREPARED_NON_EXECUTION_RPC_NAMES = frozenset(
+    {"sp_prepare", "sp_unprepare"}
+)
+
+
+def _normalized_rpc_name(value: object) -> str:
+    text = str(value or "").casefold().replace("[", "").replace("]", "")
+    return text.rsplit(".", 1)[-1]
+
+
+def _current_result_fingerprints(
+    rows: list[dict[str, object]],
+) -> tuple[str, ...]:
+    role_fingerprints = sorted(
+        {
+            str(row.get("statement_fingerprint") or "")
+            for row in rows
+            if row.get("kind") == "dbapi_fetch"
+            and row.get("target_role") == "list_shifts_initial"
+            and str(row.get("statement_fingerprint") or "")
+        }
+    )
+    if len(role_fingerprints) == 1:
+        return (role_fingerprints[0], *UNCHANGED_RESULT_FINGERPRINTS)
+    if len(role_fingerprints) > 1:
+        return (*UNCHANGED_RESULT_FINGERPRINTS,)
+
+    legacy_observed = any(
+        row.get("kind") == "dbapi_fetch"
+        and row.get("statement_fingerprint") == LEGACY_LIST_SHIFTS_FINGERPRINT
+        for row in rows
+    )
+    if legacy_observed:
+        return (
+            LEGACY_LIST_SHIFTS_FINGERPRINT,
+            *UNCHANGED_RESULT_FINGERPRINTS,
+        )
+    return (*UNCHANGED_RESULT_FINGERPRINTS,)
+
+
+
+def _xe_connection(database_url: str):
+    engine = create_engine(database_url, pool_pre_ping=True)
+    connection = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    return engine, connection
+
+
+def _xe_event_file_pattern() -> str:
+    return (
+        f"{XE_EVENT_FILE_DIRECTORY}/{XE_EVENT_FILE_BASENAME}*.xel"
+    )
+
+
+def _xe_event_file_base() -> str:
+    return f"{XE_EVENT_FILE_DIRECTORY}/{XE_EVENT_FILE_BASENAME}.xel"
+
+
+def _xe_list_event_files(connection: object) -> list[str]:
+    rows = connection.exec_driver_sql(
+        f"""
+        EXEC master.sys.xp_dirtree
+            N'{XE_EVENT_FILE_DIRECTORY}',
+            1,
+            1
+        """
+    ).all()
+    prefix = XE_EVENT_FILE_BASENAME.casefold()
+    files = [
+        str(row[0])
+        for row in rows
+        if row
+        and row[0]
+        and len(row) > 2
+        and bool(row[2])
+        and str(row[0]).casefold().startswith(prefix)
+        and str(row[0]).casefold().endswith(".xel")
+    ]
+    return sorted(files, key=str.casefold)
+
+
+def _xe_cleanup(database_url: str) -> None:
+    engine, connection = _xe_connection(database_url)
+    try:
+        connection.exec_driver_sql(
+            f"""
+            IF EXISTS (
+                SELECT 1 FROM sys.dm_xe_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+            )
+            ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP
+            """
+        )
+        connection.exec_driver_sql(
+            f"""
+            IF EXISTS (
+                SELECT 1 FROM sys.server_event_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+            )
+            DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+            """
+        )
+    finally:
+        connection.close()
+        engine.dispose()
+
+
+def _xe_verify_files_removed(database_url: str) -> None:
+    engine, connection = _xe_connection(database_url)
+    try:
+        remaining = _xe_list_event_files(connection)
+        if remaining:
+            raise ValueError(
+                "SQL Server Extended Events diagnostic files remain"
+            )
+    finally:
+        connection.close()
+        engine.dispose()
+
+
+def _xe_start(database_url: str, output: Path) -> dict[str, object]:
+    engine, connection = _xe_connection(database_url)
+    try:
+        database_id = int(
+            connection.exec_driver_sql("SELECT DB_ID()").scalar_one()
+        )
+        connection.exec_driver_sql(
+            f"""
+            IF EXISTS (
+                SELECT 1 FROM sys.dm_xe_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+            )
+            ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP
+            """
+        )
+        connection.exec_driver_sql(
+            f"""
+            IF EXISTS (
+                SELECT 1 FROM sys.server_event_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+            )
+            DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+            """
+        )
+        if _xe_list_event_files(connection):
+            raise ValueError(
+                "stale SQL Server Extended Events files remain"
+            )
+        connection.exec_driver_sql(
+            f"""
+            CREATE EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+            ADD EVENT sqlserver.rpc_starting(
+                SET collect_statement=(0)
+                ACTION(
+                    package0.event_sequence,
+                    sqlserver.client_connection_id,
+                    sqlserver.database_id,
+                    sqlserver.session_id
+                )
+            ),
+            ADD EVENT sqlserver.rpc_completed(
+                SET collect_statement=(0)
+                ACTION(
+                    package0.event_sequence,
+                    sqlserver.client_connection_id,
+                    sqlserver.database_id,
+                    sqlserver.session_id
+                )
+            ),
+            ADD EVENT sqlserver.sql_batch_completed(
+                SET collect_batch_text=(0)
+                ACTION(
+                    package0.event_sequence,
+                    sqlserver.client_connection_id,
+                    sqlserver.database_id,
+                    sqlserver.session_id
+                )
+            ),
+            ADD EVENT sqlos.wait_info(
+                ACTION(sqlserver.database_id, sqlserver.session_id)
+                WHERE ([duration] > (1000))
+            )
+            ADD TARGET package0.event_file(
+                SET filename=N'{_xe_event_file_base()}',
+                    max_file_size=({XE_EVENT_FILE_SIZE_MB}),
+                    max_rollover_files=({XE_EVENT_FILE_ROLLOVER_COUNT})
+            )
+            WITH (
+                MAX_MEMORY=4096 KB,
+                EVENT_RETENTION_MODE=ALLOW_SINGLE_EVENT_LOSS,
+                MAX_DISPATCH_LATENCY=1 SECONDS,
+                TRACK_CAUSALITY=OFF,
+                STARTUP_STATE=OFF
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            f"ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=START"
+        )
+        started_utc = datetime.now(timezone.utc).isoformat(
+            timespec="milliseconds"
+        )
+        report = {
+            "schema": "issue-894-sqlserver-xe-start-v2",
+            "label": DIAGNOSTIC_LABEL,
+            "session_name": XE_SESSION_NAME,
+            "database_id": database_id,
+            "target": "event_file",
+            "event_file_pattern": _xe_event_file_pattern(),
+            "max_file_size_mb": XE_EVENT_FILE_SIZE_MB,
+            "max_rollover_files": XE_EVENT_FILE_ROLLOVER_COUNT,
+            "started_utc": started_utc,
+            "bounded": True,
+            "raw_sql_captured_in_evidence": False,
+            "capture_source_privacy": {
+                "rpc_starting_collect_statement": False,
+                "rpc_completed_collect_statement": False,
+                "sql_batch_completed_collect_batch_text": False,
+                "sql_text_action_enabled": False,
+            },
+            "pairing_identifiers": {
+                "event_sequence": (
+                    "package0 event ordering evidence only; not treated "
+                    "as an application execution identity"
+                ),
+                "client_connection_id": (
+                    "SQL Server client connection identity; not treated "
+                    "as a per-execution identity"
+                ),
+            },
+        }
+        _write_json(output, report)
+        return report
+    except Exception:
+        try:
+            connection.exec_driver_sql(
+                f"""
+                IF EXISTS (
+                    SELECT 1 FROM sys.dm_xe_sessions
+                    WHERE name = N'{XE_SESSION_NAME}'
+                )
+                ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP
+                """
+            )
+            connection.exec_driver_sql(
+                f"""
+                IF EXISTS (
+                    SELECT 1 FROM sys.server_event_sessions
+                    WHERE name = N'{XE_SESSION_NAME}'
+                )
+                DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+                """
+            )
+        except Exception:
+            pass
+        raise
+    finally:
+        connection.close()
+        engine.dispose()
+
+
+def _xe_value(event: ET.Element, name: str) -> str:
+    node = event.find(f"./data[@name='{name}']")
+    if node is None:
+        node = event.find(f"./action[@name='{name}']")
+    if node is None:
+        return ""
+    text_node = node.find("./text")
+    if text_node is not None and text_node.text:
+        return str(text_node.text)
+    value_node = node.find("./value")
+    if value_node is not None and value_node.text:
+        return str(value_node.text)
+    return ""
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(str(value or "0"))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_xe_event_xml(
+    event_xml: str,
+    *,
+    database_id: int,
+) -> dict[str, object] | None:
+    node = ET.fromstring(event_xml)
+    event_name = str(node.attrib.get("name") or "")
+    timestamp = str(node.attrib.get("timestamp") or "")
+    event_database_id = _safe_int(_xe_value(node, "database_id"))
+    if event_database_id and event_database_id != database_id:
+        return None
+    session_id = _safe_int(_xe_value(node, "session_id"))
+    if not session_id:
+        return None
+    if event_name in {
+        "rpc_starting",
+        "rpc_completed",
+        "sql_batch_completed",
+    }:
+        is_rpc = event_name.startswith("rpc_")
+        completed = event_name != "rpc_starting"
+        return {
+            "event": event_name,
+            "execution_category": (
+                "prepared_rpc" if is_rpc else "direct_batch"
+            ),
+            "timestamp_utc": timestamp,
+            "session_id": session_id,
+            "database_id": event_database_id,
+            "event_sequence": _safe_int(
+                _xe_value(node, "event_sequence")
+            ),
+            "client_connection_id": str(
+                _xe_value(node, "client_connection_id") or ""
+            ),
+            "duration_us": (
+                _safe_int(_xe_value(node, "duration"))
+                if completed
+                else 0
+            ),
+            "cpu_us": (
+                _safe_int(_xe_value(node, "cpu_time"))
+                if completed
+                else 0
+            ),
+            "logical_reads": (
+                _safe_int(_xe_value(node, "logical_reads"))
+                if completed
+                else 0
+            ),
+            "physical_reads": (
+                _safe_int(_xe_value(node, "physical_reads"))
+                if completed
+                else 0
+            ),
+            "row_count": (
+                _safe_int(_xe_value(node, "row_count"))
+                if completed
+                else 0
+            ),
+            "object_name": (
+                str(_xe_value(node, "object_name") or "")
+                if is_rpc
+                else ""
+            ),
+        }
+    if event_name == "wait_info":
+        return {
+            "event": "wait_info",
+            "timestamp_utc": timestamp,
+            "session_id": session_id,
+            "database_id": event_database_id,
+            "wait_type": str(_xe_value(node, "wait_type") or "UNKNOWN"),
+            "duration_ms": float(
+                _safe_int(_xe_value(node, "duration"))
+            ),
+            "opcode": str(_xe_value(node, "opcode") or ""),
+        }
+    return None
+
+
+def _ordered_xe_file_rows(
+    rows: list[object],
+) -> list[object]:
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row[0] or "").casefold(),
+            _safe_int(row[1]),
+        ),
+    )
+
+
+def _xe_stop_collect(database_url: str, output: Path) -> dict[str, object]:
+    engine, connection = _xe_connection(database_url)
+    capture: dict[str, object] | None = None
+    cleanup_error = ""
+    try:
+        database_id = int(
+            connection.exec_driver_sql("SELECT DB_ID()").scalar_one()
+        )
+        session_dropped = _safe_int(
+            connection.exec_driver_sql(
+                f"""
+                SELECT dropped_event_count
+                FROM sys.dm_xe_sessions
+                WHERE name = N'{XE_SESSION_NAME}'
+                """
+            ).scalar_one()
+        )
+        connection.exec_driver_sql(
+            f"ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP"
+        )
+        time.sleep(1.2)
+        files = _xe_list_event_files(connection)
+        if not files:
+            raise ValueError(
+                "SQL Server Extended Events event file is missing"
+            )
+        if len(files) >= XE_EVENT_FILE_ROLLOVER_COUNT:
+            raise ValueError(
+                "SQL Server Extended Events bounded file retention exhausted"
+            )
+
+        rows = _ordered_xe_file_rows(
+            list(
+                connection.exec_driver_sql(
+                    f"""
+                    SELECT
+                        file_name,
+                        file_offset,
+                        CAST(event_data AS nvarchar(max)) AS event_xml
+                    FROM sys.fn_xe_file_target_read_file(
+                        N'{_xe_event_file_pattern()}',
+                        NULL,
+                        NULL,
+                        NULL
+                    )
+                    """
+                ).all()
+            )
+        )
+        if not rows:
+            raise ValueError(
+                "SQL Server Extended Events event files contain no events"
+            )
+
+        read_files: list[str] = []
+        events: list[dict[str, object]] = []
+        parse_failures = 0
+        for row in rows:
+            file_name = str(row[0] or "")
+            if file_name and file_name not in read_files:
+                read_files.append(file_name)
+            try:
+                parsed = _parse_xe_event_xml(
+                    str(row[2] or ""),
+                    database_id=database_id,
+                )
+            except (ET.ParseError, ValueError):
+                parse_failures += 1
+                continue
+            if parsed is not None:
+                events.append(parsed)
+
+        listed_names = {
+            name.casefold() for name in files
+        }
+        read_names = {
+            Path(name).name.casefold() for name in read_files
+        }
+        missing_rollover_files = sorted(listed_names - read_names)
+        unexpected_read_files = sorted(read_names - listed_names)
+        if (
+            parse_failures
+            or missing_rollover_files
+            or unexpected_read_files
+        ):
+            raise ValueError(
+                "SQL Server Extended Events event-file collection "
+                "is incomplete"
+            )
+
+        events.sort(
+            key=lambda row: str(row.get("timestamp_utc") or "")
+        )
+        capture = {
+            "schema": "issue-894-sqlserver-xe-capture-v2",
+            "label": DIAGNOSTIC_LABEL,
+            "session_name": XE_SESSION_NAME,
+            "database_id": database_id,
+            "target": "event_file",
+            "event_file_count": len(files),
+            "event_files": files,
+            "read_event_files": [
+                Path(name).name for name in read_files
+            ],
+            "max_file_size_mb": XE_EVENT_FILE_SIZE_MB,
+            "max_rollover_files": XE_EVENT_FILE_ROLLOVER_COUNT,
+            "event_count": len(events),
+            "dropped_event_count": session_dropped,
+            "session_dropped_event_count": session_dropped,
+            "file_parse_failure_count": parse_failures,
+            "missing_rollover_files": missing_rollover_files,
+            "unexpected_read_files": unexpected_read_files,
+            "truncated": False,
+            "raw_sql_captured_in_evidence": False,
+            "capture_source_privacy": {
+                "rpc_starting_collect_statement": False,
+                "rpc_completed_collect_statement": False,
+                "sql_batch_completed_collect_batch_text": False,
+                "sql_text_action_enabled": False,
+            },
+            "events": events,
+        }
+    finally:
+        try:
+            connection.exec_driver_sql(
+                f"""
+                IF EXISTS (
+                    SELECT 1 FROM sys.dm_xe_sessions
+                    WHERE name = N'{XE_SESSION_NAME}'
+                )
+                ALTER EVENT SESSION [{XE_SESSION_NAME}] ON SERVER STATE=STOP
+                """
+            )
+            connection.exec_driver_sql(
+                f"""
+                IF EXISTS (
+                    SELECT 1 FROM sys.server_event_sessions
+                    WHERE name = N'{XE_SESSION_NAME}'
+                )
+                DROP EVENT SESSION [{XE_SESSION_NAME}] ON SERVER
+                """
+            )
+        except Exception as exc:
+            cleanup_error = type(exc).__name__
+        connection.close()
+        engine.dispose()
+    if capture is None:
+        raise ValueError(
+            "SQL Server Extended Events capture was not collected"
+        )
+    capture["session_cleanup_succeeded"] = not cleanup_error
+    capture["cleanup_succeeded"] = False
+    capture["cleanup_error_type"] = cleanup_error
+    _write_json(output, capture)
+    if _safe_int(capture.get("dropped_event_count")) > 0:
+        raise ValueError(
+            "SQL Server Extended Events reported dropped events"
+        )
+    if cleanup_error:
+        raise ValueError(
+            "SQL Server Extended Events session cleanup failed"
+        )
+    return capture
+
+
+def _xe_finalize_capture_cleanup(
+    database_url: str,
+    capture_path: Path,
+) -> dict[str, object]:
+    capture = json.loads(capture_path.read_text(encoding="utf-8"))
+    if capture.get("session_cleanup_succeeded") is not True:
+        raise ValueError("XE session cleanup was not successful")
+    _xe_verify_files_removed(database_url)
+    capture["cleanup_succeeded"] = True
+    capture["event_files_removed"] = True
+    _write_json(capture_path, capture)
+    return capture
+
+
+def _parse_utc(value: object) -> datetime:
+    text = str(value or "").strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _count_distribution(values: list[float]) -> dict[str, float | int]:
+    latency_shape = _latencies(values)
+    return {
+        "count": int(latency_shape["count"]),
+        "p50": float(latency_shape["p50_ms"]),
+        "p95": float(latency_shape["p95_ms"]),
+        "max": float(latency_shape["max_ms"]),
+        "mean": float(latency_shape["mean_ms"]),
+    }
+
+
+def _physical_connection_lifetimes(
+    trace_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    probes = [
+        dict(row)
+        for row in trace_rows
+        if row.get("kind") == "spid_probe"
+        and _safe_int(row.get("spid")) > 0
+        and _safe_int(row.get("connection_id")) > 0
+        and _safe_int(row.get("connection_execution_sequence")) == 1
+    ]
+    lifetimes: list[dict[str, object]] = []
+    for probe in probes:
+        connection_id = _safe_int(probe.get("connection_id"))
+        spid = _safe_int(probe.get("spid"))
+        related = [
+            row
+            for row in trace_rows
+            if _safe_int(row.get("connection_id")) == connection_id
+        ]
+        returns = [
+            row
+            for row in related
+            if row.get("kind") == "connection_return"
+        ]
+        if returns:
+            end_utc = max(
+                _parse_utc(row.get("timestamp_utc"))
+                for row in returns
+            )
+        elif related:
+            end_utc = max(
+                _parse_utc(row.get("timestamp_utc"))
+                for row in related
+                if row.get("timestamp_utc")
+            )
+        else:
+            end_utc = _parse_utc(probe.get("timestamp_utc"))
+        lifetimes.append({
+            "connection_id": connection_id,
+            "spid": spid,
+            "start_utc": _parse_utc(probe.get("timestamp_utc")),
+            "end_utc": end_utc,
+        })
+    lifetimes.sort(
+        key=lambda row: (
+            int(row["spid"]),
+            row["start_utc"],
+            int(row["connection_id"]),
+        )
+    )
+    return lifetimes
+
+
+def _application_execution_markers(
+    trace_rows: list[dict[str, object]],
+    *,
+    connection_id: int,
+    spid: int,
+) -> list[dict[str, object]]:
+    markers = [
+        dict(row)
+        for row in trace_rows
+        if _safe_int(row.get("connection_id")) == connection_id
+        and _safe_int(row.get("spid")) == spid
+        and row.get("kind") in {"spid_probe", "statement_start"}
+        and _safe_int(row.get("connection_execution_sequence")) > 0
+    ]
+    markers.sort(
+        key=lambda row: _safe_int(
+            row.get("connection_execution_sequence")
+        )
+    )
+    expected = list(range(1, len(markers) + 1))
+    observed = [
+        _safe_int(row.get("connection_execution_sequence"))
+        for row in markers
+    ]
+    if observed != expected:
+        return []
+    return markers
+
+
+def _resolve_probe_server_anchor(
+    executions: list[dict[str, object]],
+    probe: dict[str, object],
+) -> tuple[int | None, str]:
+    probe_value = probe.get("timestamp_utc")
+    if not probe_value:
+        return None, "probe_timestamp_missing"
+    try:
+        probe_utc = _parse_utc(probe_value)
+    except (TypeError, ValueError):
+        return None, "probe_timestamp_invalid"
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    candidates: list[tuple[int, datetime]] = []
+    for index, event in enumerate(executions):
+        if event.get("execution_category") != "direct_batch":
+            continue
+        if _safe_int(event.get("row_count")) != 1:
+            continue
+        try:
+            event_utc = _parse_utc(event.get("timestamp_utc"))
+        except (TypeError, ValueError):
+            continue
+        if probe_utc - margin <= event_utc <= probe_utc:
+            candidates.append((index, event_utc))
+    if not candidates:
+        return None, "probe_server_execution_missing"
+    latest_utc = max(event_utc for _, event_utc in candidates)
+    latest = [
+        index
+        for index, event_utc in candidates
+        if event_utc == latest_utc
+    ]
+    if len(latest) != 1:
+        return None, "probe_server_execution_ambiguous"
+    return latest[0], ""
+
+
+def _server_execution_events(
+    capture: dict[str, object],
+    *,
+    spid: int,
+    probe: dict[str, object],
+    end_utc: datetime,
+) -> tuple[list[dict[str, object]], int, str]:
+    probe_value = probe.get("timestamp_utc")
+    if not probe_value:
+        return [], 0, "probe_timestamp_missing"
+    try:
+        probe_utc = _parse_utc(probe_value)
+    except (TypeError, ValueError):
+        return [], 0, "probe_timestamp_invalid"
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    executions: list[dict[str, object]] = []
+    ignored = 0
+    for row in capture.get("events", []):
+        if (
+            not isinstance(row, dict)
+            or _safe_int(row.get("session_id")) != spid
+        ):
+            continue
+        try:
+            event_time = _parse_utc(row.get("timestamp_utc"))
+        except (TypeError, ValueError):
+            continue
+        if not (
+            probe_utc - margin
+            <= event_time
+            <= end_utc + margin
+        ):
+            continue
+        event_kind = str(row.get("event") or "")
+        if event_kind == "sql_batch_completed":
+            execution = dict(row)
+            execution["execution_category"] = "direct_batch"
+            executions.append(execution)
+            continue
+        if event_kind != "rpc_completed":
+            continue
+        name = _normalized_rpc_name(row.get("object_name"))
+        if name in _PREPARED_EXECUTION_RPC_NAMES:
+            execution = dict(row)
+            execution["execution_category"] = "prepared_rpc"
+            executions.append(execution)
+        else:
+            ignored += 1
+    executions.sort(key=lambda row: str(row.get("timestamp_utc") or ""))
+    anchor_index, anchor_error = _resolve_probe_server_anchor(
+        executions,
+        probe,
+    )
+    if anchor_index is None:
+        return [], ignored, anchor_error
+    anchored = executions[anchor_index:]
+    for sequence, event in enumerate(anchored, start=1):
+        event["server_execution_sequence"] = sequence
+    return anchored, ignored, ""
+
+
+def _fetch_time_consistent(
+    app_fetch: dict[str, object],
+    app_statement: dict[str, object],
+    server_event: dict[str, object],
+) -> bool:
+    statement_value = app_statement.get("timestamp_utc")
+    fetch_value = app_fetch.get("timestamp_utc")
+    server_value = server_event.get("timestamp_utc")
+    if not statement_value or not fetch_value or not server_value:
+        return False
+    try:
+        statement_start = _parse_utc(statement_value)
+        fetch_completed = _parse_utc(fetch_value)
+        server_completed = _parse_utc(server_value)
+    except (TypeError, ValueError):
+        return False
+    if fetch_completed < statement_start:
+        return False
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    return (
+        statement_start - margin
+        <= server_completed
+        <= fetch_completed + margin
+    )
+
+
+def _execution_signature(
+    event: dict[str, object],
+) -> tuple[str, str, int]:
+    return (
+        str(event.get("execution_category") or ""),
+        _normalized_rpc_name(event.get("object_name")),
+        _safe_int(event.get("row_count")),
+    )
+
+
+def _statement_completion_lookup(
+    trace_rows: list[dict[str, object]],
+) -> dict[tuple[int, int], str]:
+    current: dict[int, tuple[int, str]] = {}
+    completed: dict[tuple[int, int], str] = {}
+    for row in trace_rows:
+        connection_id = _safe_int(row.get("connection_id"))
+        if connection_id <= 0:
+            continue
+        kind = str(row.get("kind") or "")
+        if kind == "statement_start":
+            sequence = _safe_int(
+                row.get("connection_execution_sequence")
+            )
+            if sequence > 0:
+                current[connection_id] = (
+                    sequence,
+                    str(row.get("statement_fingerprint") or ""),
+                )
+            continue
+        if kind != "statement_end":
+            continue
+        active = current.get(connection_id)
+        if active is None:
+            continue
+        sequence, fingerprint = active
+        if (
+            fingerprint
+            and str(row.get("statement_fingerprint") or "")
+            != fingerprint
+        ):
+            continue
+        completed[(connection_id, sequence)] = str(
+            row.get("timestamp_utc") or ""
+        )
+        current.pop(connection_id, None)
+    return completed
+
+
+def _aligned_execution_references(
+    marker_by_connection: dict[int, list[dict[str, object]]],
+    server_by_connection: dict[int, list[dict[str, object]]],
+    sequence_alignment_failures: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    failed_connections = {
+        _safe_int(row.get("connection_id"))
+        for row in sequence_alignment_failures
+        if _safe_int(row.get("connection_id")) > 0
+    }
+    observations: dict[
+        str,
+        list[tuple[str, str, int]],
+    ] = {}
+    for connection_id, markers in marker_by_connection.items():
+        if connection_id in failed_connections:
+            continue
+        events = server_by_connection.get(connection_id, [])
+        if not markers or len(markers) != len(events):
+            continue
+        for marker, event in zip(markers, events):
+            if marker.get("kind") != "statement_start":
+                continue
+            fingerprint = str(
+                marker.get("statement_fingerprint") or ""
+            )
+            if not fingerprint:
+                continue
+            observations.setdefault(fingerprint, []).append(
+                _execution_signature(event)
+            )
+
+    references: dict[str, dict[str, object]] = {}
+    for fingerprint, values in observations.items():
+        categories = {
+            (category, rpc_name)
+            for category, rpc_name, _row_count in values
+        }
+        row_counts = {row_count for _, _, row_count in values}
+        stable_category = (
+            next(iter(categories))
+            if len(values) >= 2 and len(categories) == 1
+            else None
+        )
+        references[fingerprint] = {
+            "observation_count": len(values),
+            "stable_execution_category": (
+                stable_category[0]
+                if stable_category is not None
+                else ""
+            ),
+            "stable_normalized_rpc_name": (
+                stable_category[1]
+                if stable_category is not None
+                else ""
+            ),
+            "stable_row_count": (
+                next(iter(row_counts))
+                if len(values) >= 2 and len(row_counts) == 1
+                else None
+            ),
+        }
+    return references
+
+
+def _reference_match(
+    reference: dict[str, object] | None,
+    event: dict[str, object] | None,
+) -> bool | None:
+    if not reference or event is None:
+        return None
+    expected_category = str(
+        reference.get("stable_execution_category") or ""
+    )
+    expected_rpc = str(
+        reference.get("stable_normalized_rpc_name") or ""
+    )
+    if not expected_category:
+        return None
+    category, rpc_name, row_count = _execution_signature(event)
+    if category != expected_category or rpc_name != expected_rpc:
+        return False
+    stable_row_count = reference.get("stable_row_count")
+    if (
+        stable_row_count is not None
+        and row_count != _safe_int(stable_row_count)
+    ):
+        return False
+    return True
+
+
+def _bounded_execution_divergence_evidence(
+    *,
+    trace_rows: list[dict[str, object]],
+    capture: dict[str, object],
+    app_fetches: list[dict[str, object]],
+    marker_by_connection: dict[int, list[dict[str, object]]],
+    server_by_connection: dict[int, list[dict[str, object]]],
+    sequence_alignment_failures: list[dict[str, object]],
+    row_count_mismatches: list[dict[str, object]],
+    timing_inconsistencies: list[dict[str, object]],
+    unmatched_app: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    del row_count_mismatches, timing_inconsistencies, unmatched_app
+    evidence: list[dict[str, object]] = []
+    references = _aligned_execution_references(
+        marker_by_connection,
+        server_by_connection,
+        sequence_alignment_failures,
+    )
+    statement_completions = _statement_completion_lookup(trace_rows)
+    fetch_by_key = {
+        (
+            _safe_int(row.get("connection_id")),
+            _safe_int(row.get("connection_execution_sequence")),
+        ): row
+        for row in app_fetches
+    }
+
+    for failure in sequence_alignment_failures:
+        if failure.get("reason") != "execution_count_mismatch":
+            continue
+        connection_id = _safe_int(failure.get("connection_id"))
+        spid = _safe_int(failure.get("spid"))
+        markers = marker_by_connection.get(connection_id, [])
+        server_events = server_by_connection.get(connection_id, [])
+
+        candidate_sequence = 0
+        candidate_classification = "execution_divergence_ambiguous"
+        candidate_reference: dict[str, object] | None = None
+        candidate_event: dict[str, object] | None = None
+        preceding_aligned = 0
+
+        for marker in markers:
+            sequence = _safe_int(
+                marker.get("connection_execution_sequence")
+            )
+            if sequence <= 0 or marker.get("kind") == "spid_probe":
+                continue
+            event = (
+                server_events[sequence - 1]
+                if sequence <= len(server_events)
+                else None
+            )
+            fingerprint = str(
+                marker.get("statement_fingerprint") or ""
+            )
+            reference = references.get(fingerprint)
+            matched = _reference_match(reference, event)
+            if matched is True:
+                preceding_aligned = sequence
+                continue
+            if matched is False:
+                candidate_sequence = sequence
+                candidate_classification = (
+                    "participating_server_execution_mismatch"
+                )
+                candidate_reference = reference
+                candidate_event = event
+                break
+            if event is None and reference and str(
+                reference.get("stable_execution_category") or ""
+            ):
+                candidate_sequence = sequence
+                candidate_classification = (
+                    "application_execution_without_observed_server_execution"
+                )
+                candidate_reference = reference
+                candidate_event = None
+                break
+
+        if candidate_sequence <= 0:
+            candidate_sequence = max(
+                1,
+                min(len(markers), len(server_events) + 1),
+            )
+            if candidate_sequence <= len(markers):
+                marker = markers[candidate_sequence - 1]
+                candidate_reference = references.get(
+                    str(marker.get("statement_fingerprint") or "")
+                )
+            candidate_event = (
+                server_events[candidate_sequence - 1]
+                if candidate_sequence <= len(server_events)
+                else None
+            )
+
+        lower = max(1, candidate_sequence - 2)
+        upper = min(len(markers), candidate_sequence + 2)
+        app_window: list[dict[str, object]] = []
+        for marker in markers:
+            sequence = _safe_int(
+                marker.get("connection_execution_sequence")
+            )
+            if not lower <= sequence <= upper:
+                continue
+            fetch = fetch_by_key.get((connection_id, sequence))
+            item: dict[str, object] = {
+                "connection_execution_sequence": sequence,
+                "kind": str(marker.get("kind") or ""),
+                "timestamp_utc": str(marker.get("timestamp_utc") or ""),
+                "statement_fingerprint": str(
+                    marker.get("statement_fingerprint") or ""
+                ),
+            }
+            completion = statement_completions.get(
+                (connection_id, sequence)
+            )
+            if completion:
+                item["statement_completion_utc"] = completion
+            if fetch is not None:
+                item["fetch_timestamp_utc"] = str(
+                    fetch.get("timestamp_utc") or ""
+                )
+                item["fetched_row_count"] = _safe_int(
+                    fetch.get("fetched_row_count")
+                )
+                item["target_role"] = str(
+                    fetch.get("target_role") or ""
+                )
+            reference = references.get(
+                str(marker.get("statement_fingerprint") or "")
+            )
+            if reference:
+                item["aligned_reference"] = reference
+            event = (
+                server_events[sequence - 1]
+                if sequence <= len(server_events)
+                else None
+            )
+            item["same_ordinal_reference_match"] = _reference_match(
+                reference,
+                event,
+            )
+            app_window.append(item)
+
+        server_window: list[dict[str, object]] = []
+        for event in server_events:
+            sequence = _safe_int(event.get("server_execution_sequence"))
+            if not lower <= sequence <= upper:
+                continue
+            category, rpc_name, row_count = _execution_signature(event)
+            server_window.append({
+                "server_execution_sequence": sequence,
+                "timestamp_utc": str(event.get("timestamp_utc") or ""),
+                "event": str(event.get("event") or ""),
+                "execution_category": category,
+                "normalized_rpc_name": rpc_name,
+                "row_count": row_count,
+            })
+
+        candidate_marker = (
+            markers[candidate_sequence - 1]
+            if 0 < candidate_sequence <= len(markers)
+            else None
+        )
+        candidate_time = None
+        if candidate_marker is not None:
+            try:
+                candidate_time = _parse_utc(
+                    candidate_marker.get("timestamp_utc")
+                )
+            except (TypeError, ValueError):
+                candidate_time = None
+
+        excluded_candidates: list[
+            tuple[float, datetime, str, dict[str, object]]
+        ] = []
+        if candidate_time is not None:
+            for row in capture.get("events", []):
+                if (
+                    not isinstance(row, dict)
+                    or row.get("event") != "rpc_completed"
+                    or _safe_int(row.get("session_id")) != spid
+                ):
+                    continue
+                name = _normalized_rpc_name(row.get("object_name"))
+                if name in _PREPARED_EXECUTION_RPC_NAMES:
+                    continue
+                try:
+                    event_utc = _parse_utc(row.get("timestamp_utc"))
+                except (TypeError, ValueError):
+                    continue
+                distance_ms = abs(
+                    (event_utc - candidate_time).total_seconds() * 1000.0
+                )
+                excluded_candidates.append(
+                    (distance_ms, event_utc, name, row)
+                )
+        excluded_candidates.sort(
+            key=lambda value: (
+                value[0],
+                value[1],
+                value[2],
+            )
+        )
+        excluded_rpc_window = [
+            {
+                "distance_from_candidate_ms": round(distance_ms, 3),
+                "timestamp_utc": str(row.get("timestamp_utc") or ""),
+                "normalized_rpc_name": name,
+                "row_count": _safe_int(row.get("row_count")),
+            }
+            for distance_ms, _event_utc, name, row
+            in excluded_candidates[:8]
+        ]
+
+        next_reference = None
+        current_matches_next_reference = None
+        if (
+            candidate_event is not None
+            and candidate_sequence < len(markers)
+        ):
+            next_marker = markers[candidate_sequence]
+            next_reference = references.get(
+                str(next_marker.get("statement_fingerprint") or "")
+            )
+            current_matches_next_reference = _reference_match(
+                next_reference,
+                candidate_event,
+            )
+
+        evidence.append({
+            "connection_id": connection_id,
+            "spid": spid,
+            "diagnostic_window_anchor_sequence": candidate_sequence,
+            "diagnostic_window_basis": (
+                "earliest same-ordinal association that is not supported "
+                "by a stable execution signature learned only from "
+                "count-aligned physical connections"
+            ),
+            "classification": candidate_classification,
+            "cause_certainty": "ambiguous",
+            "preceding_reference_aligned_through_sequence": (
+                preceding_aligned
+            ),
+            "candidate_aligned_reference": candidate_reference,
+            "candidate_server_signature": (
+                {
+                    "execution_category": _execution_signature(
+                        candidate_event
+                    )[0],
+                    "normalized_rpc_name": _execution_signature(
+                        candidate_event
+                    )[1],
+                    "row_count": _execution_signature(
+                        candidate_event
+                    )[2],
+                }
+                if candidate_event is not None
+                else None
+            ),
+            "next_application_aligned_reference": next_reference,
+            "candidate_server_matches_next_reference": (
+                current_matches_next_reference
+            ),
+            "application_window": app_window,
+            "server_window": server_window,
+            "excluded_rpc_window": excluded_rpc_window,
+        })
+    return evidence
+
+
+def _server_rpc_lifecycle(
+    capture: dict[str, object],
+    *,
+    spid: int,
+) -> dict[str, object]:
+    rpc_events = [
+        dict(row)
+        for row in capture.get("events", [])
+        if isinstance(row, dict)
+        and _safe_int(row.get("session_id")) == spid
+        and row.get("event") in {"rpc_starting", "rpc_completed"}
+    ]
+    rpc_events.sort(
+        key=lambda row: (
+            _safe_int(row.get("event_sequence"))
+            if _safe_int(row.get("event_sequence")) > 0
+            else 2**63 - 1,
+            str(row.get("timestamp_utc") or ""),
+        )
+    )
+    pending: dict[
+        tuple[str, str],
+        list[dict[str, object]],
+    ] = {}
+    pairs: list[dict[str, object]] = []
+    ambiguous_completions: list[dict[str, object]] = []
+    orphan_completions: list[dict[str, object]] = []
+    for row in rpc_events:
+        key = (
+            str(row.get("client_connection_id") or ""),
+            _normalized_rpc_name(row.get("object_name")),
+        )
+        if row.get("event") == "rpc_starting":
+            pending.setdefault(key, []).append(row)
+            continue
+        starts = pending.get(key, [])
+        if len(starts) == 1:
+            start = starts.pop()
+            pairs.append({
+                "client_connection_id": key[0],
+                "normalized_rpc_name": key[1],
+                "start_event_sequence": _safe_int(
+                    start.get("event_sequence")
+                ),
+                "completion_event_sequence": _safe_int(
+                    row.get("event_sequence")
+                ),
+                "start_timestamp_utc": str(
+                    start.get("timestamp_utc") or ""
+                ),
+                "completion_timestamp_utc": str(
+                    row.get("timestamp_utc") or ""
+                ),
+                "completion_row_count": _safe_int(
+                    row.get("row_count")
+                ),
+            })
+        elif len(starts) > 1:
+            ambiguous_completions.append({
+                "client_connection_id": key[0],
+                "normalized_rpc_name": key[1],
+                "completion_event_sequence": _safe_int(
+                    row.get("event_sequence")
+                ),
+                "pending_start_count": len(starts),
+            })
+        else:
+            orphan_completions.append({
+                "client_connection_id": key[0],
+                "normalized_rpc_name": key[1],
+                "completion_event_sequence": _safe_int(
+                    row.get("event_sequence")
+                ),
+            })
+    unmatched_starts = [
+        {
+            "client_connection_id": key[0],
+            "normalized_rpc_name": key[1],
+            "start_event_sequence": _safe_int(
+                start.get("event_sequence")
+            ),
+            "start_timestamp_utc": str(
+                start.get("timestamp_utc") or ""
+            ),
+        }
+        for key, starts in pending.items()
+        for start in starts
+    ]
+    return {
+        "pairs": pairs,
+        "ambiguous_completions": ambiguous_completions,
+        "orphan_completions": orphan_completions,
+        "unmatched_starts": unmatched_starts,
+    }
+
+
+def _monotonic_rpc_assignments(
+    drivers: list[dict[str, object]],
+    pairs: list[dict[str, object]],
+) -> tuple[int, int, list[int | None] | None]:
+    candidates: list[list[int]] = []
+    margin = timedelta(milliseconds=XE_CLOCK_UNCERTAINTY_MS)
+    for driver in drivers:
+        entry = _parse_utc(driver["entry_timestamp_utc"])
+        terminal = _parse_utc(driver["terminal_timestamp_utc"])
+        expected_rpc = str(driver.get("expected_rpc") or "")
+        valid: list[int] = []
+        for index, pair in enumerate(pairs):
+            if (
+                expected_rpc
+                and str(pair.get("normalized_rpc_name") or "")
+                != expected_rpc
+            ):
+                continue
+            start = _parse_utc(pair.get("start_timestamp_utc"))
+            completion = _parse_utc(
+                pair.get("completion_timestamp_utc")
+            )
+            if (
+                entry - margin <= start <= terminal + margin
+                and entry - margin <= completion <= terminal + margin
+                and start <= completion
+            ):
+                valid.append(index)
+        candidates.append(valid)
+
+    memo: dict[
+        tuple[int, int],
+        tuple[int, int, tuple[int | None, ...] | None],
+    ] = {}
+
+    def solve(
+        driver_index: int,
+        previous_pair: int,
+    ) -> tuple[int, int, tuple[int | None, ...] | None]:
+        key = (driver_index, previous_pair)
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
+        if driver_index == len(drivers):
+            result = (0, 1, ())
+            memo[key] = result
+            return result
+
+        best = -1
+        count = 0
+        unique: tuple[int | None, ...] | None = None
+
+        options: list[int | None] = [None]
+        options.extend(
+            pair_index
+            for pair_index in candidates[driver_index]
+            if pair_index > previous_pair
+        )
+        for pair_index in options:
+            next_previous = (
+                previous_pair
+                if pair_index is None
+                else pair_index
+            )
+            suffix_best, suffix_count, suffix_solution = solve(
+                driver_index + 1,
+                next_previous,
+            )
+            matched = suffix_best + (
+                0 if pair_index is None else 1
+            )
+            if matched < best:
+                continue
+
+            option_solution = (
+                None
+                if suffix_solution is None
+                else (pair_index, *suffix_solution)
+            )
+            if matched > best:
+                best = matched
+                count = min(2, suffix_count)
+                unique = (
+                    option_solution
+                    if suffix_count == 1
+                    else None
+                )
+                continue
+
+            count = min(2, count + suffix_count)
+            unique = None
+
+        result = (best, count, unique)
+        memo[key] = result
+        return result
+
+    cardinality, count, solution = solve(0, -1)
+    return (
+        cardinality,
+        count,
+        list(solution) if solution is not None else None,
+    )
+
+
+def _execution_lifecycle_evidence(
+    *,
+    trace_rows: list[dict[str, object]],
+    capture: dict[str, object],
+    marker_by_connection: dict[int, list[dict[str, object]]],
+    server_by_connection: dict[int, list[dict[str, object]]],
+    sequence_alignment_failures: list[dict[str, object]],
+    divergence_evidence: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    references = _aligned_execution_references(
+        marker_by_connection,
+        server_by_connection,
+        sequence_alignment_failures,
+    )
+    driver_by_key: dict[
+        tuple[int, int],
+        dict[str, list[dict[str, object]]],
+    ] = {}
+    for row in trace_rows:
+        kind = str(row.get("kind") or "")
+        if kind not in {
+            "driver_execute_entry",
+            "driver_execute_return",
+            "driver_execute_error",
+        }:
+            continue
+        key = (
+            _safe_int(row.get("connection_id")),
+            _safe_int(row.get("connection_execution_sequence")),
+        )
+        if key[0] <= 0 or key[1] <= 0:
+            continue
+        driver_by_key.setdefault(
+            key,
+            {"entry": [], "return": [], "error": []},
+        )[kind.removeprefix("driver_execute_")].append(dict(row))
+
+    divergence_by_connection = {
+        _safe_int(row.get("connection_id")): row
+        for row in divergence_evidence
+    }
+    output: list[dict[str, object]] = []
+
+    for failure in sequence_alignment_failures:
+        if failure.get("reason") != "execution_count_mismatch":
+            continue
+        connection_id = _safe_int(failure.get("connection_id"))
+        spid = _safe_int(failure.get("spid"))
+        markers = marker_by_connection.get(connection_id, [])
+        divergence = divergence_by_connection.get(connection_id, {})
+        center = _safe_int(
+            divergence.get("diagnostic_window_anchor_sequence")
+        )
+        if center <= 0:
+            center = 1
+        lower = max(1, center - 2)
+        upper = min(len(markers), center + 2)
+        rpc_lifecycle = _server_rpc_lifecycle(capture, spid=spid)
+        complete_pairs = sorted(
+            rpc_lifecycle["pairs"],
+            key=lambda row: (
+                _safe_int(row.get("start_event_sequence")),
+                _safe_int(row.get("completion_event_sequence")),
+            ),
+        )
+        participating_completion_sequences = {
+            _safe_int(row.get("event_sequence"))
+            for row in server_by_connection.get(connection_id, [])
+            if _safe_int(row.get("event_sequence")) > 0
+        }
+
+        prepared_drivers: list[dict[str, object]] = []
+        execution_rows: dict[int, dict[str, object]] = {}
+
+        for marker in markers:
+            sequence = _safe_int(
+                marker.get("connection_execution_sequence")
+            )
+            if sequence <= 0 or marker.get("kind") == "spid_probe":
+                continue
+            key = (connection_id, sequence)
+            driver = driver_by_key.get(
+                key,
+                {"entry": [], "return": [], "error": []},
+            )
+            entries = driver["entry"]
+            returns = driver["return"]
+            errors = driver["error"]
+            reference = references.get(
+                str(marker.get("statement_fingerprint") or "")
+            )
+            expected_category = str(
+                (reference or {}).get(
+                    "stable_execution_category",
+                    "",
+                )
+                or ""
+            )
+            expected_rpc = str(
+                (reference or {}).get(
+                    "stable_normalized_rpc_name",
+                    "",
+                )
+                or ""
+            )
+            row: dict[str, object] = {
+                "connection_execution_sequence": sequence,
+                "statement_fingerprint": str(
+                    marker.get("statement_fingerprint") or ""
+                ),
+                "application_marker_utc": str(
+                    marker.get("timestamp_utc") or ""
+                ),
+                "driver_execute_entry": (
+                    {
+                        "timestamp_utc": str(
+                            entries[0].get("timestamp_utc") or ""
+                        )
+                    }
+                    if len(entries) == 1
+                    else None
+                ),
+                "driver_execute_terminal": (
+                    {
+                        "kind": "return" if returns else "error",
+                        "timestamp_utc": str(
+                            (returns or errors)[0].get(
+                                "timestamp_utc"
+                            )
+                            or ""
+                        ),
+                        "error_type": str(
+                            errors[0].get("error_type")
+                            if errors
+                            else ""
+                        ),
+                    }
+                    if len(returns) + len(errors) == 1
+                    else None
+                ),
+                "aligned_reference": reference,
+                "server_rpc_pair_candidates": [],
+                "server_rpc_unmatched_start_candidates": [],
+                "classification": "execution_lifecycle_ambiguous",
+            }
+            execution_rows[sequence] = row
+
+            if not entries:
+                row["classification"] = (
+                    "application_marker_without_driver_execute"
+                )
+                continue
+            if len(entries) != 1 or len(returns) + len(errors) != 1:
+                continue
+            if errors:
+                row["classification"] = "driver_execute_error"
+                continue
+            if expected_category == "direct_batch":
+                row["classification"] = (
+                    "driver_execute_observed_direct_batch_start_not_captured"
+                )
+                continue
+            if expected_category != "prepared_rpc":
+                continue
+
+            prepared_drivers.append({
+                "sequence": sequence,
+                "entry_timestamp_utc": str(
+                    entries[0].get("timestamp_utc") or ""
+                ),
+                "terminal_timestamp_utc": str(
+                    returns[0].get("timestamp_utc") or ""
+                ),
+                "expected_rpc": expected_rpc,
+            })
+
+        prepared_drivers.sort(
+            key=lambda row: _safe_int(row.get("sequence"))
+        )
+        (
+            mapping_cardinality,
+            mapping_count,
+            unique_mapping,
+        ) = _monotonic_rpc_assignments(
+            prepared_drivers,
+            complete_pairs,
+        )
+
+        if mapping_count == 1 and unique_mapping is not None:
+            margin = timedelta(
+                milliseconds=XE_CLOCK_UNCERTAINTY_MS
+            )
+            for driver, pair_index in zip(
+                prepared_drivers,
+                unique_mapping,
+            ):
+                sequence = _safe_int(driver.get("sequence"))
+                row = execution_rows[sequence]
+                if pair_index is not None:
+                    pair = complete_pairs[pair_index]
+                    row["server_rpc_pair_candidates"] = [pair]
+                    completion_sequence = _safe_int(
+                        pair.get("completion_event_sequence")
+                    )
+                    row["classification"] = (
+                        "server_start_completion_observed"
+                        if completion_sequence
+                        in participating_completion_sequences
+                        else "server_start_completion_reconstruction_omission"
+                    )
+                    continue
+
+                entry = _parse_utc(
+                    driver.get("entry_timestamp_utc")
+                )
+                terminal = _parse_utc(
+                    driver.get("terminal_timestamp_utc")
+                )
+                expected_rpc = str(
+                    driver.get("expected_rpc") or ""
+                )
+                compatible_starts = []
+                for start in rpc_lifecycle["unmatched_starts"]:
+                    if (
+                        expected_rpc
+                        and str(
+                            start.get("normalized_rpc_name") or ""
+                        )
+                        != expected_rpc
+                    ):
+                        continue
+                    start_time = _parse_utc(
+                        start.get("start_timestamp_utc")
+                    )
+                    if (
+                        entry - margin
+                        <= start_time
+                        <= terminal + margin
+                    ):
+                        compatible_starts.append(start)
+                row[
+                    "server_rpc_unmatched_start_candidates"
+                ] = compatible_starts[:4]
+                if len(compatible_starts) == 1:
+                    row["classification"] = (
+                        "server_start_without_completion"
+                    )
+                elif not compatible_starts:
+                    row["classification"] = (
+                        "driver_execute_without_identifiable_server_start"
+                    )
+                else:
+                    row["classification"] = (
+                        "execution_lifecycle_ambiguous"
+                    )
+        else:
+            for driver in prepared_drivers:
+                execution_rows[
+                    _safe_int(driver.get("sequence"))
+                ]["classification"] = (
+                    "execution_lifecycle_ambiguous"
+                )
+
+        executions = [
+            execution_rows[sequence]
+            for sequence in sorted(execution_rows)
+            if lower <= sequence <= upper
+        ]
+        candidate = next(
+            (
+                row
+                for row in executions
+                if _safe_int(
+                    row.get("connection_execution_sequence")
+                )
+                == center
+            ),
+            None,
+        )
+        output.append({
+            "connection_id": connection_id,
+            "spid": spid,
+            "candidate_sequence": center,
+            "candidate_classification": (
+                str(candidate.get("classification") or "")
+                if isinstance(candidate, dict)
+                else "execution_lifecycle_ambiguous"
+            ),
+            "prepared_driver_count": len(prepared_drivers),
+            "server_rpc_pair_count": len(complete_pairs),
+            "maximum_monotonic_mapping_cardinality": (
+                mapping_cardinality
+            ),
+            "complete_monotonic_mapping_count": mapping_count,
+            "pairing_semantics": {
+                "application_driver_identity": (
+                    "physical connection_id + "
+                    "connection_execution_sequence"
+                ),
+                "server_event_sequence": (
+                    "ordering evidence only, never treated as a "
+                    "per-execution identity"
+                ),
+                "server_client_connection_id": (
+                    "connection identity only, never treated as a "
+                    "per-execution identity"
+                ),
+                "rpc_start_completion_pairing": (
+                    "same SPID/client_connection_id/normalized RPC with "
+                    "exactly one pending start before completion"
+                ),
+                "driver_rpc_association": (
+                    "global monotonic one-to-one assignment across the "
+                    "physical lifetime; each driver and RPC pair may be "
+                    "used at most once; 250 ms is compatibility only"
+                ),
+            },
+            "rpc_pairing_ambiguities": (
+                rpc_lifecycle["ambiguous_completions"][:8]
+            ),
+            "rpc_orphan_completions": (
+                rpc_lifecycle["orphan_completions"][:8]
+            ),
+            "executions": executions,
+        })
+    return output
+
+def _server_client_correlation(
+    trace_rows: list[dict[str, object]],
+    capture: dict[str, object],
+) -> dict[str, object]:
+    target_fingerprints = _current_result_fingerprints(trace_rows)
+    app_fetches = [
+        dict(row)
+        for row in trace_rows
+        if row.get("kind") == "dbapi_fetch"
+        and str(row.get("statement_fingerprint") or "")
+        in target_fingerprints
+        and _safe_int(row.get("spid")) > 0
+        and _safe_int(row.get("connection_execution_sequence")) > 0
+    ]
+    wait_events = [
+        dict(row)
+        for row in capture.get("events", [])
+        if isinstance(row, dict) and row.get("event") == "wait_info"
+    ]
+    target_connection_ids = {
+        _safe_int(row.get("connection_id")) for row in app_fetches
+    }
+    lifetimes = [
+        row
+        for row in _physical_connection_lifetimes(trace_rows)
+        if int(row["connection_id"]) in target_connection_ids
+    ]
+
+    marker_by_connection: dict[int, list[dict[str, object]]] = {}
+    server_by_connection: dict[int, list[dict[str, object]]] = {}
+    ignored_rpc_events = 0
+    sequence_alignment_failures: list[dict[str, object]] = []
+    for lifetime in lifetimes:
+        connection_id = int(lifetime["connection_id"])
+        spid = int(lifetime["spid"])
+        markers = _application_execution_markers(
+            trace_rows,
+            connection_id=connection_id,
+            spid=spid,
+        )
+        probe = next(
+            (
+                marker
+                for marker in markers
+                if marker.get("kind") == "spid_probe"
+                and _safe_int(
+                    marker.get("connection_execution_sequence")
+                )
+                == 1
+            ),
+            None,
+        )
+        if probe is None:
+            server_events, ignored, anchor_error = (
+                [],
+                0,
+                "probe_marker_missing",
+            )
+        else:
+            server_events, ignored, anchor_error = (
+                _server_execution_events(
+                    capture,
+                    spid=spid,
+                    probe=probe,
+                    end_utc=lifetime["end_utc"],
+                )
+            )
+        marker_by_connection[connection_id] = markers
+        server_by_connection[connection_id] = server_events
+        ignored_rpc_events += ignored
+        if anchor_error:
+            sequence_alignment_failures.append({
+                "connection_id": connection_id,
+                "spid": spid,
+                "reason": anchor_error,
+                "application_execution_count": len(markers),
+                "server_execution_count": len(server_events),
+            })
+            continue
+        if not markers:
+            sequence_alignment_failures.append({
+                "connection_id": connection_id,
+                "spid": spid,
+                "reason": "application_sequence_missing_or_non_contiguous",
+                "application_execution_count": 0,
+                "server_execution_count": len(server_events),
+            })
+            continue
+        if len(markers) != len(server_events):
+            sequence_alignment_failures.append({
+                "connection_id": connection_id,
+                "spid": spid,
+                "reason": "execution_count_mismatch",
+                "application_execution_count": len(markers),
+                "server_execution_count": len(server_events),
+            })
+
+    quarantined_connection_ids = {
+        _safe_int(failure.get("connection_id"))
+        for failure in sequence_alignment_failures
+        if _safe_int(failure.get("connection_id")) > 0
+    }
+    quarantined_lifetimes = [
+        {
+            "connection_id": _safe_int(failure.get("connection_id")),
+            "spid": _safe_int(failure.get("spid")),
+            "reason": str(failure.get("reason") or ""),
+            "application_execution_count": _safe_int(
+                failure.get("application_execution_count")
+            ),
+            "server_execution_count": _safe_int(
+                failure.get("server_execution_count")
+            ),
+        }
+        for failure in sequence_alignment_failures
+        if _safe_int(failure.get("connection_id")) > 0
+    ]
+
+    server_lookup: dict[tuple[int, int], dict[str, object]] = {}
+    for connection_id, events in server_by_connection.items():
+        for event in events:
+            key = (
+                connection_id,
+                _safe_int(event.get("server_execution_sequence")),
+            )
+            if key in server_lookup:
+                sequence_alignment_failures.append({
+                    "connection_id": connection_id,
+                    "spid": _safe_int(event.get("session_id")),
+                    "reason": "duplicate_server_execution_sequence",
+                    "server_execution_sequence": key[1],
+                })
+            server_lookup[key] = event
+
+    app_statement_lookup: dict[tuple[int, int], dict[str, object]] = {}
+    for connection_id, markers in marker_by_connection.items():
+        for marker in markers:
+            sequence = _safe_int(
+                marker.get("connection_execution_sequence")
+            )
+            key = (connection_id, sequence)
+            if marker.get("kind") == "statement_start":
+                if key in app_statement_lookup:
+                    sequence_alignment_failures.append({
+                        "connection_id": connection_id,
+                        "spid": _safe_int(marker.get("spid")),
+                        "reason": "duplicate_application_execution_sequence",
+                        "connection_execution_sequence": sequence,
+                    })
+                app_statement_lookup[key] = marker
+
+    used_server_keys: set[tuple[int, int]] = set()
+    matches: list[dict[str, object]] = []
+    unmatched_app: list[dict[str, object]] = []
+    timing_inconsistencies: list[dict[str, object]] = []
+    duplicate_mappings = 0
+    row_count_mismatches: list[dict[str, object]] = []
+    for app in sorted(
+        app_fetches,
+        key=lambda row: (
+            _safe_int(row.get("spid")),
+            _safe_int(row.get("connection_execution_sequence")),
+        ),
+    ):
+        connection_id = _safe_int(app.get("connection_id"))
+        spid = _safe_int(app.get("spid"))
+        sequence = _safe_int(
+            app.get("connection_execution_sequence")
+        )
+        key = (connection_id, sequence)
+        if connection_id in quarantined_connection_ids:
+            unmatched_app.append(app)
+            continue
+        marker = app_statement_lookup.get(key)
+        event = server_lookup.get(key)
+        if (
+            marker is None
+            or event is None
+            or str(marker.get("statement_fingerprint") or "")
+            != str(app.get("statement_fingerprint") or "")
+        ):
+            unmatched_app.append(app)
+            continue
+        if key in used_server_keys:
+            duplicate_mappings += 1
+            unmatched_app.append(app)
+            continue
+        if not _fetch_time_consistent(app, marker, event):
+            timing_inconsistencies.append({
+                "spid": spid,
+                "connection_execution_sequence": sequence,
+                "statement_fingerprint": str(
+                    app.get("statement_fingerprint") or ""
+                ),
+                "application_fetch_end_utc": str(
+                    app.get("timestamp_utc") or ""
+                ),
+                "server_completion_utc": str(
+                    event.get("timestamp_utc") or ""
+                ),
+            })
+            unmatched_app.append(app)
+            continue
+        app_rows = _safe_int(app.get("fetched_row_count"))
+        server_rows = _safe_int(event.get("row_count"))
+        if app_rows != server_rows:
+            row_count_mismatches.append({
+                "spid": spid,
+                "connection_execution_sequence": sequence,
+                "statement_fingerprint": str(
+                    app.get("statement_fingerprint") or ""
+                ),
+                "application_row_count": app_rows,
+                "server_row_count": server_rows,
+            })
+            unmatched_app.append(app)
+            continue
+
+        used_server_keys.add(key)
+        event_end = _parse_utc(event.get("timestamp_utc"))
+        event_start = event_end - timedelta(
+            microseconds=_safe_int(event.get("duration_us"))
+        )
+        waits: dict[str, list[float]] = {}
+        for wait in wait_events:
+            if _safe_int(wait.get("session_id")) != spid:
+                continue
+            wait_time = _parse_utc(wait.get("timestamp_utc"))
+            if event_start <= wait_time <= event_end:
+                waits.setdefault(
+                    str(wait.get("wait_type") or "UNKNOWN"),
+                    [],
+                ).append(float(wait.get("duration_ms") or 0.0))
+
+        matches.append({
+            "statement_fingerprint": str(
+                app.get("statement_fingerprint") or ""
+            ),
+            "request_id": str(app.get("request_id") or ""),
+            "connection_id": connection_id,
+            "spid": spid,
+            "statement_sequence": _safe_int(
+                app.get("statement_sequence")
+            ),
+            "connection_execution_sequence": sequence,
+            "server_execution_sequence": _safe_int(
+                event.get("server_execution_sequence")
+            ),
+            "fetch_elapsed_ms": float(
+                app.get("fetch_elapsed_ms") or 0.0
+            ),
+            "server_duration_ms": (
+                _safe_int(event.get("duration_us")) / 1000.0
+            ),
+            "server_cpu_ms": (
+                _safe_int(event.get("cpu_us")) / 1000.0
+            ),
+            "logical_reads": _safe_int(event.get("logical_reads")),
+            "physical_reads": _safe_int(event.get("physical_reads")),
+            "row_count": _safe_int(event.get("row_count")),
+            "execution_category": str(
+                event.get("execution_category") or ""
+            ),
+            "rpc_object_name": str(
+                event.get("object_name") or ""
+            ),
+            "waits_ms": {
+                wait_type: _latencies(values)
+                for wait_type, values in sorted(waits.items())
+            },
+            "_wait_durations_ms": waits,
+        })
+
+    unmatched_server = [
+        event
+        for connection_id, events in server_by_connection.items()
+        for event in events
+        if (
+            connection_id,
+            _safe_int(event.get("server_execution_sequence")),
+        )
+        not in used_server_keys
+    ]
+
+    by_fingerprint: dict[str, dict[str, object]] = {}
+    for fingerprint in target_fingerprints:
+        values = [
+            match
+            for match in matches
+            if match["statement_fingerprint"] == fingerprint
+        ]
+        waits: dict[str, list[float]] = {}
+        for match in values:
+            for wait_type, durations in match[
+                "_wait_durations_ms"
+            ].items():
+                waits.setdefault(wait_type, []).extend(
+                    float(value) for value in durations
+                )
+        by_fingerprint[fingerprint] = {
+            "correlated_execution_count": len(values),
+            "server_duration_ms": _latencies(
+                [
+                    float(row["server_duration_ms"])
+                    for row in values
+                ]
+            ),
+            "server_cpu_ms": _latencies(
+                [float(row["server_cpu_ms"]) for row in values]
+            ),
+            "logical_reads": _count_distribution(
+                [float(row["logical_reads"]) for row in values]
+            ),
+            "physical_reads": _count_distribution(
+                [float(row["physical_reads"]) for row in values]
+            ),
+            "row_count": _count_distribution(
+                [float(row["row_count"]) for row in values]
+            ),
+            "waits_ms": {
+                wait_type: _latencies(durations)
+                for wait_type, durations in sorted(waits.items())
+            },
+            "spids": sorted(
+                {int(row["spid"]) for row in values}
+            ),
+            "prepared_rpc_names": sorted({
+                str(row["rpc_object_name"])
+                for row in values
+                if str(row["rpc_object_name"])
+            }),
+        }
+
+    aligned_server_events = [
+        event
+        for events in server_by_connection.values()
+        for event in events
+    ]
+    prepared_execution_observed = any(
+        event.get("execution_category") == "prepared_rpc"
+        for event in aligned_server_events
+    )
+    direct_batch_execution_observed = any(
+        event.get("execution_category") == "direct_batch"
+        for event in aligned_server_events
+    )
+    dropped = _safe_int(capture.get("dropped_event_count"))
+    truncated = bool(capture.get("truncated"))
+    cleanup_succeeded = capture.get("cleanup_succeeded") is True
+    divergence_evidence = _bounded_execution_divergence_evidence(
+        trace_rows=trace_rows,
+        capture=capture,
+        app_fetches=app_fetches,
+        marker_by_connection=marker_by_connection,
+        server_by_connection=server_by_connection,
+        sequence_alignment_failures=sequence_alignment_failures,
+        row_count_mismatches=row_count_mismatches,
+        timing_inconsistencies=timing_inconsistencies,
+        unmatched_app=unmatched_app,
+    )
+
+    lifecycle_evidence = _execution_lifecycle_evidence(
+        trace_rows=trace_rows,
+        capture=capture,
+        marker_by_connection=marker_by_connection,
+        server_by_connection=server_by_connection,
+        sequence_alignment_failures=sequence_alignment_failures,
+        divergence_evidence=divergence_evidence,
+    )
+
+    complete = (
+        len(target_fingerprints) == 3
+        and all(
+            int(
+                by_fingerprint[fingerprint][
+                    "correlated_execution_count"
+                ]
+            )
+            > 0
+            for fingerprint in target_fingerprints
+        )
+        and not unmatched_app
+        and not sequence_alignment_failures
+        and not timing_inconsistencies
+        and not row_count_mismatches
+        and duplicate_mappings == 0
+        and dropped == 0
+        and not truncated
+        and cleanup_succeeded
+        and prepared_execution_observed
+        and direct_batch_execution_observed
+    )
+    return {
+        "schema": "issue-894-server-client-correlation-v2",
+        "label": DIAGNOSTIC_LABEL,
+        "target_fingerprints": target_fingerprints,
+        "targets": by_fingerprint,
+        "correlated_execution_count": len(matches),
+        "unmatched_server_events": len(unmatched_server),
+        "unmatched_application_fetches": len(unmatched_app),
+        "ambiguous_correlations": duplicate_mappings,
+        "sequence_alignment_failures": sequence_alignment_failures,
+        "quarantined_lifetimes": quarantined_lifetimes,
+        "quarantined_connection_count": len(
+            quarantined_connection_ids
+        ),
+        "interpretable_target_aggregates_exclude_quarantined": True,
+        "timing_inconsistencies": timing_inconsistencies,
+        "row_count_mismatches": row_count_mismatches,
+        "execution_divergence_evidence": divergence_evidence,
+        "execution_lifecycle_evidence": lifecycle_evidence,
+        "ignored_non_execution_rpc_events": ignored_rpc_events,
+        "dropped_event_count": dropped,
+        "capture_truncated": truncated,
+        "cleanup_succeeded": cleanup_succeeded,
+        "prepared_execution_observed": prepared_execution_observed,
+        "direct_batch_execution_observed": (
+            direct_batch_execution_observed
+        ),
+        "physical_connection_lifetime_count": len(lifetimes),
+        "clock_uncertainty_ms": XE_CLOCK_UNCERTAINTY_MS,
+        "clock_correlation_basis": (
+            "physical-connection/SPID execution order is the primary "
+            "identity rule; server completion must also fall between the "
+            "application statement start and DBAPI fetch completion plus "
+            "the bounded UTC clock-uncertainty margin; application "
+            "monotonic clocks are never subtracted directly from SQL Server "
+            "timestamps"
+        ),
+        "complete": complete,
+    }
+
+
+def _correlate_report(
+    trial_path: Path,
+    trace_path: Path,
+    server_path: Path,
+    output: Path,
+) -> dict[str, object]:
+    report = json.loads(trial_path.read_text(encoding="utf-8"))
+    capture = json.loads(server_path.read_text(encoding="utf-8"))
+    correlation = _server_client_correlation(
+        _trace_rows(trace_path),
+        capture,
+    )
+    report["server_client_correlation"] = correlation
+    _write_json(output, report)
+    return report
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _trace_rows(path: Path | None) -> list[dict[str, object]]:
+    if path is None or not path.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _first_trace_stall(path: Path | None) -> dict[str, object] | None:
+    for row in _trace_rows(path):
+        if row.get("kind") == "first_stall_snapshot":
+            return row
+    return None
+
+
+def _operation(counter: int, resource_id: str, admin: Credential):
+    if counter % 10 == 0:
+        return (
+            "save_mutations",
+            "PATCH",
+            f"/api/v1/resources/{resource_id}",
+            _headers(admin, csrf=True),
+            {
+                "name": (
+                    "Ressource synthetique Phase 4 #894 "
+                    f"{counter % 1000:03d}"
+                )
+            },
+        )
+    if counter % 2 == 0:
+        return (
+            "planning_reads",
+            "GET",
+            "/api/v1/planning/snapshot?start=2026-01-05&end=2026-01-09",
+            _headers(admin),
+            None,
+        )
+    return (
+        "project_reads",
+        "GET",
+        "/api/v1/projects?active_only=true",
+        _headers(admin),
+        None,
+    )
+
+
+async def _trial(args: argparse.Namespace) -> dict[str, object]:
+    admin, _users = _load_credentials(args.credentials)
+    trace_file = args.trace_file
+    started = time.perf_counter()
+    stop_at = started + args.duration_seconds
+    stop_offering = asyncio.Event()
+    semaphore = asyncio.Semaphore(args.concurrency)
+    client = httpx.AsyncClient(
+        base_url=args.base_url,
+        cookies=_cookies(admin),
+        timeout=10.0,
+    )
+
+    scheduled = 0
+    started_requests = 0
+    started_in_window = 0
+    completed = 0
+    completed_in_window = 0
+    succeeded = 0
+    failed = 0
+    in_flight = 0
+    max_in_flight = 0
+    outstanding = 0
+    max_outstanding = 0
+    first_failure_monotonic: float | None = None
+    scheduling_lag_ms: list[float] = []
+    latencies: list[float] = []
+    statuses: dict[str, int] = {}
+    errors: list[dict[str, object]] = []
+    request_records: dict[str, dict[str, object]] = {}
+    operation_counts = {
+        "planning_reads": 0,
+        "project_reads": 0,
+        "save_mutations": 0,
+    }
+    tasks: list[asyncio.Task[None]] = []
+    first_stall_sql: dict[str, object] | None = None
+    first_stall_sql_lock = asyncio.Lock()
+
+    resource_id = await _ensure_synthetic_resource(client, admin)
+    reset_response = await client.patch(
+        f"/api/v1/resources/{resource_id}",
+        headers=_headers(admin, csrf=True),
+        json={"name": "Ressource synthetique Phase 4 #894 diagnostic"},
+    )
+    reset_response.raise_for_status()
+
+    async def capture_sql_stall(trigger: str) -> None:
+        nonlocal first_stall_sql
+        if first_stall_sql is not None:
+            return
+        async with first_stall_sql_lock:
+            if first_stall_sql is not None:
+                return
+            captured_at = time.perf_counter()
+            try:
+                snapshot = await asyncio.to_thread(
+                    _sql_wait_snapshot,
+                    args.database_url,
+                )
+                first_stall_sql = {
+                    "trigger": trigger,
+                    "captured_at_monotonic": captured_at,
+                    "snapshot": snapshot,
+                }
+            except Exception as exc:
+                first_stall_sql = {
+                    "trigger": trigger,
+                    "captured_at_monotonic": captured_at,
+                    "snapshot": {
+                        "available": False,
+                        "exception": type(exc).__name__,
+                        "message": str(exc)[:500],
+                    },
+                }
+
+    async def watch_stall() -> None:
+        if trace_file is None:
+            return
+        while not stop_offering.is_set() and time.perf_counter() < stop_at:
+            marker = _first_trace_stall(trace_file)
+            if marker is not None:
+                await capture_sql_stall("instrumented_first_pool_stall")
+                return
+            await asyncio.sleep(0.05)
+
+    watcher = asyncio.create_task(watch_stall())
+
+    async def one(counter: int, scheduled_at: float) -> None:
+        nonlocal started_requests, started_in_window
+        nonlocal completed, completed_in_window, succeeded, failed
+        nonlocal in_flight, max_in_flight, outstanding, first_failure_monotonic
+
+        async with semaphore:
+            actual_start = time.perf_counter()
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            started_requests += 1
+            if actual_start <= stop_at:
+                started_in_window += 1
+            scheduling_lag_ms.append(
+                max(0.0, (actual_start - scheduled_at) * 1000.0)
+            )
+
+            operation, method, path, headers, body = _operation(
+                counter,
+                resource_id,
+                admin,
+            )
+            operation_counts[operation] += 1
+            diagnostic_id = uuid4().hex[:20]
+            headers = {
+                **headers,
+                "X-RP894-Diagnostic-ID": diagnostic_id,
+            }
+            record = {
+                "diagnostic_id": diagnostic_id,
+                "counter": counter,
+                "operation": operation,
+                "method": method,
+                "client_start_monotonic": actual_start,
+                "client_timeout_monotonic": None,
+                "client_complete_monotonic": None,
+                "elapsed_ms": None,
+                "status": None,
+                "error": None,
+            }
+            request_records[diagnostic_id] = record
+            try:
+                response_started = time.perf_counter()
+                response = await client.request(
+                    method,
+                    path,
+                    headers=headers,
+                    json=body,
+                )
+                elapsed = (time.perf_counter() - response_started) * 1000.0
+                latencies.append(elapsed)
+                status = str(response.status_code)
+                statuses[status] = statuses.get(status, 0) + 1
+                record["status"] = status
+                record["elapsed_ms"] = elapsed
+                record["client_complete_monotonic"] = time.perf_counter()
+                succeeded += 1
+            except httpx.TimeoutException as exc:
+                now = time.perf_counter()
+                elapsed = max(0.0, (now - actual_start) * 1000.0)
+                latencies.append(elapsed)
+                category = (
+                    "read_timeout"
+                    if isinstance(exc, httpx.ReadTimeout)
+                    else "timeout"
+                )
+                record["error"] = category
+                record["elapsed_ms"] = elapsed
+                record["client_timeout_monotonic"] = now
+                failed += 1
+                errors.append(
+                    {
+                        "diagnostic_id": diagnostic_id,
+                        "operation": operation,
+                        "category": category,
+                        "exception": type(exc).__name__,
+                        "elapsed_ms": elapsed,
+                    }
+                )
+                if first_failure_monotonic is None:
+                    first_failure_monotonic = now
+                stop_offering.set()
+                await capture_sql_stall("client_request_error")
+                await capture_sql_stall("client_timeout")
+            except httpx.RequestError as exc:
+                now = time.perf_counter()
+                elapsed = max(0.0, (now - actual_start) * 1000.0)
+                latencies.append(elapsed)
+                record["error"] = "request_error"
+                record["elapsed_ms"] = elapsed
+                record["client_complete_monotonic"] = now
+                failed += 1
+                errors.append(
+                    {
+                        "diagnostic_id": diagnostic_id,
+                        "operation": operation,
+                        "category": "request_error",
+                        "exception": type(exc).__name__,
+                        "elapsed_ms": elapsed,
+                    }
+                )
+                if first_failure_monotonic is None:
+                    first_failure_monotonic = now
+                stop_offering.set()
+            finally:
+                completed += 1
+                if time.perf_counter() <= stop_at:
+                    completed_in_window += 1
+                in_flight -= 1
+                outstanding -= 1
+
+    interval = 1.0 / args.offered_rps
+    next_release = started
+    while next_release < stop_at and not stop_offering.is_set():
+        await asyncio.sleep(max(0.0, next_release - time.perf_counter()))
+        if stop_offering.is_set():
+            break
+        scheduled += 1
+        outstanding += 1
+        max_outstanding = max(max_outstanding, outstanding)
+        tasks.append(asyncio.create_task(one(scheduled, next_release)))
+        next_release += interval
+
+    measurement_end = min(time.perf_counter(), stop_at)
+    measurement_snapshot = {
+        "monotonic": measurement_end,
+        "scheduled": scheduled,
+        "started": started_requests,
+        "started_in_measurement_window": started_in_window,
+        "completed": completed,
+        "completed_in_measurement_window": completed_in_window,
+        "outstanding": outstanding,
+        "in_flight": in_flight,
+        "max_in_flight": max_in_flight,
+        "max_outstanding": max_outstanding,
+    }
+
+    if tasks:
+        await asyncio.gather(*tasks)
+    client_drained_at = time.perf_counter()
+    watcher.cancel()
+    await asyncio.gather(watcher, return_exceptions=True)
+    await client.aclose()
+
+    observation_started = time.perf_counter()
+    if trace_file is not None and errors:
+        timed_out_ids = {
+            str(item["diagnostic_id"])
+            for item in errors
+            if item.get("category") in {"read_timeout", "timeout"}
+        }
+        observation_deadline = (
+            observation_started + args.server_observation_seconds
+        )
+        while timed_out_ids and time.perf_counter() < observation_deadline:
+            rows = _trace_rows(trace_file)
+            ended_ids = {
+                str(row.get("request_id") or "")
+                for row in rows
+                if row.get("kind") == "request_end"
+            }
+            if timed_out_ids <= ended_ids:
+                break
+            await asyncio.sleep(0.10)
+
+    observation_finished = time.perf_counter()
+    trace_rows = _trace_rows(trace_file)
+    timeout_correlations = _correlate_timeouts(
+        errors,
+        request_records,
+        trace_rows,
+    )
+
+    first_stall = next(
+        (row for row in trace_rows if row.get("kind") == "first_stall_snapshot"),
+        None,
+    )
+    pre_stall_end = (
+        float(first_stall.get("monotonic") or 0.0)
+        if isinstance(first_stall, dict)
+        else first_failure_monotonic
+    )
+    pre_stall_requests = [
+        row for row in request_records.values()
+        if pre_stall_end is not None
+        and float(row["client_start_monotonic"]) < pre_stall_end
+    ]
+    pre_stall_completed = [
+        row
+        for row in pre_stall_requests
+        if (
+            row.get("client_complete_monotonic") is not None
+            and float(row["client_complete_monotonic"]) <= float(pre_stall_end)
+        )
+    ]
+    pre_stall_failed = [
+        row
+        for row in pre_stall_requests
+        if row.get("error") is not None
+    ]
+    pre_stall_latencies = [
+        float(row["elapsed_ms"])
+        for row in pre_stall_completed
+        if row.get("elapsed_ms") is not None
+    ]
+
+    configured_window = max(0.001, args.duration_seconds)
+    actual_offer_seconds = max(0.001, measurement_end - started)
+    drain_seconds = max(0.0, client_drained_at - measurement_end)
+    server_observation_seconds = max(
+        0.0,
+        observation_finished - observation_started,
+    )
+    achieved_request_start_rps = started_in_window / configured_window
+    request_start_rate_ok = achieved_request_start_rps >= args.offered_rps * 0.95
+    diagnostic_acceptance_behavior_failed = (
+        failed > 0
+        or not request_start_rate_ok
+    )
+
+    report = {
+        "schema": "issue-894-connection-trial-v1",
+        "label": DIAGNOSTIC_LABEL,
+        "mode": args.mode,
+        "certification_pass": False,
+        "duration_target_seconds": args.duration_seconds,
+        "offered_rps": args.offered_rps,
+        "concurrency_bound": args.concurrency,
+        "http_timeout_seconds": 10.0,
+        "scheduled": scheduled,
+        "started": started_requests,
+        "started_in_measurement_window": started_in_window,
+        "completed": completed,
+        "completed_in_measurement_window": completed_in_window,
+        "succeeded": succeeded,
+        "failed": failed,
+        "outstanding_at_window_end": measurement_snapshot["outstanding"],
+        "drain_duration_seconds": drain_seconds,
+        "server_observation_duration_seconds": server_observation_seconds,
+        "achieved_schedule_rps": scheduled / actual_offer_seconds,
+        "achieved_request_start_rps": achieved_request_start_rps,
+        "request_start_rate_ok": request_start_rate_ok,
+        "diagnostic_acceptance_behavior_failed": (
+            diagnostic_acceptance_behavior_failed
+        ),
+        "achieved_completion_rps": completed_in_window / configured_window,
+        "max_in_flight": max_in_flight,
+        "max_outstanding": max_outstanding,
+        "operation_counts": operation_counts,
+        "statuses": statuses,
+        "latency": _latencies(latencies),
+        "scheduling_lag": _latencies(scheduling_lag_ms),
+        "errors": errors,
+        "measurement_window_snapshot": measurement_snapshot,
+        "first_failure_monotonic": first_failure_monotonic,
+        "first_stall": first_stall,
+        "first_stall_sql": first_stall_sql,
+        "pre_stall": {
+            "boundary_monotonic": pre_stall_end,
+            "started": len(pre_stall_requests),
+            "completed": len(pre_stall_completed),
+            "failed": len(pre_stall_failed),
+            "latency": _latencies(pre_stall_latencies),
+        },
+        "timeout_correlations": timeout_correlations,
+        "trace_summary": _summarize_trace(trace_rows),
+    }
+    _write_json(args.output, report)
+    return report
+
+
+def _correlate_timeouts(
+    errors: list[dict[str, object]],
+    request_records: dict[str, dict[str, object]],
+    trace_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    trace_by_request: dict[str, list[dict[str, object]]] = {}
+    for row in trace_rows:
+        request_id = str(row.get("request_id") or "")
+        if request_id:
+            trace_by_request.setdefault(request_id, []).append(row)
+
+    correlations: list[dict[str, object]] = []
+    for error in errors[:50]:
+        diagnostic_id = str(error["diagnostic_id"])
+        record = request_records[diagnostic_id]
+        timeout_at = record.get("client_timeout_monotonic")
+        rows = trace_by_request.get(diagnostic_id, [])
+        request_end = next(
+            (row for row in rows if row.get("kind") == "request_end"),
+            None,
+        )
+        returns = [
+            row for row in rows
+            if row.get("kind") == "connection_return"
+        ]
+        later_returns = [
+            row for row in returns
+            if isinstance(timeout_at, float)
+            and float(row.get("monotonic") or 0.0) > timeout_at
+        ]
+        correlations.append(
+            {
+                "diagnostic_id": diagnostic_id,
+                "operation": error["operation"],
+                "client_timeout_monotonic": timeout_at,
+                "server_request_end": request_end,
+                "connection_returns_after_client_timeout": later_returns,
+            }
+        )
+    return correlations
+
+
+def _summarize_trace(rows: list[dict[str, object]]) -> dict[str, object]:
+    by_kind: dict[str, int] = {}
+    executor_queue: list[float] = []
+    worker_ms: list[float] = []
+    executor_by_phase: dict[str, dict[str, list[float]]] = {}
+    pool_wait: list[float] = []
+    statement_ms: list[float] = []
+    post_statement: list[float] = []
+    holding_ms: list[float] = []
+    materialization_counts: list[float] = []
+    statement_to_materialization: list[float] = []
+    materialization_span: list[float] = []
+    post_materialization: list[float] = []
+    current_fingerprints = _current_result_fingerprints(rows)
+    targeted: dict[str, dict[str, object]] = {
+        fingerprint: {
+            "fetch_rows": [],
+            "fetch_ms": [],
+            "fetch_cpu_ms": [],
+            "fetch_errors": 0,
+            "consumer_ms": [],
+            "nested_fetch_ms": [],
+            "non_nested_ms": [],
+            "projection_ms": [],
+            "worker_cpu_ms": [],
+            "non_nested_worker_cpu_ms": [],
+            "profile_wall_ms": [],
+            "profile_thread_cpu_ms": [],
+            "profile_samples": 0,
+            "profile_running_samples": 0,
+            "profile_waiting_samples": 0,
+            "profile_unresolved_samples": 0,
+            "profile_wait_channels": {},
+            "profile_native_symbols": {},
+            "profile_python_categories": {},
+            "profile_native_stack_available": 0,
+            "call_sites": set(),
+            "request_ids": set(),
+            "connection_ids": set(),
+            "stall_matches": set(),
+        }
+        for fingerprint in current_fingerprints
+    }
+    first_stall = next(
+        (row for row in rows if row.get("kind") == "first_stall_snapshot"),
+        None,
+    )
+    stall_pairs = {
+        (
+            str(holder.get("request_id") or ""),
+            int(holder.get("connection_id") or 0),
+        )
+        for holder in (
+            first_stall.get("holders", [])
+            if isinstance(first_stall, dict)
+            else []
+        )
+        if isinstance(holder, dict)
+    }
+
+    for row in rows:
+        kind = str(row.get("kind") or "unknown")
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        if kind == "executor_worker_start":
+            queue_value = float(row.get("queue_wait_ms") or 0.0)
+            executor_queue.append(queue_value)
+            phase = str(row.get("phase") or "other")
+            executor_by_phase.setdefault(
+                phase,
+                {"queue_ms": [], "worker_ms": []},
+            )["queue_ms"].append(queue_value)
+        elif kind == "executor_worker_complete":
+            worker_value = float(row.get("worker_ms") or 0.0)
+            worker_ms.append(worker_value)
+            phase = str(row.get("phase") or "other")
+            executor_by_phase.setdefault(
+                phase,
+                {"queue_ms": [], "worker_ms": []},
+            )["worker_ms"].append(worker_value)
+        elif kind == "pool_checkout_complete":
+            pool_wait.append(float(row.get("wait_ms") or 0.0))
+        elif kind == "statement_end":
+            statement_ms.append(float(row.get("statement_ms") or 0.0))
+        elif kind == "connection_return":
+            if row.get("post_statement_connection_residence_ms") is not None:
+                post_statement.append(
+                    float(row.get("post_statement_connection_residence_ms") or 0.0)
+                )
+            if row.get("holding_ms") is not None:
+                holding_ms.append(float(row.get("holding_ms") or 0.0))
+        elif kind == "request_end":
+            materialization_counts.append(
+                float(row.get("orm_materialization_count") or 0.0)
+            )
+            if row.get("statement_end_to_first_materialization_ms") is not None:
+                statement_to_materialization.append(
+                    float(
+                        row.get(
+                            "statement_end_to_first_materialization_ms"
+                        )
+                        or 0.0
+                    )
+                )
+            if row.get("materialization_span_ms") is not None:
+                materialization_span.append(
+                    float(row.get("materialization_span_ms") or 0.0)
+                )
+            if row.get("last_materialization_to_request_end_ms") is not None:
+                post_materialization.append(
+                    float(
+                        row.get(
+                            "last_materialization_to_request_end_ms"
+                        )
+                        or 0.0
+                    )
+                )
+
+        fingerprint = str(row.get("statement_fingerprint") or "")
+        detail = targeted.get(fingerprint)
+        if detail is None:
+            continue
+        request_id = str(row.get("request_id") or "")
+        connection_id = int(row.get("connection_id") or 0)
+        if request_id:
+            detail["request_ids"].add(request_id)
+        if connection_id:
+            detail["connection_ids"].add(connection_id)
+        if (request_id, connection_id) in stall_pairs:
+            detail["stall_matches"].add((request_id, connection_id))
+        call_site = str(row.get("call_site") or "")
+        if call_site:
+            detail["call_sites"].add(call_site)
+        if kind == "dbapi_fetch":
+            detail["fetch_rows"].append(float(row.get("fetched_row_count") or 0.0))
+            detail["fetch_ms"].append(float(row.get("fetch_elapsed_ms") or 0.0))
+            detail["fetch_cpu_ms"].append(float(row.get("fetch_cpu_ms") or 0.0))
+            if bool(row.get("fetch_error")):
+                detail["fetch_errors"] = int(detail["fetch_errors"]) + 1
+        elif kind == "fetch_profile":
+            detail["profile_wall_ms"].append(
+                float(row.get("wall_elapsed_ms") or 0.0)
+            )
+            detail["profile_thread_cpu_ms"].append(
+                float(row.get("thread_cpu_ms") or 0.0)
+            )
+            detail["profile_samples"] = (
+                int(detail["profile_samples"])
+                + int(row.get("sample_count") or 0)
+            )
+            detail["profile_running_samples"] = (
+                int(detail["profile_running_samples"])
+                + int(row.get("running_samples") or 0)
+            )
+            detail["profile_waiting_samples"] = (
+                int(detail["profile_waiting_samples"])
+                + int(row.get("waiting_samples") or 0)
+            )
+            detail["profile_unresolved_samples"] = (
+                int(detail["profile_unresolved_samples"])
+                + int(row.get("unresolved_samples") or 0)
+            )
+            if bool(row.get("native_stack_available")):
+                detail["profile_native_stack_available"] = (
+                    int(detail["profile_native_stack_available"]) + 1
+                )
+            for source, target in (
+                ("wait_channels", "profile_wait_channels"),
+                ("native_stack_symbols", "profile_native_symbols"),
+                ("python_stack_categories", "profile_python_categories"),
+            ):
+                for item in row.get(source, []) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    category = str(item.get("category") or "")
+                    if not category:
+                        continue
+                    counts = detail[target]
+                    counts[category] = (
+                        int(counts.get(category) or 0)
+                        + int(item.get("samples") or 0)
+                    )
+        elif kind == "result_consumer":
+            detail["consumer_ms"].append(
+                float(row.get("consumer_elapsed_ms") or 0.0)
+            )
+            detail["nested_fetch_ms"].append(
+                float(row.get("nested_fetch_elapsed_ms") or 0.0)
+            )
+            detail["non_nested_ms"].append(
+                float(row.get("non_nested_consumer_elapsed_ms") or 0.0)
+            )
+            detail["projection_ms"].append(
+                float(row.get("immediate_projection_elapsed_ms") or 0.0)
+            )
+            detail["worker_cpu_ms"].append(
+                float(row.get("worker_cpu_ms") or 0.0)
+            )
+            detail["non_nested_worker_cpu_ms"].append(
+                float(row.get("non_nested_worker_cpu_ms") or 0.0)
+            )
+
+    targeted_summary: dict[str, dict[str, object]] = {}
+    for fingerprint, detail in targeted.items():
+        call_sites = sorted(str(value) for value in detail["call_sites"])
+        fetch_count = len(detail["fetch_ms"])
+        consumer_count = len(detail["consumer_ms"])
+        evidence_complete = bool(
+            fetch_count
+            and consumer_count
+            and call_sites
+            and "unmapped" not in call_sites
+            and len(detail["fetch_rows"]) == fetch_count
+            and len(detail["fetch_cpu_ms"]) == fetch_count
+            and int(detail["fetch_errors"]) == 0
+            and len(detail["nested_fetch_ms"]) == consumer_count
+            and len(detail["non_nested_ms"]) == consumer_count
+            and len(detail["projection_ms"]) == consumer_count
+            and len(detail["worker_cpu_ms"]) == consumer_count
+            and len(detail["non_nested_worker_cpu_ms"]) == consumer_count
+        )
+        fetch_shape = _latencies(detail["fetch_ms"])
+        non_nested_shape = _latencies(detail["non_nested_ms"])
+        non_nested_cpu_shape = _latencies(detail["non_nested_worker_cpu_ms"])
+        if float(fetch_shape["p50_ms"]) >= float(non_nested_shape["p50_ms"]):
+            dominant_stage = "fetching"
+        elif (
+            float(non_nested_shape["p50_ms"]) > 0.0
+            and float(non_nested_cpu_shape["p50_ms"])
+            >= float(non_nested_shape["p50_ms"]) * 0.5
+        ):
+            dominant_stage = "active_processing"
+        else:
+            dominant_stage = "waiting_elsewhere"
+
+        profile_samples = int(detail["profile_samples"])
+        profile_spans = len(detail["profile_wall_ms"])
+        profile_running = int(detail["profile_running_samples"])
+        profile_waiting = int(detail["profile_waiting_samples"])
+        profile_unresolved = int(
+            detail["profile_unresolved_samples"]
+        )
+        profile_total_classified = (
+            profile_running + profile_waiting + profile_unresolved
+        )
+
+        def _top_counts(values: dict[str, object]) -> list[dict[str, object]]:
+            return [
+                {"category": key, "samples": int(value)}
+                for key, value in sorted(
+                    values.items(),
+                    key=lambda item: (-int(item[1]), item[0]),
+                )[:8]
+            ]
+
+        targeted_summary[fingerprint] = {
+            "observed_fetches": fetch_count,
+            "observed_consumers": consumer_count,
+            "fetch_errors": int(detail["fetch_errors"]),
+            "call_sites": call_sites,
+            "request_count": len(detail["request_ids"]),
+            "connection_count": len(detail["connection_ids"]),
+            "first_stall_request_connection_matches": len(
+                detail["stall_matches"]
+            ),
+            "fetched_row_count": _count_distribution(detail["fetch_rows"]),
+            "fetch_elapsed_ms": fetch_shape,
+            "fetch_cpu_ms": _latencies(detail["fetch_cpu_ms"]),
+            "consumer_elapsed_ms": _latencies(detail["consumer_ms"]),
+            "nested_fetch_elapsed_ms": _latencies(detail["nested_fetch_ms"]),
+            "non_nested_consumer_elapsed_ms": _latencies(
+                detail["non_nested_ms"]
+            ),
+            "immediate_projection_elapsed_ms": _latencies(
+                detail["projection_ms"]
+            ),
+            "worker_cpu_ms": _latencies(detail["worker_cpu_ms"]),
+            "non_nested_worker_cpu_ms": _latencies(
+                detail["non_nested_worker_cpu_ms"]
+            ),
+            "fetch_profile": {
+                "profiled_fetch_spans": profile_spans,
+                "wall_elapsed_ms": _latencies(
+                    detail["profile_wall_ms"]
+                ),
+                "thread_cpu_ms": _latencies(
+                    detail["profile_thread_cpu_ms"]
+                ),
+                "sample_count": profile_samples,
+                "running_samples": profile_running,
+                "waiting_samples": profile_waiting,
+                "unresolved_samples": profile_unresolved,
+                "running_share": (
+                    profile_running / profile_total_classified
+                    if profile_total_classified
+                    else 0.0
+                ),
+                "waiting_share": (
+                    profile_waiting / profile_total_classified
+                    if profile_total_classified
+                    else 0.0
+                ),
+                "unresolved_share": (
+                    profile_unresolved / profile_total_classified
+                    if profile_total_classified
+                    else 1.0
+                ),
+                "dominant_wait_channels": _top_counts(
+                    detail["profile_wait_channels"]
+                ),
+                "dominant_native_stack_symbols": _top_counts(
+                    detail["profile_native_symbols"]
+                ),
+                "dominant_python_stack_categories": _top_counts(
+                    detail["profile_python_categories"]
+                ),
+                "native_stack_available_span_count": int(
+                    detail["profile_native_stack_available"]
+                ),
+                "payload_capture": False,
+                "evidence_complete": bool(
+                    profile_spans
+                    and profile_samples
+                    and profile_spans <= fetch_count
+                ),
+            },
+            "derived_dominant_stage": dominant_stage,
+            "evidence_complete": evidence_complete,
+        }
+
+    return {
+        "event_counts": by_kind,
+        "executor_queue_ms": _latencies(executor_queue),
+        "executor_worker_ms": _latencies(worker_ms),
+        "executor_by_phase": {
+            phase: {
+                "queue_ms": _latencies(values["queue_ms"]),
+                "worker_ms": _latencies(values["worker_ms"]),
+            }
+            for phase, values in sorted(executor_by_phase.items())
+        },
+        "pool_checkout_wait_ms": _latencies(pool_wait),
+        "statement_execution_ms": _latencies(statement_ms),
+        "post_statement_connection_residence_ms": _latencies(post_statement),
+        "connection_holding_ms": _latencies(holding_ms),
+        "orm_materialization_count": _latencies(materialization_counts),
+        "statement_end_to_first_materialization_ms": _latencies(
+            statement_to_materialization
+        ),
+        "materialization_span_ms": _latencies(materialization_span),
+        "last_materialization_to_request_end_ms": _latencies(
+            post_materialization
+        ),
+        "list_shifts_fingerprint": (
+            current_fingerprints[0]
+            if len(current_fingerprints) == 3
+            else ""
+        ),
+        "target_fingerprints": current_fingerprints,
+        "target_identification_ambiguous": len(current_fingerprints) != 3,
+        "targeted_result_timing": targeted_summary,
+        "targeted_timing_complete": (
+            len(current_fingerprints) == 3
+            and all(
+                bool(targeted_summary[fingerprint]["evidence_complete"])
+                for fingerprint in current_fingerprints
+            )
+        ),
+        "fetch_profile_complete": (
+            len(current_fingerprints) == 3
+            and all(
+                bool(
+                    targeted_summary[fingerprint][
+                        "fetch_profile"
+                    ]["evidence_complete"]
+                )
+                for fingerprint in current_fingerprints
+            )
+        ),
+    }
+
+
+def _validated_trial_report(
+    path: Path,
+    *,
+    expected_mode: str,
+    require_server_correlation: bool = False,
+) -> dict[str, object]:
+    report = json.loads(path.read_text(encoding="utf-8"))
+    if report.get("schema") != "issue-894-connection-trial-v1":
+        raise ValueError(f"{expected_mode} trial schema is invalid")
+    if report.get("label") != DIAGNOSTIC_LABEL:
+        raise ValueError(f"{expected_mode} trial label is invalid")
+    if report.get("mode") != expected_mode:
+        raise ValueError(f"{expected_mode} trial mode is invalid")
+    if report.get("certification_pass") is not False:
+        raise ValueError(f"{expected_mode} trial must never certify")
+    if not isinstance(report.get("diagnostic_acceptance_behavior_failed"), bool):
+        raise ValueError(
+            f"{expected_mode} diagnostic outcome is missing or malformed"
+        )
+    for field in (
+        "achieved_request_start_rps",
+        "completed",
+        "failed",
+        "drain_duration_seconds",
+    ):
+        value = report.get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ValueError(
+                f"{expected_mode} trial field {field} is missing or malformed"
+            )
+    latency = report.get("latency")
+    if not isinstance(latency, dict):
+        raise ValueError(f"{expected_mode} trial latency is missing or malformed")
+    p95 = latency.get("p95_ms")
+    if not isinstance(p95, (int, float)) or isinstance(p95, bool):
+        raise ValueError(
+            f"{expected_mode} trial latency p95 is missing or malformed"
+        )
+    trace_summary = report.get("trace_summary")
+    if not isinstance(trace_summary, dict):
+        raise ValueError(f"{expected_mode} trace summary is missing or malformed")
+    targeted = trace_summary.get("targeted_result_timing")
+    if not isinstance(targeted, dict):
+        raise ValueError(
+            f"{expected_mode} targeted result timing is missing or malformed"
+        )
+    if expected_mode in {"instrumented", "profiled"}:
+        if trace_summary.get("targeted_timing_complete") is not True:
+            raise ValueError(f"{expected_mode} targeted result timing is incomplete")
+        list_shifts_fingerprint = trace_summary.get("list_shifts_fingerprint")
+        if not isinstance(list_shifts_fingerprint, str) or not list_shifts_fingerprint:
+            raise ValueError(f"{expected_mode} list_shifts fingerprint is missing")
+        fingerprints = trace_summary.get("target_fingerprints")
+        if not isinstance(fingerprints, (list, tuple)) or len(fingerprints) != 3:
+            raise ValueError(f"{expected_mode} target fingerprints are malformed")
+        expected_fingerprints = (
+            list_shifts_fingerprint,
+            *UNCHANGED_RESULT_FINGERPRINTS,
+        )
+        if tuple(str(value) for value in fingerprints) != expected_fingerprints:
+            raise ValueError(f"{expected_mode} target fingerprint recognition is invalid")
+        for fingerprint in expected_fingerprints:
+            detail = targeted.get(fingerprint)
+            if not isinstance(detail, dict) or detail.get("evidence_complete") is not True:
+                raise ValueError(
+                    f"{expected_mode} timing evidence incomplete for {fingerprint}"
+                )
+        if require_server_correlation:
+            correlation = report.get("server_client_correlation")
+            if (
+                not isinstance(correlation, dict)
+                or correlation.get("complete") is not True
+            ):
+                raise ValueError(
+                    "instrumented SQL Server correlation is incomplete"
+                )
+        if (
+            expected_mode == "profiled"
+            and trace_summary.get("fetch_profile_complete") is not True
+        ):
+            raise ValueError(
+                "profiled fetch profiling evidence is incomplete"
+            )
+    else:
+        event_counts = trace_summary.get("event_counts")
+        if not isinstance(event_counts, dict):
+            raise ValueError("canonical trace event counts are missing or malformed")
+        if int(event_counts.get("dbapi_fetch") or 0) != 0:
+            raise ValueError("canonical mode unexpectedly contains detailed fetch tracing")
+        if int(event_counts.get("result_consumer") or 0) != 0:
+            raise ValueError(
+                "canonical mode unexpectedly contains detailed consumer tracing"
+            )
+    return report
+
+
+def _compare(args: argparse.Namespace) -> dict[str, object]:
+    canonical = _validated_trial_report(
+        args.canonical,
+        expected_mode="canonical",
+    )
+    instrumented = _validated_trial_report(
+        args.instrumented,
+        expected_mode="instrumented",
+        require_server_correlation=False,
+    )
+
+    canonical_rate = float(canonical.get("achieved_request_start_rps") or 0.0)
+    instrumented_rate = float(instrumented.get("achieved_request_start_rps") or 0.0)
+    canonical_p95 = float((canonical.get("latency") or {}).get("p95_ms") or 0.0)
+    instrumented_p95 = float(
+        (instrumented.get("latency") or {}).get("p95_ms") or 0.0
+    )
+    rate_floor = canonical_rate * 0.90
+    latency_ceiling = max(canonical_p95 * 1.10, canonical_p95 + 50.0)
+    canonical_completed = max(1, int(canonical.get("completed") or 0))
+    instrumented_completed = max(1, int(instrumented.get("completed") or 0))
+    canonical_failures = int(canonical.get("failed") or 0)
+    instrumented_failures = int(instrumented.get("failed") or 0)
+    canonical_failure_rate = canonical_failures / canonical_completed
+    instrumented_failure_rate = instrumented_failures / instrumented_completed
+    failure_rate_ceiling = min(
+        1.0,
+        canonical_failure_rate + FAILURE_RATE_MATERIAL_DELTA,
+    )
+    material = (
+        instrumented_rate < rate_floor
+        or instrumented_p95 > latency_ceiling
+        or instrumented_failure_rate > failure_rate_ceiling
+    )
+
+    report = {
+        "schema": "issue-894-connection-comparison-v1",
+        "label": DIAGNOSTIC_LABEL,
+        "certification_pass": False,
+        "canonical": {
+            "achieved_request_start_rps": canonical_rate,
+            "latency_p95_ms": canonical_p95,
+            "failed": canonical_failures,
+            "failure_rate": canonical_failure_rate,
+            "drain_duration_seconds": float(
+                canonical.get("drain_duration_seconds") or 0.0
+            ),
+        },
+        "instrumented": {
+            "achieved_request_start_rps": instrumented_rate,
+            "latency_p95_ms": instrumented_p95,
+            "failed": instrumented_failures,
+            "failure_rate": instrumented_failure_rate,
+            "drain_duration_seconds": float(
+                instrumented.get("drain_duration_seconds") or 0.0
+            ),
+        },
+        "delta": {
+            "request_start_rps": instrumented_rate - canonical_rate,
+            "latency_p95_ms": instrumented_p95 - canonical_p95,
+            "failure_rate": instrumented_failure_rate - canonical_failure_rate,
+        },
+        "materiality_thresholds": {
+            "request_start_rate_floor": rate_floor,
+            "latency_p95_ceiling_ms": latency_ceiling,
+            "failure_rate_ceiling": failure_rate_ceiling,
+            "failure_rate_max_absolute_delta": FAILURE_RATE_MATERIAL_DELTA,
+        },
+        "correlation_complete": (
+            isinstance(
+                instrumented.get("server_client_correlation"),
+                dict,
+            )
+            and instrumented["server_client_correlation"].get(
+                "complete"
+            )
+            is True
+        ),
+        "material_instrumentation_deterioration": material,
+        "interpretation_allowed": not material,
+    }
+    _write_json(args.output, report)
+    return report
+
+
+def _compare_profiled(args: argparse.Namespace) -> dict[str, object]:
+    baseline = _validated_trial_report(
+        args.instrumented,
+        expected_mode="instrumented",
+        require_server_correlation=False,
+    )
+    profiled = _validated_trial_report(
+        args.profiled,
+        expected_mode="profiled",
+        require_server_correlation=False,
+    )
+
+    baseline_rate = float(
+        baseline.get("achieved_request_start_rps") or 0.0
+    )
+    profiled_rate = float(
+        profiled.get("achieved_request_start_rps") or 0.0
+    )
+    baseline_p95 = float(
+        (baseline.get("latency") or {}).get("p95_ms") or 0.0
+    )
+    profiled_p95 = float(
+        (profiled.get("latency") or {}).get("p95_ms") or 0.0
+    )
+    rate_floor = baseline_rate * 0.90
+    latency_ceiling = max(
+        baseline_p95 * 1.10,
+        baseline_p95 + 50.0,
+    )
+    baseline_completed = max(
+        1,
+        int(baseline.get("completed") or 0),
+    )
+    profiled_completed = max(
+        1,
+        int(profiled.get("completed") or 0),
+    )
+    baseline_failures = int(baseline.get("failed") or 0)
+    profiled_failures = int(profiled.get("failed") or 0)
+    baseline_failure_rate = (
+        baseline_failures / baseline_completed
+    )
+    profiled_failure_rate = (
+        profiled_failures / profiled_completed
+    )
+    failure_rate_ceiling = min(
+        1.0,
+        baseline_failure_rate + FAILURE_RATE_MATERIAL_DELTA,
+    )
+    material = (
+        profiled_rate < rate_floor
+        or profiled_p95 > latency_ceiling
+        or profiled_failure_rate > failure_rate_ceiling
+    )
+    report = {
+        "schema": "issue-894-fetch-profile-comparison-v1",
+        "label": DIAGNOSTIC_LABEL,
+        "certification_pass": False,
+        "instrumented_baseline": {
+            "achieved_request_start_rps": baseline_rate,
+            "latency_p95_ms": baseline_p95,
+            "failure_rate": baseline_failure_rate,
+        },
+        "profiled": {
+            "achieved_request_start_rps": profiled_rate,
+            "latency_p95_ms": profiled_p95,
+            "failure_rate": profiled_failure_rate,
+        },
+        "delta": {
+            "request_start_rps": profiled_rate - baseline_rate,
+            "latency_p95_ms": profiled_p95 - baseline_p95,
+            "failure_rate": (
+                profiled_failure_rate - baseline_failure_rate
+            ),
+        },
+        "materiality_thresholds": {
+            "request_start_rate_floor": rate_floor,
+            "latency_p95_ceiling_ms": latency_ceiling,
+            "failure_rate_ceiling": failure_rate_ceiling,
+            "failure_rate_max_absolute_delta": (
+                FAILURE_RATE_MATERIAL_DELTA
+            ),
+        },
+        "material_profiling_deterioration": material,
+        "interpretation_allowed": not material,
+    }
+    _write_json(args.output, report)
+    return report
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    trial = sub.add_parser("trial")
+    trial.add_argument("--base-url", default="http://frontend:8080")
+    trial.add_argument("--credentials", type=Path, required=True)
+    trial.add_argument("--database-url", required=True)
+    trial.add_argument("--output", type=Path, required=True)
+    trial.add_argument(
+        "--mode",
+        choices=("canonical", "instrumented", "profiled"),
+        required=True,
+    )
+    trial.add_argument(
+        "--duration-seconds",
+        type=float,
+        default=DEFAULT_DURATION_SECONDS,
+    )
+    trial.add_argument("--offered-rps", type=float, default=ORDINARY_RPS)
+    trial.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+    )
+    trial.add_argument("--trace-file", type=Path)
+    trial.add_argument(
+        "--server-observation-seconds",
+        type=float,
+        default=35.0,
+    )
+
+    xe_start = sub.add_parser("xe-start")
+    xe_start.add_argument("--database-url", required=True)
+    xe_start.add_argument("--output", type=Path, required=True)
+
+    xe_stop = sub.add_parser("xe-stop")
+    xe_stop.add_argument("--database-url", required=True)
+    xe_stop.add_argument("--output", type=Path, required=True)
+
+    xe_cleanup = sub.add_parser("xe-cleanup")
+    xe_cleanup.add_argument("--database-url", required=True)
+
+    xe_finalize = sub.add_parser("xe-finalize-cleanup")
+    xe_finalize.add_argument("--database-url", required=True)
+    xe_finalize.add_argument("--capture", type=Path, required=True)
+
+    correlate = sub.add_parser("correlate")
+    correlate.add_argument("--trial", type=Path, required=True)
+    correlate.add_argument("--trace", type=Path, required=True)
+    correlate.add_argument("--server", type=Path, required=True)
+    correlate.add_argument("--output", type=Path, required=True)
+
+    compare = sub.add_parser("compare")
+    compare.add_argument("--canonical", type=Path, required=True)
+    compare.add_argument("--instrumented", type=Path, required=True)
+    compare.add_argument("--output", type=Path, required=True)
+
+    compare_profiled = sub.add_parser("compare-profiled")
+    compare_profiled.add_argument(
+        "--instrumented",
+        type=Path,
+        required=True,
+    )
+    compare_profiled.add_argument(
+        "--profiled",
+        type=Path,
+        required=True,
+    )
+    compare_profiled.add_argument("--output", type=Path, required=True)
+    return parser
+
+
+def main() -> int:
+    args = _parser().parse_args()
+    if args.command == "trial":
+        report = asyncio.run(_trial(args))
+        _validated_trial_report(args.output, expected_mode=args.mode)
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if args.command == "xe-start":
+        report = _xe_start(args.database_url, args.output)
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if args.command == "xe-stop":
+        report = _xe_stop_collect(args.database_url, args.output)
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    if args.command == "xe-cleanup":
+        _xe_cleanup(args.database_url)
+        return 0
+    if args.command == "xe-finalize-cleanup":
+        report = _xe_finalize_capture_cleanup(
+            args.database_url,
+            args.capture,
+        )
+        print(json.dumps({
+            "cleanup_succeeded": report["cleanup_succeeded"],
+            "event_files_removed": report["event_files_removed"],
+        }, sort_keys=True))
+        return 0
+    if args.command == "correlate":
+        report = _correlate_report(
+            args.trial,
+            args.trace,
+            args.server,
+            args.output,
+        )
+        _validated_trial_report(
+            args.output,
+            expected_mode="instrumented",
+            require_server_correlation=True,
+        )
+        print(json.dumps(report["server_client_correlation"], sort_keys=True))
+        return 0
+    if args.command == "compare":
+        report = _compare(args)
+        print(json.dumps(report, sort_keys=True))
+        return (
+            0
+            if report.get("material_instrumentation_deterioration") is False
+            and report.get("interpretation_allowed") is True
+            else 1
+        )
+    if args.command == "compare-profiled":
+        report = _compare_profiled(args)
+        print(json.dumps(report, sort_keys=True))
+        return (
+            0
+            if report.get("material_profiling_deterioration") is False
+            and report.get("interpretation_allowed") is True
+            else 1
+        )
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

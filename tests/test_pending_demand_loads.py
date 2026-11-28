@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 import unittest
+from unittest import mock
 
 from app.domain.demand_periods import (
     PERIOD_KIND_ALTERNATIVE,
@@ -19,6 +20,7 @@ from app.infrastructure.sql import (
     ORIGIN_REQUEST,
     Project,
     Resource,
+    RequestLine,
     ResourceRequirement,
     Shift,
     SqlDemandPeriodRepository,
@@ -249,6 +251,309 @@ class PendingDemandLoadProjectionTests(unittest.TestCase):
         self.assertEqual(candidate.window_hours, 16.0)
         self.assertEqual(candidate.required_competencies, "PLC")
         self.assertEqual(snapshot.resources, ())
+
+    def test_planning_snapshot_reuses_complete_scoped_demands_once(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkforceRequest(
+                    id="D5",
+                    legacy_demand_number="DMO-2026-1005",
+                    project_id="P1",
+                    status="Soumise",
+                    confirmation="Tentative",
+                    desired_start=MONDAY,
+                    desired_end=FRIDAY,
+                    estimated_hours=Decimal("24"),
+                    resource_count=1,
+                )
+            )
+
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            with mock.patch.object(
+                queries._demands,
+                "list",
+                wraps=queries._demands.list,
+            ) as demand_list:
+                snapshot = queries.planning_snapshot(
+                    start=MONDAY,
+                    end=FRIDAY,
+                    project_ids=("P1",),
+                    demand_ids=("D5",),
+                )
+
+        self.assertEqual(len(snapshot.demands), 1)
+        self.assertEqual(len(snapshot.pending_loads), 1)
+        self.assertEqual(snapshot.pending_loads[0].projected_hours, 24.0)
+        scoped_call = mock.call(
+            project_ids=("P1",),
+            demand_ids=("D5",),
+        )
+        self.assertEqual(
+            demand_list.call_args_list.count(scoped_call),
+            1,
+        )
+
+    def test_pending_window_uses_complete_scope_before_snapshot_date_filter(self) -> None:
+        october_start = date(2026, 10, 1)
+        october_end = date(2026, 10, 2)
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkforceRequest(
+                    id="D6",
+                    legacy_demand_number="DMO-2026-1006",
+                    project_id="P1",
+                    status="Soumise",
+                    confirmation="Tentative",
+                    desired_start=october_start,
+                    desired_end=october_end,
+                    resource_count=1,
+                )
+            )
+            session.flush()
+            SqlDemandPeriodRepository(session).replace_for_demand(
+                "DMO-2026-1006",
+                (
+                    DemandPeriodDefinition(
+                        period_id="SEP-WINDOW",
+                        start_date=MONDAY,
+                        end_date=FRIDAY,
+                        hours=40,
+                    ),
+                ),
+            )
+
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            snapshot = queries.planning_snapshot(
+                start=MONDAY,
+                end=FRIDAY,
+                project_ids=("P1",),
+                demand_ids=("D6",),
+            )
+
+        self.assertEqual(snapshot.demands, ())
+        self.assertEqual(len(snapshot.pending_loads), 1)
+        pending = snapshot.pending_loads[0]
+        self.assertEqual(pending.projected_hours, 40.0)
+        self.assertEqual(pending.window_hours, 40.0)
+        self.assertEqual(len(pending.candidate_windows), 1)
+        self.assertEqual(
+            pending.candidate_windows[0].candidate_key,
+            "DMO-2026-1006:SEP-WINDOW",
+        )
+
+    def test_line_mode_snapshot_pending_load_matches_standalone_projection(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                Resource(
+                    id="R7",
+                    name="Charlie",
+                    active=True,
+                    sort_order=3,
+                )
+            )
+            session.flush()
+            session.add(
+                WorkforceRequest(
+                    id="D7",
+                    legacy_demand_number="DMO-2026-1007",
+                    project_id="P1",
+                    status="Soumise",
+                    confirmation="Tentative",
+                    desired_start=MONDAY,
+                    desired_end=FRIDAY,
+                    resource_count=1,
+                    line_mode=True,
+                )
+            )
+            session.flush()
+            session.add(
+                RequestLine(
+                    id="L7",
+                    workforce_request_id="D7",
+                    position=0,
+                    kind="WORKFORCE",
+                    slot_count=1,
+                    desired_start=MONDAY,
+                    desired_end=FRIDAY,
+                    estimated_hours=Decimal("16"),
+                    confirmation="Tentative",
+                    proposed_resource_id="R7",
+                    active=True,
+                )
+            )
+
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            standalone = queries.list_pending_loads(
+                start=MONDAY,
+                end=FRIDAY,
+                project_ids=("P1",),
+                demand_ids=("D7",),
+            )
+            snapshot = queries.planning_snapshot(
+                start=MONDAY,
+                end=FRIDAY,
+                project_ids=("P1",),
+                demand_ids=("D7",),
+            )
+
+        self.assertEqual(snapshot.pending_loads, standalone)
+        self.assertEqual(len(snapshot.pending_loads), 1)
+        pending = snapshot.pending_loads[0]
+        self.assertEqual(pending.projected_hours, 16.0)
+        self.assertEqual(pending.window_hours, 16.0)
+        self.assertEqual(len(pending.candidate_windows), 1)
+        self.assertEqual(
+            pending.candidate_windows[0].proposed_resource_id,
+            "R7",
+        )
+
+    def test_selected_alternative_snapshot_matches_standalone_projection(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkforceRequest(
+                    id="D10",
+                    legacy_demand_number="DMO-2026-1010",
+                    project_id="P1",
+                    status="Soumise",
+                    confirmation="Tentative",
+                    desired_start=MONDAY,
+                    desired_end=TUESDAY,
+                    resource_count=1,
+                )
+            )
+            session.flush()
+            periods = SqlDemandPeriodRepository(session)
+            periods.replace_for_demand(
+                "DMO-2026-1010",
+                (
+                    DemandPeriodDefinition(
+                        period_id="MON",
+                        start_date=MONDAY,
+                        end_date=MONDAY,
+                        hours=8,
+                        kind=PERIOD_KIND_ALTERNATIVE,
+                        alternative_group="DAY-CHOICE",
+                        proposed_resource="Alice",
+                    ),
+                    DemandPeriodDefinition(
+                        period_id="TUE",
+                        start_date=TUESDAY,
+                        end_date=TUESDAY,
+                        hours=8,
+                        kind=PERIOD_KIND_ALTERNATIVE,
+                        alternative_group="DAY-CHOICE",
+                        proposed_resource="Bob",
+                    ),
+                ),
+            )
+            periods.select_alternative(
+                "DMO-2026-1010",
+                "DAY-CHOICE",
+                "TUE",
+            )
+
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            standalone = queries.list_pending_loads(
+                start=MONDAY,
+                end=FRIDAY,
+                demand_ids=("D10",),
+            )
+            snapshot = queries.planning_snapshot(
+                start=MONDAY,
+                end=FRIDAY,
+                demand_ids=("D10",),
+            )
+
+        self.assertEqual(snapshot.pending_loads, standalone)
+        self.assertEqual(len(snapshot.pending_loads), 1)
+        pending = snapshot.pending_loads[0]
+        self.assertEqual(pending.projected_hours, 8.0)
+        selected = [
+            period.period_id
+            for period in pending.periods
+            if period.selected
+        ]
+        self.assertEqual(selected, ["TUE"])
+
+    def test_standalone_pending_load_still_fetches_its_own_projection(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkforceRequest(
+                    id="D8",
+                    legacy_demand_number="DMO-2026-1008",
+                    project_id="P1",
+                    status="Soumise",
+                    confirmation="Tentative",
+                    desired_start=MONDAY,
+                    desired_end=FRIDAY,
+                    estimated_hours=Decimal("12"),
+                    resource_count=1,
+                )
+            )
+
+        with self.factory() as session:
+            queries = SqlPlannerQueryRepository(session)
+            with mock.patch.object(
+                queries._demands,
+                "list",
+                wraps=queries._demands.list,
+            ) as demand_list:
+                loads = queries.list_pending_loads(
+                    start=MONDAY,
+                    end=FRIDAY,
+                    project_ids=("P1",),
+                    demand_ids=("D8",),
+                )
+
+        self.assertEqual(len(loads), 1)
+        self.assertEqual(loads[0].projected_hours, 12.0)
+        demand_list.assert_called_once_with(
+            project_ids=("P1",),
+            demand_ids=("D8",),
+        )
+
+    def test_snapshot_reuse_does_not_cross_request_boundary(self) -> None:
+        with transactional_session(self.factory) as session:
+            session.add(
+                WorkforceRequest(
+                    id="D9",
+                    legacy_demand_number="DMO-2026-1009",
+                    project_id="P1",
+                    status="Soumise",
+                    confirmation="Tentative",
+                    desired_start=MONDAY,
+                    desired_end=FRIDAY,
+                    estimated_hours=Decimal("16"),
+                    resource_count=1,
+                )
+            )
+
+        with self.factory() as session:
+            first = SqlPlannerQueryRepository(session).planning_snapshot(
+                start=MONDAY,
+                end=FRIDAY,
+                project_ids=("P1",),
+                demand_ids=("D9",),
+            )
+        self.assertEqual(first.pending_loads[0].projected_hours, 16.0)
+
+        with transactional_session(self.factory) as session:
+            request = session.get(WorkforceRequest, "D9")
+            assert request is not None
+            request.estimated_hours = Decimal("24")
+
+        with self.factory() as session:
+            second = SqlPlannerQueryRepository(session).planning_snapshot(
+                start=MONDAY,
+                end=FRIDAY,
+                project_ids=("P1",),
+                demand_ids=("D9",),
+            )
+        self.assertEqual(second.pending_loads[0].projected_hours, 24.0)
 
     def test_macro_hours_are_prorated_to_the_displayed_window(self) -> None:
         self.assertEqual(
